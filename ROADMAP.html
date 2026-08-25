@@ -6,47 +6,183 @@
   <title>Main Experiment 内部ロードマップ</title>
 </head>
 <body>
-  <h1>Main Experiment 実装ロードマップ</h1>
-  <p>このHTMLはリポジトリの完成状態と、本番環境で必要な技術確認だけを追跡する。Word/PDF版は作らず、参加者へ配信しない。</p>
-  <p><strong>判定境界:</strong> リポジトリの完成は第1節だけで判定する。実刺激、実Cloudflare account、実端末を必要とする項目は第3節へ分離し、未完了でもコード未完成とは扱わない。</p>
+  <h1>Main Experiment 内部ロードマップ</h1>
 
-  <h2>1. リポジトリ完成条件</h2>
-  <p><strong>現在の判定: 既知の未解決blockerなし。</strong></p>
-  <p><label><input type="checkbox" checked> 指定された6つのparticipant URLだけをcanonical routeとして実装した</label></p>
-  <p><label><input type="checkbox" checked> IDによるaccent割当、24-cell、No/High、話者、順序、seedの不変条件を実装した</label></p>
-  <p><label><input type="checkbox" checked> pre→learningは順序だけ、delayedはImmediate最終L2-to-L1応答＋5日かつImmediate保存確定、以後は上限なしとした</label></p>
-  <p><label><input type="checkbox" checked> D1応答、R2 WAV、IndexedDB outbox、再送、再開、session supersedeを実装した</label></p>
-  <p><label><input type="checkbox" checked> Delayed完了後の参加者端末ZIPと、管理者用canonical結果ZIPを実装した</label></p>
-  <p><label><input type="checkbox" checked> placeholder・未確定token方針ではproduction回収をfail closedにした</label></p>
-  <p><label><input type="checkbox" checked> 旧Queue・定期export・派生ZIP保存・独自backup CLI・旧URL aliasをruntimeから除いた</label></p>
-  <p><label><input type="checkbox" checked> migration整合、67 tests、4,320 design監査、development/production dry-runを通した</label></p>
+  <h2>0. 判断軸</h2>
+  <p><strong>North Star:</strong> 担当者が3 visitのリンクを手動配布し、参加者が6つのcanonical URLを所定順に完了し、Immediate最終L2-to-L1行動応答＋5日以上かつ上限なしでDelayedを実施し、行動データと時刻がD1、WAVがR2へ完全に保存され、Delayed完了後に参加者端末へ完全なZIPを保存でき、研究者が保存内容と復旧可能性を検証できる状態を作る。</p>
+  <p><strong>固定方針:</strong> 24語のslot内容は現在プレースホルダーのままにする。これは意図した開発状態であり、プログラム完成、Cloudflare配備、技術pilotのblockerではない。収集用bundleでも現在の24語をそのまま承認してよく、語の置換を必須にしない。一方、仮画像・仮音声・仮話者IDとproductionの<code>placeholder_asset</code> flagは別概念として管理する。</p>
+  <p><strong>判定規則:</strong> チェック数、文書数、unit test、health表示のどれか一つだけでは完了としない。G1はcommitと自動検証、G2は実Cloudflareと最小D1/R2保存、G3はclean-path・fault-injection E2EとZIP・運用rehearsal、G4は収集用bundle・production・soft launchの証拠で判定する。外部入力待ちの項目は、trigger前には未完了として数えない。</p>
 
-  <h2>2. 共同研究者からの入力待ち</h2>
-  <p><label><input type="checkbox"> 実際の24語、練習語、画像、学習音声、テスト音声、話者IDを受領した</label></p>
-  <p><label><input type="checkbox"> 直後・遅延で同一WAV tokenを使うか、同一話者の別takeを使うかの決定を受領した</label></p>
-  <p>現行コードは同一WAV token方式を実装済みである。別take方式が選ばれた場合だけ、key規約・manifest・testを新しい実装scopeとして開く。入力前に両方式を同時実装しない。</p>
+  <h3>現在の到達状態</h3>
+  <ul>
+    <li><label><input type="checkbox" checked> G1 Program-ready: 実験契約、割付、参加者導線、保存処理を実装し、自動検証した</label></li>
+    <li><label><input type="checkbox"> G2 Live-pilot-ready: Cloudflare非本番環境へ配備し、実URLでD1/R2保存を確認した</label></li>
+    <li><label><input type="checkbox"> G3 Operationally-ready: 敵対的E2E pilotと手動運用rehearsalを完了した</label></li>
+    <li><label><input type="checkbox"> G4 Main-data-ready: 収集用bundleとproduction環境を固定し、soft launchを通過した</label></li>
+  </ul>
+  <p><strong>Gate依存:</strong> G2 = G1＋第5節、G3 = G2＋第6–7節、G4 = G3＋trigger済み第8節＋第9–10節。下位gateを飛ばして上位だけをcheckedにしない。</p>
+  <p><strong>現在の単一next action:</strong> 24語は変更せず、使用するCloudflare account、主担当・代替担当、必要runtime capacityを確定する。完了後に第5節の次のunchecked項目を単一next actionとする。</p>
+  <p><strong>G1 evidence（2026-08-26）:</strong> code baseline <code>800216f</code>に対し<code>npm run verify</code>を実行し、types check、67 tests、2 secrets × ID 1–2160の4,320 design監査、development/production deploy dry-runが成功した。</p>
 
-  <h2>3. 本番配備・実機検証</h2>
-  <p><label><input type="checkbox"> 実刺激を組み込み、期待key、SHA-256、WAV形式・duration・level、画像形式を照合した</label></p>
-  <p><label><input type="checkbox"> 本番versionを固定し、placeholderを無効化して <code>collection_ready=true</code> を確認した</label></p>
-  <p><label><input type="checkbox"> Workers Paid、D1、R2、secrets、custom domain、migrationを本番環境で確認した</label></p>
-  <p><label><input type="checkbox"> Cloudflare Accessにより研究チーム外から管理画面と管理APIが拒否されることを確認した</label></p>
-  <p><label><input type="checkbox"> 旧版を配置済みなら旧Queue・DLQ・EXPORTS bucket・5分cronを廃止した（未作成ならN/A）</label></p>
-  <p><label><input type="checkbox"> 実Chrome・実マイクで6 URL、session遷移、reload、通信中断、outbox再送を通し確認した</label></p>
-  <p><label><input type="checkbox"> 本番相当の3 visitデータ量で参加者端末ZIPを保存・再試行・展開し、entry数とhashを照合した</label></p>
-  <p><label><input type="checkbox"> 隔離先へのD1復元とWAV復旧を行い、D1のsize/hashと一致することを確認した</label></p>
-  <p><label><input type="checkbox"> 本番commit SHAと各versionを運用記録へ残した</label></p>
+  <h2>1. 固定済みの実験契約</h2>
+  <ul>
+    <li><label><input type="checkbox" checked> 対象は日本語母語の英語学習者とする</label></li>
+    <li><label><input type="checkbox" checked> 学習時accentはAmerican English、Mandarin-accented English、Japanese-accented Englishの参加者間要因とする</label></li>
+    <li><label><input type="checkbox" checked> No VariabilityとHigh Variabilityを参加者内要因とする</label></li>
+    <li><label><input type="checkbox" checked> Picture Matchingは行わない</label></li>
+    <li><label><input type="checkbox" checked> preはPicture Namingだけを行い、L2-to-L1は行わない</label></li>
+    <li><label><input type="checkbox" checked> ImmediateはLearning → Picture Naming → L2-to-L1の順とする</label></li>
+    <li><label><input type="checkbox" checked> DelayedはPicture Naming → L2-to-L1の順とする</label></li>
+    <li><label><input type="checkbox" checked> pre完了からLearning開始までは順序だけを強制し、時間の上限・下限を設けない</label></li>
+    <li><label><input type="checkbox" checked> DelayedはImmediate最終L2-to-L1行動応答のserver受理時刻＋5日以上かつImmediate保存確定後に開始可能とし、以後の上限を設けない</label></li>
+    <li><label><input type="checkbox" checked> Prolificは使わず、pre・Immediate・Delayedのvisit linkを担当者が手動配布する</label></li>
+  </ul>
 
-  <h2>4. 固定済みの実験プログラム仕様</h2>
-  <p><label><input type="checkbox" checked> 学習時accentは正の整数IDを3で割った余りで固定する</label></p>
-  <p><label><input type="checkbox" checked> No/Highを参加者内要因とし、24語を各6回学習する</label></p>
-  <p><label><input type="checkbox" checked> preはPicture Namingだけ、Immediate・DelayedはPicture Namingの後にL2-to-L1を行う</label></p>
-  <p><label><input type="checkbox" checked> L2-to-L1は各accent 8語、accent・variabilityの連続は最大2とする</label></p>
-  <p><label><input type="checkbox" checked> テスト音声はaccentごと1名の固定女性話者を使う</label></p>
-  <p><label><input type="checkbox" checked> リンクは手動配布し、管理画面でID欠番とaccent×cellの進捗を監査する</label></p>
-  <p><label><input type="checkbox" checked> Pre・Immediateでは参加者ZIPを渡さず、Delayed完了後だけ3 visit分を渡す</label></p>
+  <h2>2. 割付・ランダマイズ・24-slot契約</h2>
+  <ul>
+    <li><label><input type="checkbox" checked> 正の整数participant IDを3で割った余り1/2/0でEnglish/Chinese/Japanese学習accentへ固定する</label></li>
+    <li><label><input type="checkbox" checked> 24個の一意な語slotを12 No / 12 Highへ割り付け、内容はプレースホルダーのまま検証可能にする</label></li>
+    <li><label><input type="checkbox" checked> 各語6回、合計144学習試行とする</label></li>
+    <li><label><input type="checkbox" checked> Noは参加者内で同一話者が6回、Highは6話者が各1回提示する</label></li>
+    <li><label><input type="checkbox" checked> L2-to-L1は各時点で3 accents × 8語、各accent内No/High各4語とする</label></li>
+    <li><label><input type="checkbox" checked> L2-to-L1のaccent連続は練習を含む提示系列で最大2、variability連続は本番24試行で最大2にする</label></li>
+    <li><label><input type="checkbox" checked> テスト音声はaccentごとに固定された女性1名、計3名を使うslot契約とする</label></li>
+    <li><label><input type="checkbox" checked> Picture Namingは12個のNo/High pairを作り、No-first 6組・High-first 6組とする</label></li>
+    <li><label><input type="checkbox" checked> pre・Immediate・DelayedのPicture Namingに独立domain seedを使い、3順序の完全同一をpairwiseに拒否する</label></li>
+    <li><label><input type="checkbox" checked> L2-to-L1を4個の6試行miniblockにし、各blockへNo/High × 3 accentsの6 strataを1試行ずつ入れる</label></li>
+    <li><label><input type="checkbox" checked> Immediate・DelayedのL2-to-L1は語→accent→話者→WAV写像を固定し、提示順だけを独立化する</label></li>
+    <li><label><input type="checkbox" checked> 24-cellでlist反転・開始順・No話者を分散し、test accent写像はcounterbalance cycleも含めて分散する</label></li>
+    <li><label><input type="checkbox" checked> HMAC root seedと用途別domain seedにより、課題・時点間の乱数消費を分離する</label></li>
+    <li><label><input type="checkbox" checked> participant作成時のmanifestをD1へ固定し、同じIDの再登録・再開時に再抽選しない</label></li>
+    <li><label><input type="checkbox" checked> ID 1–2160を2つのsecretで生成する4,320 design監査で不変条件を検証する</label></li>
+    <li><label><input type="checkbox" checked> accentごと固定女性1名のためaccentと話者identityは分離不能であり、結果の対象は選定された3名の音声に限られる固定設計として扱う</label></li>
+  </ul>
 
-  <h2>このロードマップで追跡しない事項</h2>
-  <p>事前登録、倫理審査、同意、標本数、解析計画、採点規準、募集承認はPI・共同研究者がリポジトリ外で管理する。本書はそれらの必要性を判定せず、コード完成判定にも用いない。外部決定がruntime仕様を変える場合だけ、明示された変更内容を新しい実装scopeとして取り込む。</p>
+  <h2>3. 参加者journey</h2>
+  <ul>
+    <li><label><input type="checkbox" checked> canonical URLを <code>/pre-picture-naming/</code>、<code>/main-experiment/</code>、<code>/immediate-picture-naming/</code>、<code>/immediate-l2-to-l1/</code>、<code>/delayed-picture-naming/</code>、<code>/delayed-l2-to-l1/</code> の6つに限定する</label></li>
+    <li><label><input type="checkbox" checked> 招待tokenはURL単位ではなくpre・Immediate・Delayedの3 visit単位とする</label></li>
+    <li><label><input type="checkbox" checked> 後続URLへの直接アクセス、前課題未完了、必要録音未保存の場合は進行を拒否する</label></li>
+    <li><label><input type="checkbox" checked> session期限切れ後もactive invitationから保存済み位置へ再開可能にする</label></li>
+    <li><label><input type="checkbox" checked> reload後の再提示を記録し、黙って新しいtrialとして扱わない</label></li>
+    <li><label><input type="checkbox" checked> 同じvisitのlink再発行時は旧linkとactive sessionをsupersedeする</label></li>
+    <li><label><input type="checkbox" checked> 5日未満のDelayedを拒否し、5日以降は遅れても受付する</label></li>
+    <li><label><input type="checkbox" checked> exact 5-day境界と400日後の受付を自動testし、上限なしを実時間で待ち続けて検証しない</label></li>
+    <li><label><input type="checkbox" checked> participant-facingのエラーは、再試行可能・担当者連絡・進行停止を区別して表示する</label></li>
+  </ul>
+
+  <h2>4. データ完全性とローカル保存</h2>
+  <ul>
+    <li><label><input type="checkbox" checked> 行動応答、時刻、manifest、QCをD1の正本として保存する</label></li>
+    <li><label><input type="checkbox" checked> 個別WAVをRECORDINGS R2 bindingの正本として保存し、公開WAV endpointを実装せず、D1へobject key、byte count、SHA-256を記録する</label></li>
+    <li><label><input type="checkbox" checked> IndexedDBは未送信outboxだけに使い、D1/R2双方のACK後にlocal Blobを削除する</label></li>
+    <li><label><input type="checkbox" checked> 応答・録音を冪等keyで再送し、重複保存とsilent lossを防ぐ</label></li>
+    <li><label><input type="checkbox" checked> 全canonical応答と必要録音の保存がそろうまでvisitをcompletedにしない</label></li>
+    <li><label><input type="checkbox" checked> Pre・Immediateでは参加者へ結果ZIPを渡さない</label></li>
+    <li><label><input type="checkbox" checked> Delayed完了後だけ、3 visit分の回答とWAVを参加者が単一ZIPとして端末へ保存できる</label></li>
+    <li><label><input type="checkbox" checked> Delayed完了画面から直ちに保存導線を提示するが、browser制約上必要な保存先選択等のparticipant操作を「自動保存済み」と誤認しない</label></li>
+    <li><label><input type="checkbox" checked> 対応ChromeではZIPを全量Blob化せず選択済みfileへstreamし、再保存も可能にする</label></li>
+    <li><label><input type="checkbox" checked> 管理者は参加者IDから採点・照合用metadataを含むcanonical結果ZIPをオンデマンド取得できる</label></li>
+    <li><label><input type="checkbox" checked> production placeholder、未確定token policy、欠損刺激ではfail closedにする</label></li>
+  </ul>
+
+  <h2>5. Cloudflare非本番配備 — 現在の作業</h2>
+  <ul>
+    <li><label><input type="checkbox"> 使用するCloudflare account、主担当、代替担当を確定する</label></li>
+    <li><label><input type="checkbox"> Workers Paidまたは同等以上のplanを選び、participant作成の311-statement atomic D1 batchと録音処理を実環境で通す</label></li>
+    <li><label><input type="checkbox"> 非本番用Worker、D1、RECORDINGS R2、STIMULI R2を作成する</label></li>
+    <li><label><input type="checkbox"> D1 migrationを適用し、productionとは分離したrandomization secretとadmin tokenを登録する</label></li>
+    <li><label><input type="checkbox"> プレースホルダーを許可したdevelopment設定のまま非本番Workerをdeployする</label></li>
+    <li><label><input type="checkbox"> ADMIN_TOKENによる管理API拒否を確認し、両R2 bucketが公開されていないことを確認する</label></li>
+    <li><label><input type="checkbox"> 非本番healthが<code>environment=development</code>、<code>placeholder_assets=true</code>、<code>collection_ready=false</code>でもplaceholder participantを実行できることを確認し、production readinessと混同しない</label></li>
+    <li><label><input type="checkbox"> 実URLのhealth、commit SHA、assignment/seed/asset version、binding先を記録する</label></li>
+    <li><label><input type="checkbox"> 管理画面からplaceholder participantを作成し、pre linkを手動発行できることを確認する</label></li>
+  </ul>
+
+  <h2>6. 敵対的E2E pilot — プレースホルダーで実施</h2>
+  <p>UIの完了表示ではなく、D1/R2/ZIPの実体で成功を判定する。件数照合用clean-path IDと障害注入用IDを分ける。Delayedの実時計pilotは5日以上を要するが、その待機中に他の項目を並行する。</p>
+  <ul>
+    <li><label><input type="checkbox"> clean-path専用IDで、実Chrome・実マイクからpre → Immediate → Delayedの6 URLを中断なしで所定順に完遂する</label></li>
+    <li><label><input type="checkbox"> pre完了前のImmediate、Immediate保存前のDelayed、5日未満のDelayedが拒否されることを確認する</label></li>
+    <li><label><input type="checkbox"> 実時計で5日以上経過した同じactive linkからDelayedを開始し、5日間の運用継続性を1回確認する</label></li>
+    <li><label><input type="checkbox"> fault-injection専用ID群でreload、タブ重複、session期限切れ、link再発行後の旧tabを試し、再開・再提示・supersedeと放棄attemptの期待状態を照合する</label></li>
+    <li><label><input type="checkbox"> fault-injection専用IDで応答送信中とWAV送信中に通信を切り、IndexedDB outboxからcanonical dataが重複なく再送されることを確認する</label></li>
+    <li><label><input type="checkbox"> clean-path完遂者1名についてD1 response 276件、R2 WAV 132件、pending録音0件と、各WAVのbyte count・hashを照合する</label></li>
+    <li><label><input type="checkbox"> 保存WAVを実際に再生し、Picture Namingの語頭欠落、L2刺激と録音開始・応答窓のずれ、無音、channel、sample rate、duration、RMS、clippingを確認する</label></li>
+    <li><label><input type="checkbox"> microphone拒否→再許可、入力device切替または無入力を試し、異常が通常完了としてsilentに扱われないことを確認する</label></li>
+    <li><label><input type="checkbox"> Delayed完了前に参加者ZIPを取得できず、完了後には取得できることを確認する</label></li>
+    <li><label><input type="checkbox"> clean-pathの3 visit分ZIPを参加者端末へ保存し、再保存・展開・134 entries・hashを確認する</label></li>
+    <li><label><input type="checkbox"> 管理者ZIPを取得し、D1/R2とresponses metadataの対応を確認する</label></li>
+  </ul>
+
+  <h2>7. 手動運用rehearsal</h2>
+  <ul>
+    <li><label><input type="checkbox"> participant ID台帳の主担当と代替担当を定め、共有台帳から次の未使用正整数を発行する</label></li>
+    <li><label><input type="checkbox"> IDを再利用せず、accentやcellを見て都合のよいIDを選ばない手順を確認する</label></li>
+    <li><label><input type="checkbox"> pre完了後にImmediate link、Immediate最終応答＋5日以降にDelayed linkを手動発行する手順を通す</label></li>
+    <li><label><input type="checkbox"> 管理summaryでID欠番、accent×cellのassigned/issued/redeemed/started/completedを照合する</label></li>
+    <li><label><input type="checkbox"> pending録音、hash不一致、想定外の5xx、刺激404を発見した場合の収集停止条件と担当者を決める</label></li>
+    <li><label><input type="checkbox"> linkの誤送信・再発行・revokeと、参加者への再開案内をrehearsalする</label></li>
+    <li><label><input type="checkbox"> pilot用IDと本収集IDを混同しない台帳・D1環境分離を確認する</label></li>
+  </ul>
+
+  <h2>8. Conditional asset release — 外部入力後だけ開始</h2>
+  <p>この節は現在のcritical pathではなく、共同研究者が収集用bundleを指定した時点で発火する。現行24語を維持したまま指定してよく、受領前に実装方式を増やさない。trigger時にこの節の<code>disabled</code>を外す。</p>
+  <ul>
+    <li><label><input type="checkbox" checked> 現在は24語、練習語、画像、学習音声、テスト音声、話者IDをプレースホルダーのまま維持する</label></li>
+    <li><label><input type="checkbox" disabled> [外部trigger] 現行24語の維持または置換を含む、収集用slot・練習語・画像・音声・匿名話者IDのbundle指定を受領する</label></li>
+    <li><label><input type="checkbox" disabled> [外部trigger] Immediate/Delayedで同一WAV tokenか、同一話者の別takeかの決定を受領する</label></li>
+    <li><label><input type="checkbox" disabled> [trigger後] 24個のslot数と既存key契約を維持できるか確認する</label></li>
+    <li><label><input type="checkbox" disabled> [trigger後] 同一WAVならasset差し替えだけを行い、別takeならtimepoint key・manifest・testだけを限定変更する</label></li>
+    <li><label><input type="checkbox" disabled> [trigger後] 全期待key、SHA-256、WAV形式・duration・level、画像形式を機械検査する</label></li>
+    <li><label><input type="checkbox" disabled> [trigger後] 指定されたbundleを新しいASSET_VERSIONへ配置し、既存versionのobjectを上書きしない</label></li>
+    <li><label><input type="checkbox" disabled> [trigger後] 割付・話者roster・key契約が変わる場合だけASSIGNMENT_VERSIONを更新する</label></li>
+    <li><label><input type="checkbox" disabled> [trigger後] 全manifestを生成し、placeholder fallbackと欠損R2 keyが0件であることを確認する</label></li>
+  </ul>
+
+  <h2>9. G4 Production releaseとsoft launch — bundle受領後</h2>
+  <ul>
+    <li><label><input type="checkbox"> 本番Worker、D1、RECORDINGS R2、STIMULI R2、secrets、Accessを固定する</label></li>
+    <li><label><input type="checkbox"> production用ASSIGNMENT_VERSION・SEED_ALGORITHM_VERSION・ASSET_VERSIONとcommit SHAを記録する</label></li>
+    <li><label><input type="checkbox"> 仮メディアflagを解除する<code>ALLOW_PLACEHOLDER_ASSETS=false</code>と、実装済み方針に対応する<code>TEST_TOKEN_POLICY</code>を設定する。24語内容の置換とは結び付けない</label></li>
+    <li><label><input type="checkbox"> production deploy後に<code>collection_ready=true</code>を確認し、さらに全R2 keyの実在を別途照合する</label></li>
+    <li><label><input type="checkbox"> 収集用bundleで6 URL、音声内容、録音、D1/R2、参加者ZIP、管理者ZIPを最終確認する</label></li>
+    <li><label><input type="checkbox"> pilot ID・pilot dataが本収集D1/R2へ混入していないことを確認する</label></li>
+    <li><label><input type="checkbox"> 通常収集前に既定のD1/R2復旧手順を1回だけ検証し、独自backup機構は追加しない</label></li>
+    <li><label><input type="checkbox"> 少人数のsoft launchを行い、各参加者後にD1/R2の完全性を確認する</label></li>
+    <li><label><input type="checkbox"> soft launchで停止条件に触れないことを確認してから通常収集へ移行する</label></li>
+  </ul>
+
+  <h2>10. 収集開始前に固定する継続control</h2>
+  <p>ここでは日々の監視そのものではなく、G4前に運用方法・記録先・停止権限を固定する。収集中の実施記録は別logへ残す。</p>
+  <ul>
+    <li><label><input type="checkbox"> RANDOMIZATION_SECRETと各versionをcohort内で固定する手順と記録先を定める</label></li>
+    <li><label><input type="checkbox"> 刺激変更時は既存objectを上書きせず、新しいASSET_VERSIONとpilotを使う手順を定める</label></li>
+    <li><label><input type="checkbox"> manifest生成後の参加者を再割付しないことを運用手順へ固定する</label></li>
+    <li><label><input type="checkbox"> 条件別の割付数と完了数を分けて監視する項目・頻度・記録先を定める</label></li>
+    <li><label><input type="checkbox"> 欠損WAV、D1/R2不一致、広範な5xx時のlink発行停止・調査・再開権限を定める</label></li>
+    <li><label><input type="checkbox"> runtime・割付・保存形式の変更時にscope、version、再pilot範囲を記録する手順を定める</label></li>
+  </ul>
+
+  <h2>11. Scope driftを防ぐ「やらないこと」</h2>
+  <ul>
+    <li><label><input type="checkbox" checked> 24語の確定を現在のコード完成・非本番pilotのblockerにしない</label></li>
+    <li><label><input type="checkbox" checked> Prolific連携、追加participant URL、自動通知を実装しない</label></li>
+    <li><label><input type="checkbox" checked> rehearsalで手動ID運用が成立しないと判明するか、明示的仕様変更があるまで自動ID発番を追加しない</label></li>
+    <li><label><input type="checkbox" checked> 汎用backup CLI、常時派生ZIP、Queue、cron exportを追加しない</label></li>
+    <li><label><input type="checkbox" checked> 商用公開向けのaccount system、dashboard、multi-tenant化を行わない</label></li>
+    <li><label><input type="checkbox" checked> 外部決定前にsame-token方式と別take方式を両方実装しない</label></li>
+    <li><label><input type="checkbox" checked> pilotで観測されていない仮想的問題のために新しい抽象化を増やさない</label></li>
+  </ul>
+
+  <h2>12. 証拠の残し方</h2>
+  <ul>
+    <li><label><input type="checkbox" checked> 未完項目を完了へ変えるcommitに、対応するtest結果、Cloudflare resource名、確認日、pilot IDを記録する規則を採用する</label></li>
+    <li><label><input type="checkbox" checked> checked属性だけを根拠にせず、再現可能なcommandまたはD1/R2照合記録へ結び付ける規則を採用する</label></li>
+    <li><label><input type="checkbox" checked> このHTMLを正本とし、同内容のWord/PDFロードマップを作らない</label></li>
+    <li><label><input type="checkbox"> G2完了時にdeployed URL、resource名、commit、version、確認日を記録する</label></li>
+    <li><label><input type="checkbox"> G3完了時にpilot ID、Chrome/device、実施日時、D1/R2/ZIP照合結果を記録する</label></li>
+    <li><label><input type="checkbox"> G4完了時にproduction bundle、version、soft-launch ID、開始判定を記録する</label></li>
+  </ul>
 </body>
 </html>
