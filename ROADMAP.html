@@ -21,8 +21,8 @@
     <li><label><input type="checkbox"> G4 Main-data-ready: 収集用bundleとproduction環境を固定し、soft launchを通過した</label></li>
   </ul>
   <p><strong>Gate依存:</strong> G2 = G1＋第5節、G3 = G2＋第6–7節、G4 = G3＋trigger済み第8節＋第9–10節。下位gateを飛ばして上位だけをcheckedにしない。</p>
-  <p><strong>現在の単一next action:</strong> ID 2で観測した完了認識とserver正本の乖離を解消するUX版を非本番へ配備し、その同一versionで次の未使用ID 3からPre clean-path pilotをやり直す。ID 1はsynthetic API smoke、ID 2はUX discovery専用として再利用しない。</p>
-  <p><strong>G1 evidence（2026-08-26）:</strong> code baseline <code>800216f</code>に対し<code>npm run verify</code>を実行し、types check、67 tests、2 secrets × ID 1–2160の4,320 design監査、development/production deploy dry-runが成功した。</p>
+  <p><strong>現在の単一next action:</strong> 非本番active version <code>28104a37-b46d-492b-90eb-10ddc9c9d4e7</code>を固定し、発行済みの未使用ID 3で実Chrome・実microphoneのPre clean-path pilotを行う。ID 1はsynthetic API smoke、ID 2はUX discovery専用として再利用しない。</p>
+  <p><strong>G1 evidence（2026-08-26）:</strong> code baseline <code>f433bb1</code>に対し<code>npm run verify</code>を実行し、types check、71 tests、2 secrets × ID 1–2160の4,320 design監査、development/production deploy dry-runが成功した。</p>
 
   <h2>1. 固定済みの実験契約</h2>
   <ul>
@@ -107,11 +107,12 @@
     <li><label><input type="checkbox" checked> ID 1の第1 Pre trialでplaceholder image fallbackと合成WAV uploadを既存participant API経由で実行した</label></li>
     <li><label><input type="checkbox" checked> R2 WAV 960,044 bytesを再取得し、D1のbyte count・SHA-256と一致することを確認した</label></li>
   </ul>
-  <p><strong>G2 evidence（2026-08-26）:</strong> URL <code>https://accentedness-main-experiment.komuro-4121.workers.dev</code>、runtime source commit <code>6057d6d</code>、最新deployment version <code>3b8cef76-b31e-4749-8751-682736f4f1d8</code>（code変更を伴わない非本番ADMIN_TOKEN rotation後）。bindingsはD1 <code>main-experiment</code>、R2 <code>main-experiment-recordings</code> / <code>main-experiment-stimuli</code>。versionは<code>main-v3-placeholder-assets</code> / <code>hmac-sha256+xoshiro128ss-v1</code> / <code>placeholder-v1</code>。8 HTML routesは200、health・認証・secret名・private R2を確認した。ID 1は<code>synthetic-api-smoke</code>専用で、今後のclean-path件数照合へ再利用しない。</p>
+  <p><strong>G2 evidence（2026-08-26）:</strong> URL <code>https://accentedness-main-experiment.komuro-4121.workers.dev</code>、runtime source commit <code>f433bb1</code>、code deployment version <code>10135571-999e-4d23-8d04-36540ef9384f</code>、非本番ADMIN_TOKEN再設定後のactive version <code>28104a37-b46d-492b-90eb-10ddc9c9d4e7</code>。bindingsはD1 <code>main-experiment</code>、R2 <code>main-experiment-recordings</code> / <code>main-experiment-stimuli</code>。versionは<code>main-v3-placeholder-assets</code> / <code>hmac-sha256+xoshiro128ss-v1</code> / <code>placeholder-v1</code>。top・admin・6 participant HTML routesは200、配信assetのUX marker、health・認証・secret名・private R2を確認した。productionは変更していない。ID 1は<code>synthetic-api-smoke</code>専用で、今後のclean-path件数照合へ再利用しない。</p>
 
   <h2>6. 敵対的E2E pilot — プレースホルダーで実施</h2>
   <p>UIの完了表示ではなく、D1/R2/ZIPの実体で成功を判定する。ID 2はUX discovery pilotへ再分類し、修正版のclean-pathは次の未使用連番ID 3から開始して障害注入用IDと分ける。Delayedの実時計pilotは5日以上を要するが、その待機中に他の項目を並行する。</p>
   <p><strong>UX discovery evidence（2026-08-26、ID 2）:</strong> 参加者はPre完了と認識したが、D1正本はvisit <code>started</code>、canonical response / uploaded WAV各1/26、第2練習試行はstimulus onset後・response未保存・recording <code>pending</code>だった。第1WAVは48 kHz、10.037秒、RMS 0.0234、clipping 0で正常であり、内部参照矛盾は0件だった。Immediate招待はserver gateにより未発行のまま維持した。この乖離を、注視点の知覚性、progressの意味、10秒窓、部分保存とvisit完了の区別が不十分なUX defectとして扱う。ID 2を修正前後混在のclean-path証拠へ転用しない。</p>
+  <p><strong>UX修正版pilot準備（2026-08-26、ID 3）:</strong> 未使用連番ID 3を非本番に作成し、training accent <code>japanese</code>、counterbalance cell 1、3 visits、24 item assignments、6 segments、276 manifest trialsを確認した。Pre invitationは1件だけ発行し、未redeemのためsession / attempt / recordingは各0件である。raw tokenは文書・chatへ記録せず、mode <code>0600</code>の一時local handoffだけに保持する。</p>
   <ul>
     <li><label><input type="checkbox"> clean-path専用IDで、実Chrome・実マイクからpre → Immediate → Delayedの6 URLを中断なしで所定順に完遂する</label></li>
     <li><label><input type="checkbox"> pre完了前のImmediate、Immediate保存前のDelayed、5日未満のDelayedが拒否されることを確認する</label></li>
@@ -130,7 +131,8 @@
 
   <h2>7. 手動運用rehearsal</h2>
   <ul>
-    <li><label><input type="checkbox" checked> 非本番ADMIN_TOKENの暫定正本をrepository外の親directory <code>.env</code>へ置き、mode <code>0600</code>、新tokenのHTTP 200、旧tokenのHTTP 403を確認し、一時handoff directoryを削除した。Dropbox同期対象のためproduction恒久正本には流用しない</label></li>
+    <li><label><input type="checkbox" checked> 非本番ADMIN_TOKENの暫定正本をrepository外の親directory <code>.env</code>へ置き、mode <code>0600</code>、<code>source</code>後の実効tokenでHTTP 200を確認した。Dropbox同期対象のためproduction恒久正本には流用しない</label></li>
+    <li><label><input type="checkbox"> <code>.env</code>内で重複している3件の<code>ADMIN_TOKEN</code>定義を、値をchat・logへ出さず実効値1件へ整理し、次回rotation時の取り違えを防ぐ</label></li>
     <li><label><input type="checkbox"> Cloudflare DashboardでWorkers plan名とbilling担当を確認し、311-query実測結果と併記する</label></li>
     <li><label><input type="checkbox"> participant ID台帳の主担当と代替担当を定め、共有台帳から次の未使用正整数を発行する</label></li>
     <li><label><input type="checkbox"> IDを再利用せず、accentやcellを見て都合のよいIDを選ばない手順を確認する</label></li>
