@@ -15,6 +15,7 @@
     {
       "binding": "DB",
       "database_name": "main-experiment",
+      "database_id": "50ae7b13-679d-4d66-ac64-e19e679490b3",
       "migrations_dir": "migrations"
     }
   ],

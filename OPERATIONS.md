@@ -23,7 +23,7 @@ resourceを変更する前に、Wranglerの認証先、Workers Paid、主担当�
 ```bash
 npm install
 npx wrangler whoami
-npx wrangler deployments list
+npx wrangler deployments list --env=""
 npx wrangler d1 list
 npx wrangler r2 bucket list
 ```
@@ -38,11 +38,13 @@ npx wrangler r2 bucket create main-experiment-recordings
 npx wrangler r2 bucket create main-experiment-stimuli
 ```
 
+locationを指定しない場合、D1とR2は作成要求元に近いregionを選ぶAutomaticになります。本pilotはこの公式推奨defaultを使います。location hintは性能上の希望であり、data residency保証ではありません。
+
 D1作成時の`database_id`を`wrangler.jsonc`のtop-level `DB` bindingだけへ追記し、差分とresource名を照合します。migrationを適用してからWorkerをdeployします。
 
 ```bash
-npx wrangler d1 migrations apply DB --remote
-npx wrangler deploy --strict --no-x-provision
+npx wrangler d1 migrations apply DB --remote --env="" --no-x-provision
+npx wrangler deploy --env="" --strict --no-x-provision
 ```
 
 Wranglerの自動resource provisioningは既定で有効です。明示作成後は`--no-x-provision`を付け、binding不足を黙って新規resource作成で補わせません。`--strict`はDashboard等の競合するremote変更がある場合にuploadを止めます。
@@ -50,14 +52,16 @@ Wranglerの自動resource provisioningは既定で有効です。明示作成後
 初回deploy直後はsecret未設定のため管理操作がfail closedになります。その後、独立した長い乱数値を対話入力します。値をcommand引数、文書、chat、shell historyへ書きません。
 
 ```bash
-npx wrangler secret put ADMIN_TOKEN
-npx wrangler secret put RANDOMIZATION_SECRET
-npx wrangler secret list
+npx wrangler secret put ADMIN_TOKEN --env=""
+npx wrangler secret put RANDOMIZATION_SECRET --env=""
+npx wrangler secret list --env=""
 ```
 
-現在のWranglerでは`secret put`自体が新しいWorker versionを作り、直ちにdeployします。単なる設定保存とは扱いません。`RANDOMIZATION_SECRET`は同じassignment versionのpilot中に変更しません。
+現在のWranglerでは`secret put`自体が新しいWorker versionを作り、直ちにdeployします。単なる設定保存とは扱いません。`ADMIN_TOKEN`は24文字以上かつ`[A-Za-z0-9._~-]+`だけで構成します。hexはこの条件を満たします。`RANDOMIZATION_SECRET`も24文字以上とし、同じassignment versionのpilot中に変更しません。
 
-非本番`GET /api/health`の期待値は、`environment=development`、`placeholder_assets=true`、`test_token_policy=undecided`、`test_token_policy_ready=false`、`collection_ready=false`です。これは正常なplaceholder pilot状態です。実際にplaceholder participantを1名作成し、311文batchの完全性とduration、D1/R2 binding、管理token拒否、R2非公開を別途確認します。
+初回deployへsecretを同梱する場合は、Git・Dropbox外の権限`0600`一時fileを`--secrets-file`へ渡し、成功直後にそのfileを削除します。secret値をcommand引数、標準出力、shell historyへ出しません。今回の非本番bootstrapはこの方法を使いました。
+
+非本番`GET /api/health`の期待値は、`environment=development`、`placeholder_assets=true`、`test_token_policy=undecided`、`test_token_policy_ready=false`、`collection_ready=false`です。これは正常なplaceholder pilot状態です。実際にplaceholder participantを1名作成し、311文batchの完全性とduration、D1/R2 binding、管理token拒否、R2非公開を別途確認します。現在の非本番URLは`https://accentedness-main-experiment.komuro-4121.workers.dev`です。
 
 ## 3. productionの初回セットアップ
 

@@ -21,7 +21,7 @@
     <li><label><input type="checkbox"> G4 Main-data-ready: 収集用bundleとproduction環境を固定し、soft launchを通過した</label></li>
   </ul>
   <p><strong>Gate依存:</strong> G2 = G1＋第5節、G3 = G2＋第6–7節、G4 = G3＋trigger済み第8節＋第9–10節。下位gateを飛ばして上位だけをcheckedにしない。</p>
-  <p><strong>現在の単一next action:</strong> 24語は変更せず、使用するCloudflare account、主担当・代替担当、必要runtime capacityを確定する。完了後に第5節の次のunchecked項目を単一next actionとする。</p>
+  <p><strong>現在の単一next action:</strong> 最終G2 deploymentをcommit SHAへ結び付けて記録する。完了後は、24語を変更せず、実Chrome・実microphoneを使うclean-path ID 2のPre pilotを第6節の単一next actionとする。</p>
   <p><strong>G1 evidence（2026-08-26）:</strong> code baseline <code>800216f</code>に対し<code>npm run verify</code>を実行し、types check、67 tests、2 secrets × ID 1–2160の4,320 design監査、development/production deploy dry-runが成功した。</p>
 
   <h2>1. 固定済みの実験契約</h2>
@@ -88,18 +88,21 @@
 
   <h2>5. Cloudflare非本番配備 — 現在の作業</h2>
   <ul>
-    <li><label><input type="checkbox" checked> 2026-08-26のread-only inventoryで対象Worker 2件、D1 2件、R2 4件のexact-name collisionが0件であることを確認した。target account・plan・担当者は未確定</label></li>
-    <li><label><input type="checkbox"> 使用するCloudflare account、主担当、代替担当を確定する</label></li>
-    <li><label><input type="checkbox"> 現行実装に必要なWorkers PaidをDashboardで確認する</label></li>
-    <li><label><input type="checkbox"> 非本番用Worker、D1、RECORDINGS R2、STIMULI R2を作成する</label></li>
-    <li><label><input type="checkbox"> D1 migrationを適用し、productionとは分離したrandomization secretとadmin tokenを登録する</label></li>
-    <li><label><input type="checkbox"> プレースホルダーを許可したdevelopment設定のまま非本番Workerをdeployする</label></li>
-    <li><label><input type="checkbox"> ADMIN_TOKENによる管理API拒否を確認し、両R2 bucketが公開されていないことを確認する</label></li>
-    <li><label><input type="checkbox"> 非本番healthが<code>environment=development</code>、<code>placeholder_assets=true</code>、<code>collection_ready=false</code>でもplaceholder participantを実行できることを確認し、production readinessと混同しない</label></li>
+    <li><label><input type="checkbox" checked> 2026-08-26の作成前read-only inventoryで対象Worker 2件、D1 2件、R2 4件のexact-name collisionが0件であることを確認した</label></li>
+    <li><label><input type="checkbox" checked> 続行指示を受け、現在の単一OAuth accountを非本番targetとして確定した。production account/resourceは対象外</label></li>
+    <li><label><input type="checkbox" checked> 311-query処理を実URLで成功させ、現行実装に必要なPaid相当capacityを実測した。plan名のDashboard確認は運用handoffまでに別途行う</label></li>
+    <li><label><input type="checkbox" checked> 非本番用Worker、D1、RECORDINGS R2、STIMULI R2を明示作成した</label></li>
+    <li><label><input type="checkbox" checked> D1 migration 0001–0005を適用し、productionとは分離したrandomization secretとadmin tokenを登録した</label></li>
+    <li><label><input type="checkbox" checked> <code>--env="" --strict --no-x-provision</code>で、プレースホルダーを許可したdevelopment設定の非本番Workerをdeployした</label></li>
+    <li><label><input type="checkbox" checked> ADMIN_TOKENの401/403/200境界を確認し、両R2 bucketのr2.dev無効・custom domain 0件を確認した</label></li>
+    <li><label><input type="checkbox" checked> 非本番healthが<code>environment=development</code>、<code>placeholder_assets=true</code>、<code>collection_ready=false</code>の正常なplaceholder pilot状態であることを確認した</label></li>
     <li><label><input type="checkbox"> 実URLのhealth、commit SHA、assignment/seed/asset version、binding先を記録する</label></li>
-    <li><label><input type="checkbox"> 管理画面からplaceholder participantを作成し、pre linkを手動発行できることを確認する</label></li>
-    <li><label><input type="checkbox"> participant作成の311-statement atomic D1 batchが部分状態0で完了し、D1 batch durationが30秒未満であることを実測する</label></li>
+    <li><label><input type="checkbox" checked> synthetic-api-smoke専用ID 1を作成し、pre invitation発行・redeem・第1 trial開始後にinviteをrevokeしてsessionをsupersedeした</label></li>
+    <li><label><input type="checkbox" checked> participant作成の311-statement atomic D1 batchがHTTP 201・0.307秒・部分状態0で完了し、1/3/24/6/276/1件を照合した</label></li>
+    <li><label><input type="checkbox" checked> ID 1の第1 Pre trialでplaceholder image fallbackと合成WAV uploadを既存participant API経由で実行した</label></li>
+    <li><label><input type="checkbox" checked> R2 WAV 960,044 bytesを再取得し、D1のbyte count・SHA-256と一致することを確認した</label></li>
   </ul>
+  <p><strong>暫定G2 evidence（2026-08-26）:</strong> URL <code>https://accentedness-main-experiment.komuro-4121.workers.dev</code>。bootstrap source baseline <code>e8ab5cf</code>。8 HTML routesは200、health・認証・secret名・private R2を確認した。ID 1は<code>synthetic-api-smoke</code>専用で、今後のclean-path件数照合へ再利用しない。最終deployment commit/versionを次のcommit後に追記する。</p>
 
   <h2>6. 敵対的E2E pilot — プレースホルダーで実施</h2>
   <p>UIの完了表示ではなく、D1/R2/ZIPの実体で成功を判定する。件数照合用clean-path IDと障害注入用IDを分ける。Delayedの実時計pilotは5日以上を要するが、その待機中に他の項目を並行する。</p>
