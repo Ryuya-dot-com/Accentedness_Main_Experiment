@@ -26,9 +26,9 @@ Barcroft and Sommers (2005) の Experiment 2 を基礎に、学習時アクセ�
 | delayed | Picture Naming | `/delayed-picture-naming/` |
 | delayed | L2-to-L1 | `/delayed-l2-to-l1/` |
 
-招待tokenはURLごとではなくvisitごとの3本です。pre、immediate、delayedのリンクを担当者が順に手動配布し、同一visit内の課題間では同じsessionを引き継ぎます。サーバーが未完了trialのordinalと未送信録音を検査するため、後続URLを直接開いても課題を飛ばせません。preにはL2-to-L1を含めません。
+招待tokenはURLごとではなくvisitごとの3本です。pre、immediate、delayedのリンクを担当者が順に手動配布し、同一visit内の課題間では同じsessionを引き継ぎます。pre完了からimmediate開始までに上限・下限は設けず、実際の間隔を保存します。delayedだけは直後テスト完了から7日後を開始可能時刻とし、それ以後は期限切れにしません。招待リンク自体にも年齢による自動失効はなく、visit完了、担当者によるrevoke、または再発行まで有効です。サーバーが未完了trialのordinalと未送信録音を検査するため、後続URLを直接開いても課題を飛ばせません。preにはL2-to-L1を含めません。
 
-Picture Matching は実施しません。テストでは発話をWAVとして非公開R2へ保存します。各phaseの全録音が揃うとQueueがZIPを自動生成して別の非公開R2へ保存し、`/admin/exports`から管理者だけがダウンロードできます。参加者端末への自動保存は行いません。手動リンク発行・遅延対象確認・割付状況確認は内部ページ `/admin/` から行えます。
+Picture Matching は実施しません。行動データ・時刻・QCはD1、発話WAVは非公開R2を一次保存先とします。各phaseの全録音が揃うとQueueがZIPを自動生成して別の非公開R2へ保存し、`/admin/exports`から管理者だけがダウンロードできます。参加者browserのIndexedDBは通信障害からの再送に必要な一時outboxであり、server保存確認後に削除します。raw音声を参加者端末へ恒久保存しません。研究者管理端末への独立コピーは、収集中のWorkerから同期的に二重書きせず、D1/R2の検証可能な定期backupとして取得します。手動リンク発行・遅延対象確認・割付状況確認は内部ページ `/admin/` から行えます。
 
 ## 設計の要点
 
@@ -42,6 +42,7 @@ Picture Matching は実施しません。テストでは発話をWAVとして非
 - L2-to-L1: 各時点24語、3アクセント×8語、各アクセント内No/High各4語
 - L2音声: 各アクセント1名の固定女性話者を練習・本番で使用する。この決定により、テストアクセントと話者個人は完全に交絡する
 - pre: Picture Naming練習2＋本番24のみ。正答語、音声、綴り、feedbackは提示しない
+- pre→learning: 順序だけを強制し、実施間隔の上限・下限による受付拒否や自動除外をしない
 - 遅延: 直後テストの行動完了時刻＋7日を目標時刻とし、それ以降は期限切れなし
 - 再現性: HMAC-SHA-256で参加者固有root seedを作り、用途別domain seedから順序を生成
 
@@ -80,6 +81,8 @@ npm run verify
 - [STIMULUS_REPLACEMENT.md](./STIMULUS_REPLACEMENT.md): 本番刺激への置換と音響QA
 - [DATA_DICTIONARY.md](./DATA_DICTIONARY.md): D1/R2のデータ定義と分析用フラグ
 - [ROADMAP.html](./ROADMAP.html): version管理する内部向けチェックリスト（Word/PDF版は作成しない）
+
+研究者管理端末へD1/R2の検証可能なlocal backupを作るCLIも含まれます。これは参加者browserへの保存や収集要求内の同期二重書きではありません。D1 full exportにはquiet windowが必要なため、認証・暗号化保存先・実行・restoreの手順は [OPERATIONS.md](./OPERATIONS.md#11-セキュリティとバックアップ) に従ってください。
 
 ## 出典
 

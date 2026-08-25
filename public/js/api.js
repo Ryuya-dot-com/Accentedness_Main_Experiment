@@ -34,7 +34,11 @@ function clearInvitationFragment() {
 }
 
 export function shouldClearInvitationFragment(error) {
-  return error instanceof ApiClientError && error.status >= 400 && error.status < 500;
+  return error instanceof ApiClientError
+    && error.status >= 400
+    && error.status < 500
+    && !new Set([408, 425, 429]).has(error.status)
+    && !new Set(["invitation_redeem_conflict", "visit_not_available"]).has(error.code);
 }
 
 async function parseApiResponse(response) {

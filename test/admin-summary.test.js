@@ -1,4 +1,4 @@
-import { exports } from "cloudflare:workers";
+import { env, exports } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
 const ORIGIN = "https://experiment.test";
@@ -13,6 +13,46 @@ async function adminRequest(path, { method = "GET", body = null } = {}) {
     body: body === null ? null : JSON.stringify(body),
   }));
   return { response, json: await response.json() };
+}
+
+async function participantRequest(path, { method = "GET", token = null, body = null } = {}) {
+  const headers = new Headers();
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  if (body !== null) headers.set("Content-Type", "application/json");
+  const response = await exports.default.fetch(new Request(`${ORIGIN}${path}`, {
+    method,
+    headers,
+    body: body === null ? null : JSON.stringify(body),
+  }));
+  return { response, json: await response.json() };
+}
+
+function invitationToken(invitationUrl) {
+  return new URLSearchParams(new URL(invitationUrl).hash.slice(1)).get("t");
+}
+
+async function redeemInvitation(invitationUrl, expectedVisitType) {
+  const redeemed = await participantRequest("/api/invitations/redeem", {
+    method: "POST",
+    body: {
+      token: invitationToken(invitationUrl),
+      client_instance_id: crypto.randomUUID(),
+      expected_visit_type: expectedVisitType,
+    },
+  });
+  expect(redeemed.response.status).toBe(200);
+  return redeemed;
+}
+
+async function redeemAndStartFirstTrial(invitationUrl, expectedVisitType) {
+  const redeemed = await redeemInvitation(invitationUrl, expectedVisitType);
+  const firstTrial = redeemed.json.manifest.find((trial) => trial.current);
+  const started = await participantRequest(`/api/trials/${firstTrial.trial_id}/start`, {
+    method: "POST",
+    token: redeemed.json.session_token,
+    body: { start_key: crypto.randomUUID(), client_started_perf_ms: 1 },
+  });
+  expect(started.response.status).toBe(201);
 }
 
 describe("admin allocation monitoring", () => {
@@ -45,5 +85,127 @@ describe("admin allocation monitoring", () => {
     );
     expect(totalsByAccent).toEqual({ english: 0, chinese: 2, japanese: 1 });
     expect(summary.json.assignment_flow.every((row) => Number(row.pre_completed_count) === 0)).toBe(true);
+  });
+
+  it("separates invitation, redemption, first trial, behavioral completion, and finalization", async () => {
+    const created = await adminRequest("/api/admin/participants", {
+      method: "POST",
+      body: { participant_id: 41 },
+    });
+    expect(created.response.status).toBe(201);
+
+    // IDs separated by 72 share training accent and counterbalance cell. Build
+    // a staggered cohort so adjacent funnel stages cannot accidentally collapse.
+    const assignedOnly = await adminRequest("/api/admin/participants", {
+      method: "POST",
+      body: { participant_id: 113, issue_pre_invitation: false },
+    });
+    const issuedOnly = await adminRequest("/api/admin/participants", {
+      method: "POST",
+      body: { participant_id: 185 },
+    });
+    const redeemedOnly = await adminRequest("/api/admin/participants", {
+      method: "POST",
+      body: { participant_id: 257 },
+    });
+    const firstTrialOnly = await adminRequest("/api/admin/participants", {
+      method: "POST",
+      body: { participant_id: 329 },
+    });
+    for (const cohort of [assignedOnly, issuedOnly, redeemedOnly, firstTrialOnly]) {
+      expect(cohort.response.status).toBe(201);
+      expect(cohort.json.participant.training_accent).toBe(created.json.participant.training_accent);
+      expect(cohort.json.participant.counterbalance_cell)
+        .toBe(created.json.participant.counterbalance_cell);
+    }
+    expect(assignedOnly.json.invitation).toBeNull();
+    await redeemInvitation(redeemedOnly.json.invitation.invitation_url, "pre");
+    await redeemAndStartFirstTrial(firstTrialOnly.json.invitation.invitation_url, "pre");
+
+    await redeemAndStartFirstTrial(created.json.invitation.invitation_url, "pre");
+    const preFinishedAt = Date.now();
+    await env.DB.prepare(`
+      UPDATE visits
+      SET status = 'completed', behavioral_completed_at_ms = ?, finalized_at_ms = ?, updated_at_ms = ?
+      WHERE visit_uuid = ?
+    `).bind(
+      preFinishedAt,
+      preFinishedAt + 1,
+      preFinishedAt + 1,
+      created.json.participant.pre_visit_id,
+    ).run();
+
+    const immediateInvitation = await adminRequest(
+      `/api/admin/visits/${created.json.participant.immediate_visit_id}/invitations`,
+      { method: "POST", body: {} },
+    );
+    expect(immediateInvitation.response.status).toBe(201);
+    await redeemAndStartFirstTrial(immediateInvitation.json.invitation.invitation_url, "immediate");
+    const immediateFinishedAt = preFinishedAt + 2;
+    await env.DB.prepare(`
+      UPDATE visits
+      SET status = 'completed', behavioral_completed_at_ms = ?, finalized_at_ms = ?, updated_at_ms = ?
+      WHERE visit_uuid = ?
+    `).bind(
+      immediateFinishedAt,
+      immediateFinishedAt + 1,
+      immediateFinishedAt + 1,
+      created.json.participant.immediate_visit_id,
+    ).run();
+    const delayedAvailableAt = Date.now() - 1;
+    await env.DB.prepare(`
+      UPDATE visits SET status = 'scheduled', target_at_ms = ?, available_at_ms = ?, updated_at_ms = ?
+      WHERE visit_uuid = ?
+    `).bind(
+      delayedAvailableAt,
+      delayedAvailableAt,
+      Date.now(),
+      created.json.participant.delayed_visit_id,
+    ).run();
+
+    const delayedInvitation = await adminRequest(
+      `/api/admin/visits/${created.json.participant.delayed_visit_id}/invitations`,
+      { method: "POST", body: {} },
+    );
+    expect(delayedInvitation.response.status).toBe(201);
+    await redeemAndStartFirstTrial(delayedInvitation.json.invitation.invitation_url, "delayed");
+    await env.DB.prepare(`
+      UPDATE visits SET status = 'awaiting_uploads', behavioral_completed_at_ms = ?, updated_at_ms = ?
+      WHERE visit_uuid = ?
+    `).bind(
+      immediateFinishedAt + 2,
+      immediateFinishedAt + 2,
+      created.json.participant.delayed_visit_id,
+    ).run();
+
+    const summary = await adminRequest("/api/admin/summary");
+    expect(summary.response.status).toBe(200);
+    const flow = summary.json.assignment_flow.find(
+      (row) => row.training_accent === created.json.participant.training_accent
+        && Number(row.counterbalance_cell) === Number(created.json.participant.counterbalance_cell),
+    );
+    expect(flow).toMatchObject({
+      assigned_count: 5,
+      pre_issued_count: 4,
+      pre_redeemed_count: 3,
+      pre_first_trial_count: 2,
+      pre_behavioral_completed_count: 1,
+      pre_finalized_count: 1,
+      pre_completed_count: 1,
+      immediate_issued_count: 1,
+      immediate_redeemed_count: 1,
+      immediate_first_trial_count: 1,
+      immediate_behavioral_completed_count: 1,
+      immediate_finalized_count: 1,
+      immediate_started_count: 1,
+      immediate_completed_count: 1,
+      delayed_issued_count: 1,
+      delayed_redeemed_count: 1,
+      delayed_first_trial_count: 1,
+      delayed_behavioral_completed_count: 1,
+      delayed_finalized_count: 0,
+      delayed_started_count: 1,
+      delayed_completed_count: 0,
+    });
   });
 });

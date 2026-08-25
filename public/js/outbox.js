@@ -131,6 +131,41 @@ async function queuedTrial(attemptId) {
   return withStore(OUTBOX_STORE, "readonly", (store) => store.get(attemptId));
 }
 
+export function isQueuedTrialFullyAcknowledged(record) {
+  return Boolean(record?.responseAck && record?.recordingAck);
+}
+
+export function fullyAcknowledgedAttemptIds(records) {
+  return records
+    .filter(isQueuedTrialFullyAcknowledged)
+    .map((record) => record.attemptId);
+}
+
+export async function purgeFullyAcknowledgedTrials() {
+  const db = await openDatabase();
+  try {
+    return await new Promise((resolve, reject) => {
+      const transaction = db.transaction(OUTBOX_STORE, "readwrite");
+      const store = transaction.objectStore(OUTBOX_STORE);
+      const request = store.getAll();
+      let removedCount = 0;
+      request.onsuccess = () => {
+        const attemptIds = fullyAcknowledgedAttemptIds(request.result);
+        removedCount = attemptIds.length;
+        for (const attemptId of attemptIds) store.delete(attemptId);
+      };
+      request.onerror = () => reject(request.error);
+      transaction.oncomplete = () => resolve(removedCount);
+      transaction.onerror = () => reject(transaction.error);
+      transaction.onabort = () => reject(
+        transaction.error ?? new Error("IndexedDB transaction aborted"),
+      );
+    });
+  } finally {
+    db.close();
+  }
+}
+
 export async function hasQueuedRecording(visitId, attemptId) {
   const record = await queuedTrial(attemptId);
   return Boolean(
@@ -152,7 +187,7 @@ export async function acknowledgeTrialResponse(api, attemptId) {
     record.responseAck = true;
     await updateQueued(record);
   }
-  if (record.responseAck && record.recordingAck) await deleteQueued(record.attemptId);
+  if (isQueuedTrialFullyAcknowledged(record)) await deleteQueued(record.attemptId);
   return record;
 }
 
@@ -169,7 +204,7 @@ export async function uploadQueuedRecording(api, attemptId) {
   current.recordingAck = true;
   await updateQueued(current);
   const finished = await queuedTrial(attemptId);
-  if (finished?.responseAck && finished.recordingAck) await deleteQueued(attemptId);
+  if (isQueuedTrialFullyAcknowledged(finished)) await deleteQueued(attemptId);
   return finished;
 }
 
@@ -203,6 +238,10 @@ export async function markTrialStimulusShown(trialId) {
 }
 
 export async function flushOutbox(api, visitId, onState = () => {}) {
+  // Scan the whole outbox, rather than only this visit. A crash after the two
+  // remote acknowledgements but before delete must not leave a raw WAV behind
+  // merely because the participant's next link belongs to another visit.
+  await purgeFullyAcknowledgedTrials();
   const records = await listQueuedTrials(visitId);
   for (const record of records) {
     onState({ state: "saving", record });

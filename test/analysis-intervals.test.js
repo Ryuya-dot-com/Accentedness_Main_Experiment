@@ -25,14 +25,39 @@ async function intervalRow(participantId) {
 }
 
 describe("canonical analysis intervals", () => {
+  it("preserves the original analysis view column prefix for migration compatibility", async () => {
+    const columns = await env.DB.prepare("PRAGMA table_info(analysis_intervals)").all();
+    expect(columns.results.map((column) => column.name).slice(0, 13)).toEqual([
+      "participant_uuid",
+      "numeric_id",
+      "pre_visit_uuid",
+      "immediate_visit_uuid",
+      "delayed_visit_uuid",
+      "pre_behavioral_completed_at_ms",
+      "immediate_learning_started_at_ms",
+      "pre_to_learning_interval_ms",
+      "immediate_behavioral_completed_at_ms",
+      "delayed_picture_naming_started_at_ms",
+      "retention_interval_ms",
+      "delayed_target_at_ms",
+      "target_deviation_ms",
+    ]);
+  });
+
   it("uses behavioral endpoints and ignores invitation-redeem and finalization timing", async () => {
     const participantId = 700_001;
     const participant = await createParticipant(participantId);
     const preCompletedAt = 1_000_000;
     const learningStartedAt = 1_007_000;
+    const learningCompletedAt = 1_500_000;
+    const immediatePictureNamingStartedAt = learningCompletedAt + 1_234;
+    const immediatePictureNamingCompletedAt = 1_800_000;
+    const immediateL2StartedAt = immediatePictureNamingCompletedAt + 2_345;
     const immediateCompletedAt = 2_000_000;
     const delayedTargetAt = immediateCompletedAt + 7 * DAY_MS;
     const delayedPictureNamingStartedAt = delayedTargetAt + 12_345;
+    const delayedPictureNamingCompletedAt = delayedPictureNamingStartedAt + 50_000;
+    const delayedL2StartedAt = delayedPictureNamingCompletedAt + 6_789;
 
     await env.DB.batch([
       env.DB.prepare(`
@@ -51,13 +76,33 @@ describe("canonical analysis intervals", () => {
         WHERE visit_uuid = ?
       `).bind(delayedTargetAt + 1_000, delayedTargetAt, delayedTargetAt + 99_999, participant.delayed_visit_id),
       env.DB.prepare(`
-        UPDATE segments SET started_at_ms = ?
+        UPDATE segments SET started_at_ms = ?, completed_at_ms = ?
         WHERE visit_uuid = ? AND segment = 'learning'
-      `).bind(learningStartedAt, participant.immediate_visit_id),
+      `).bind(learningStartedAt, learningCompletedAt, participant.immediate_visit_id),
+      env.DB.prepare(`
+        UPDATE segments SET started_at_ms = ?, completed_at_ms = ?
+        WHERE visit_uuid = ? AND segment = 'picture_naming'
+      `).bind(
+        immediatePictureNamingStartedAt,
+        immediatePictureNamingCompletedAt,
+        participant.immediate_visit_id,
+      ),
       env.DB.prepare(`
         UPDATE segments SET started_at_ms = ?
+        WHERE visit_uuid = ? AND segment = 'l2_to_l1'
+      `).bind(immediateL2StartedAt, participant.immediate_visit_id),
+      env.DB.prepare(`
+        UPDATE segments SET started_at_ms = ?, completed_at_ms = ?
         WHERE visit_uuid = ? AND segment = 'picture_naming'
-      `).bind(delayedPictureNamingStartedAt, participant.delayed_visit_id),
+      `).bind(
+        delayedPictureNamingStartedAt,
+        delayedPictureNamingCompletedAt,
+        participant.delayed_visit_id,
+      ),
+      env.DB.prepare(`
+        UPDATE segments SET started_at_ms = ?
+        WHERE visit_uuid = ? AND segment = 'l2_to_l1'
+      `).bind(delayedL2StartedAt, participant.delayed_visit_id),
       env.DB.prepare(`
         UPDATE invitations SET first_redeemed_at_ms = ?, last_redeemed_at_ms = ?
         WHERE visit_uuid = ?
@@ -68,11 +113,20 @@ describe("canonical analysis intervals", () => {
       pre_behavioral_completed_at_ms: preCompletedAt,
       immediate_learning_started_at_ms: learningStartedAt,
       pre_to_learning_interval_ms: 7_000,
+      immediate_learning_completed_at_ms: learningCompletedAt,
+      immediate_picture_naming_started_at_ms: immediatePictureNamingStartedAt,
+      learning_to_immediate_pn_interval_ms: 1_234,
+      immediate_picture_naming_completed_at_ms: immediatePictureNamingCompletedAt,
+      immediate_l2_to_l1_started_at_ms: immediateL2StartedAt,
+      immediate_pn_to_l2_interval_ms: 2_345,
       immediate_behavioral_completed_at_ms: immediateCompletedAt,
       delayed_picture_naming_started_at_ms: delayedPictureNamingStartedAt,
       retention_interval_ms: 7 * DAY_MS + 12_345,
       delayed_target_at_ms: delayedTargetAt,
       target_deviation_ms: 12_345,
+      delayed_picture_naming_completed_at_ms: delayedPictureNamingCompletedAt,
+      delayed_l2_to_l1_started_at_ms: delayedL2StartedAt,
+      delayed_pn_to_l2_interval_ms: 6_789,
     };
     expect(await intervalRow(participantId)).toMatchObject(expected);
 
@@ -117,8 +171,11 @@ describe("canonical analysis intervals", () => {
 
     expect(await intervalRow(participantId)).toMatchObject({
       pre_to_learning_interval_ms: null,
+      learning_to_immediate_pn_interval_ms: null,
+      immediate_pn_to_l2_interval_ms: null,
       retention_interval_ms: null,
       target_deviation_ms: null,
+      delayed_pn_to_l2_interval_ms: null,
     });
   });
 });

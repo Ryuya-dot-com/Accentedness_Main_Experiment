@@ -33,12 +33,13 @@
 
       <section>
         <h2>発行結果</h2>
-        <p>表示されたURLを該当参加者だけに手動配布してください。再発行すると以前のリンクと実行中sessionは無効になります。</p>
+        <p>表示されたURLを該当参加者だけに手動配布してください。リンクに経過時間による自動失効はありません。再発行すると以前のリンクと実行中sessionは無効になります。</p>
         <textarea id="invitation-url" rows="4" cols="100" readonly aria-label="発行した招待URL"></textarea>
       </section>
 
       <section>
         <h2>遅延テスト対象</h2>
+        <p>直後テストの行動完了から7日後に受付を開始し、それ以後の上限期限は設けません。</p>
         <button id="load-due" type="button">受付可能な参加者を取得</button>
         <table border="1" cellpadding="6">
           <thead><tr><th>参加者ID</th><th>目標時刻</th><th>未送信録音</th><th>状態</th><th>操作</th></tr></thead>

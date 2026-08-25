@@ -4,6 +4,10 @@ import {
   microphoneCheckStorageKey,
   redirectToCanonical,
 } from "../public/js/flow-guards.js";
+import {
+  fullyAcknowledgedAttemptIds,
+  isQueuedTrialFullyAcknowledged,
+} from "../public/js/outbox.js";
 import { ExperimentRunner } from "../public/js/runner.js";
 import { participantErrorMessage } from "../public/js/ui.js";
 
@@ -31,12 +35,64 @@ function runnerFor(state, apiOverrides = {}) {
 }
 
 describe("frontend reliability guards", () => {
+  it("purges a queued trial only after both remote acknowledgements are durable", () => {
+    expect(isQueuedTrialFullyAcknowledged({ responseAck: true, recordingAck: true })).toBe(true);
+    expect(isQueuedTrialFullyAcknowledged({ responseAck: true, recordingAck: false })).toBe(false);
+    expect(isQueuedTrialFullyAcknowledged({ responseAck: false, recordingAck: true })).toBe(false);
+    expect(isQueuedTrialFullyAcknowledged(null)).toBe(false);
+  });
+
+  it("selects fully acknowledged residue across visits without deleting partial acknowledgements", () => {
+    const records = [
+      {
+        attemptId: "pre-complete",
+        visitId: "pre-visit",
+        responseAck: true,
+        recordingAck: true,
+      },
+      {
+        attemptId: "immediate-response-only",
+        visitId: "immediate-visit",
+        responseAck: true,
+        recordingAck: false,
+      },
+      {
+        attemptId: "delayed-recording-only",
+        visitId: "delayed-visit",
+        responseAck: false,
+        recordingAck: true,
+      },
+      {
+        attemptId: "delayed-complete",
+        visitId: "delayed-visit",
+        responseAck: true,
+        recordingAck: true,
+      },
+    ];
+
+    expect(fullyAcknowledgedAttemptIds(records)).toEqual([
+      "pre-complete",
+      "delayed-complete",
+    ]);
+  });
+
   it("removes a raw invitation fragment after deterministic client errors but keeps it for retryable server failures", () => {
     expect(shouldClearInvitationFragment(
       new ApiClientError(409, "wrong_visit_route", "wrong route"),
     )).toBe(true);
     expect(shouldClearInvitationFragment(
       new ApiClientError(503, "production_collection_blocked", "temporarily blocked"),
+    )).toBe(false);
+    expect(shouldClearInvitationFragment(
+      new ApiClientError(409, "invitation_redeem_conflict", "retry redemption"),
+    )).toBe(false);
+    for (const status of [408, 425, 429]) {
+      expect(shouldClearInvitationFragment(
+        new ApiClientError(status, "temporarily_unavailable", "retry redemption"),
+      )).toBe(false);
+    }
+    expect(shouldClearInvitationFragment(
+      new ApiClientError(403, "visit_not_available", "open after target time"),
     )).toBe(false);
   });
 
@@ -49,6 +105,10 @@ describe("frontend reliability guards", () => {
       code: "invalid_response_payload",
       message: "visual_onset_perf_ms is outside the accepted range",
     })).toContain("整合性");
+    expect(participantErrorMessage({
+      code: "session_expired",
+      message: "The session expired",
+    })).toContain("参加期限ではありません");
   });
 
   it("stops monitoring and closes audio before a post-start canonical redirect", () => {

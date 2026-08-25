@@ -277,13 +277,48 @@ export async function adminSummary(request, env) {
       FROM participants
     `).first(),
     env.DB.prepare(`
+      WITH invitation_progress AS (
+        SELECT
+          visit_uuid,
+          1 AS issued,
+          MAX(CASE WHEN first_redeemed_at_ms IS NOT NULL THEN 1 ELSE 0 END) AS redeemed
+        FROM invitations
+        GROUP BY visit_uuid
+      ), trial_progress AS (
+        SELECT tm.visit_uuid, 1 AS first_trial
+        FROM trial_attempts ta
+        JOIN trial_manifest tm ON tm.trial_uuid = ta.trial_uuid
+        GROUP BY tm.visit_uuid
+      )
       SELECT
         p.training_accent,
         p.counterbalance_cell,
         COUNT(*) AS assigned_count,
+        SUM(COALESCE(pre_invitation.issued, 0)) AS pre_issued_count,
+        SUM(COALESCE(pre_invitation.redeemed, 0)) AS pre_redeemed_count,
+        SUM(COALESCE(pre_trial.first_trial, 0)) AS pre_first_trial_count,
+        SUM(CASE WHEN pre.behavioral_completed_at_ms IS NOT NULL THEN 1 ELSE 0 END)
+          AS pre_behavioral_completed_count,
+        SUM(CASE WHEN pre.finalized_at_ms IS NOT NULL THEN 1 ELSE 0 END) AS pre_finalized_count,
+        -- Compatibility aliases. New consumers should use the explicit funnel fields above.
         SUM(CASE WHEN pre.status = 'completed' THEN 1 ELSE 0 END) AS pre_completed_count,
+        SUM(COALESCE(immediate_invitation.issued, 0)) AS immediate_issued_count,
+        SUM(COALESCE(immediate_invitation.redeemed, 0)) AS immediate_redeemed_count,
+        SUM(COALESCE(immediate_trial.first_trial, 0)) AS immediate_first_trial_count,
+        SUM(CASE WHEN immediate.behavioral_completed_at_ms IS NOT NULL THEN 1 ELSE 0 END)
+          AS immediate_behavioral_completed_count,
+        SUM(CASE WHEN immediate.finalized_at_ms IS NOT NULL THEN 1 ELSE 0 END)
+          AS immediate_finalized_count,
+        -- first_started_at_ms is set on invitation redemption; preserve the legacy meaning.
         SUM(CASE WHEN immediate.first_started_at_ms IS NOT NULL THEN 1 ELSE 0 END) AS immediate_started_count,
         SUM(CASE WHEN immediate.status = 'completed' THEN 1 ELSE 0 END) AS immediate_completed_count,
+        SUM(COALESCE(delayed_invitation.issued, 0)) AS delayed_issued_count,
+        SUM(COALESCE(delayed_invitation.redeemed, 0)) AS delayed_redeemed_count,
+        SUM(COALESCE(delayed_trial.first_trial, 0)) AS delayed_first_trial_count,
+        SUM(CASE WHEN delayed.behavioral_completed_at_ms IS NOT NULL THEN 1 ELSE 0 END)
+          AS delayed_behavioral_completed_count,
+        SUM(CASE WHEN delayed.finalized_at_ms IS NOT NULL THEN 1 ELSE 0 END)
+          AS delayed_finalized_count,
         SUM(CASE WHEN delayed.first_started_at_ms IS NOT NULL THEN 1 ELSE 0 END) AS delayed_started_count,
         SUM(CASE WHEN delayed.status = 'completed' THEN 1 ELSE 0 END) AS delayed_completed_count
       FROM participants p
@@ -293,6 +328,12 @@ export async function adminSummary(request, env) {
         ON immediate.participant_uuid = p.participant_uuid AND immediate.visit_type = 'immediate'
       JOIN visits delayed
         ON delayed.participant_uuid = p.participant_uuid AND delayed.visit_type = 'delayed'
+      LEFT JOIN invitation_progress pre_invitation ON pre_invitation.visit_uuid = pre.visit_uuid
+      LEFT JOIN invitation_progress immediate_invitation ON immediate_invitation.visit_uuid = immediate.visit_uuid
+      LEFT JOIN invitation_progress delayed_invitation ON delayed_invitation.visit_uuid = delayed.visit_uuid
+      LEFT JOIN trial_progress pre_trial ON pre_trial.visit_uuid = pre.visit_uuid
+      LEFT JOIN trial_progress immediate_trial ON immediate_trial.visit_uuid = immediate.visit_uuid
+      LEFT JOIN trial_progress delayed_trial ON delayed_trial.visit_uuid = delayed.visit_uuid
       GROUP BY p.training_accent, p.counterbalance_cell
       ORDER BY p.training_accent, p.counterbalance_cell
     `).all(),

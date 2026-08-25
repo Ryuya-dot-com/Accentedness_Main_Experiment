@@ -13,8 +13,10 @@
   <p><label><input type="checkbox"> 実際の24語、画像、学習音声、テスト音声を凍結した</label></p>
   <p><label><input type="checkbox"> 主要estimand、主要時点、採点規準、除外規準、欠測処理、解析モデルを事前登録した</label></p>
   <p><label><input type="checkbox"> 対象効果と脱落を考慮した標本数根拠を確定した</label></p>
-  <p><label><input type="checkbox"> pretesting効果を含む設計であること、pre完了→学習開始の許容間隔、pre後離脱の扱いを事前登録した</label></p>
+  <p><label><input type="checkbox"> pretesting効果を含む設計であること、pre→learning実間隔の分布、pre後離脱、間隔に関する感度分析を事前登録した</label></p>
+  <p><label><input type="checkbox"> data-lock／解析cutoff、時点別のrisk set、統一したreminder・連絡回数、遅延回答の主要・副次estimandを事前登録した</label></p>
   <p><label><input type="checkbox"> 倫理審査、同意文書、音声データの保管期間・アクセス権・削除手順を確定した</label></p>
+  <p><label><input type="checkbox"> 無期限active bearer linkを許容するか、参加資格は無期限のままcredentialだけを期限付き再発行にするかをrisk評価し、漏えい・離脱・撤回時のrevoke手順を確定した</label></p>
   <p><label><input type="checkbox"> 本番相当の端末・ブラウザ・マイクで、直後から遅延までの通しpilotと回収データ照合を完了した</label></p>
   <p><label><input type="checkbox" checked> productionではプレースホルダーまたは未確定test-token方針が残ると参加者作成・招待発行・招待redeem・新規trial開始を遮断するcodeとtestを実装した</label></p>
   <p><label><input type="checkbox"> production配置後に上記の強制遮断と解除を実環境で確認した</label></p>
@@ -25,6 +27,8 @@
   <p><label><input type="checkbox" checked> No/Highをwithin-participantとし、24語×6回で学習する</label></p>
   <p><label><input type="checkbox" checked> L2-to-L1は各時点でaccent各8語、accent・variabilityの連続は最大2とする</label></p>
   <p><label><input type="checkbox" checked> テスト音声はaccentごと1名の固定女性話者（計3名）を練習・本番、直後・遅延で使う</label></p>
+  <p><label><input type="checkbox" checked> pre完了→learning開始は順序だけを強制し、実施間隔の上限・下限、招待linkの年齢による失効、自動除外を設けない</label></p>
+  <p><label><input type="checkbox" checked> delayedは直後行動完了＋7日を開始下限とし、それ以後は上限期限なしで受付する</label></p>
   <p><label><input type="checkbox" checked> 上記仕様ではテストaccentと話者identityが完全に交絡し、randomizationや統計モデルでは分離できないことを設計文書に記載した</label></p>
   <p><label><input type="checkbox"> この交絡により、L2-to-L1のaccent差の推論対象を「選定した3名の音声」に限定することを事前登録した</label></p>
 
@@ -38,7 +42,9 @@
   <p><label><input type="checkbox" checked> pre/immediate/delayedの3 token、server ordinal、segment越境preload、session supersedeを自動テストした</label></p>
   <p><label><input type="checkbox" checked> 手動リンク配布、遅延対象、ID欠番、accent×cell別の割付・完了数を確認できる内部管理HTMLを実装した</label></p>
   <p><label><input type="checkbox" checked> 応答再送、visit完了再送、preload再試行、local WAV欠損時のfail-stop、segment別マイク確認を自動テストした</label></p>
+  <p><label><input type="checkbox" checked> D1応答とR2録音の両ACK後に残留したIndexedDB WAVを、visitを問わず次回flushで削除する</label></p>
   <p><label><input type="checkbox"> 本番相当ブラウザで6 URLのcanonical redirect、session引継ぎ、outbox完送を通しpilotした</label></p>
+  <p><label><input type="checkbox"> active session中の招待link再redeem・管理者再発行を検知し、本人の安全な再開と漏えいlinkによるsession takeoverを区別する確認手順を実装した</label></p>
   <p><label><input type="checkbox"> 録音中の二重タブ即時排他と、放棄されたIndexedDB WAVの回収・破棄方針を実装・pilotした</label></p>
 
   <h2>刺激と操作確認</h2>
@@ -56,16 +62,21 @@
   <p><label><input type="checkbox" checked> ZIP内manifestにtrial/attempt ID、practice、hash、bytes、upload時刻を含め、元R2 keyはD1 member tableだけに保持する</label></p>
   <p><label><input type="checkbox" checked> ZIPを全体memory展開せず、1 phase最大30本、認可、download監査、元WAV byte一致を自動テストした</label></p>
   <p><label><input type="checkbox" checked> 欠落export row、重複Queue、期限切れlease、最大試行回数、R2改ざん、匿名archive名を自動テストした</label></p>
+  <p><label><input type="checkbox" checked> Cloudflare account・D1 UUID・R2 endpointを固定し、quiet window必須のD1 export、3 bucketのimmutable copy・download照合・current membership、SHA-256 manifest、symlink拒否、失敗時非publishを行うlocal backup CLIとorchestration testを実装した</label></p>
   <p><label><input type="checkbox"> 5回失敗後のterminal ZIP jobを、原因確認・監査記録付きで明示的にreset/retryする管理者手順を実装した</label></p>
   <p><label><input type="checkbox"> Workers Paid、Queue、DLQ、EXPORTS R2、scheduled trigger、Cloudflare Accessをproduction accountで構築した</label></p>
   <p><label><input type="checkbox"> ZIP予定期限を実際に強制するR2 lifecycleを設定し、配信停止・削除を検証した</label></p>
-  <p><label><input type="checkbox"> D1とR2の定期backup、restore、保管期間後の削除をリハーサルした</label></p>
+  <p><label><input type="checkbox"> D1とR2の定期backupを研究者管理端末でscheduleし、欠落・改ざん検出と失敗通知を実環境で確認した</label></p>
+  <p><label><input type="checkbox"> 承認済み暗号化mountのallowlist、local mirrorのretention・削除台帳・crypto-erasure、manifest hashの別権限anchorを実装した</label></p>
+  <p><label><input type="checkbox"> backup quiet windowを自己申告flagだけに頼らず、新規redeem・trial開始を止めてactive sessionをdrainするmaintenance gateを実装・検証した</label></p>
+  <p><label><input type="checkbox"> 独立した復旧環境へのrestore、件数・hash照合、保管期間後の削除をリハーサルした</label></p>
 
   <h2>検証とリリース</h2>
   <p><label><input type="checkbox" checked> 参加者ID 1–2160を2つの独立secretで生成し、計4,320 designのrandomization不変条件を監査できる</label></p>
   <p><label><input type="checkbox" checked> 変更後のunit/integration/randomizationテストがすべて成功した</label></p>
   <p><label><input type="checkbox" checked> 不正URL、期限前delayed、他人の刺激、将来試行へのアクセス拒否を自動テストした</label></p>
-  <p><label><input type="checkbox" checked> 行動endpointを用いるpre→学習間隔・保持間隔・遅延目標偏差をD1 viewと回帰testで固定した</label></p>
+  <p><label><input type="checkbox" checked> 古いpre完了、古いactive招待、7日を大幅に過ぎたdelayedを受付し、期限切れsessionは同じ招待linkから再開できることを自動テストした</label></p>
+  <p><label><input type="checkbox" checked> 行動endpointを用いるpre→学習・課題間・保持・遅延目標偏差の6間隔をD1 viewと回帰testで固定した</label></p>
   <p><label><input type="checkbox" checked> push時にunit/integration、4,320 design監査、development/production dry-runを実行するCIを追加した</label></p>
   <p><label><input type="checkbox"> CloudflareのD1・R2・secret・custom domainをproduction用に凍結した</label></p>
   <p><label><input type="checkbox"> 本番版の <code>ASSIGNMENT_VERSION</code>、<code>SEED_ALGORITHM_VERSION</code>、<code>ASSET_VERSION</code>、commit SHAを記録した</label></p>

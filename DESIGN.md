@@ -8,8 +8,8 @@
 |---|---|---|
 | 学習時アクセント | American English / Mandarin-accented English / Japanese-accented English | between-participant |
 | 学習時話者変動性 | No Variability / High Variability | within-participant |
-| Picture Naming時点 | pre / 直後 / 約7日後 | within-participant |
-| L2-to-L1時点 | 直後 / 約7日後 | within-participant |
+| Picture Naming時点 | pre / 学習直後（実間隔を記録） / 直後完了＋7日を目標（以後も受付） | within-participant |
+| L2-to-L1時点 | 学習直後（実間隔を記録） / 直後完了＋7日を目標（以後も受付） | within-participant |
 | L2-to-L1テスト音声アクセント | English / Chinese / Japanese | within-participant |
 
 Picture Matching は行いません。preではPicture Namingだけを行い、L2-to-L1は行いません。直後・遅延のテスト順はPicture Naming、L2-to-L1で固定します。課題順を固定する理由は、L2-to-L1で正答語を聞くことがPicture Namingを促進するテスト効果を避けるためです。
@@ -59,7 +59,7 @@ pre・直後・遅延の各時点で練習2試行、本番24試行です。
 - 条件連続は最大2。
 - pre・直後・遅延では別domain seedを使い、3順序の完全同一をpairwiseに明示的に拒否。
 
-preでは正答語、英語音声、綴り、正誤feedbackを提示しません。それでも、同じ24画像を見て英語語彙を検索・発話しようとする行為は画像馴化とpretesting/retrieval-attempt効果を導入します。このため、主要推論の対象は「pre Picture Namingを受けた学習者」に限られ、preなしの学習へ直接一般化できません。pre完了から学習開始までの間隔とpre後離脱を条件別に報告し、許容間隔を事前登録します。参加者IDはpre後の離脱があっても再利用しません。pre→学習間隔の正本は、pre Picture Naming最終試行の行動応答受理時刻からimmediate学習最初の試行開始時刻までとします。招待linkのredeem時刻や、録音upload完了後のvisit確定時刻はこの間隔に用いません。
+preでは正答語、英語音声、綴り、正誤feedbackを提示しません。それでも、同じ24画像を見て英語語彙を検索・発話しようとする行為は画像馴化とpretesting/retrieval-attempt効果を導入します。このため、主要推論の対象は「pre Picture Namingを受けた学習者」に限られ、preなしの学習へ直接一般化できません。pre完了から学習開始までの実施上の上限・下限は設けず、間隔だけを理由に受付拒否や自動除外をしません。実間隔の分布とpre後離脱は条件別に報告し、主要解析での扱いと感度分析を結果を見る前に事前登録します。参加者IDはpre後の離脱があっても再利用しません。pre→学習間隔の正本は、pre Picture Naming最終試行の行動応答受理時刻からimmediate学習最初の試行開始時刻までとします。招待linkのredeem時刻や、録音upload完了後のvisit確定時刻はこの間隔に用いません。
 
 ## 6. L2-to-L1
 
@@ -122,7 +122,7 @@ pre visitは次の順です。
 PN練習2 → PN本番24
 ```
 
-合計26試行、録音26件です。pre完了後に担当者がimmediate用の別招待を手動発行します。
+合計26試行、録音26件です。pre完了後に担当者がimmediate用の別招待を手動発行します。preの完了時刻が古いことを理由に発行・開始を拒否せず、pre完了→learning開始の上限・下限は設けません。
 
 直後visitは次の順です。
 
@@ -138,9 +138,9 @@ PN練習2 → PN本番24
 PN練習2 → PN本番24 → L2練習3 → L2本番24
 ```
 
-合計53試行、録音53件です。遅延目標は直後の行動課題完了時刻＋7日です。目標時刻以後は常に受付可能で、期限切れにしません。実際の保持間隔は、直後L2-to-L1最終試行の行動応答受理時刻から遅延Picture Naming最初の試行開始時刻までとします。目標偏差は、遅延Picture Naming最初の試行開始時刻から保存済み目標時刻を引きます。リンクredeem時刻、録音upload時刻、visit確定時刻、後から変更されたdelay設定値からの逆算は用いません。これらの正本値はD1 view `analysis_intervals`から取得します。
+合計53試行、録音53件です。遅延目標は直後の行動課題完了時刻＋7日です。この7日はdelayed操作を保つ開始下限であり、目標時刻以後は常に受付可能で、期限切れにしません。実際の保持間隔は、直後L2-to-L1最終試行の行動応答受理時刻から遅延Picture Naming最初の試行開始時刻までとします。目標偏差は、遅延Picture Naming最初の試行開始時刻から保存済み目標時刻を引きます。リンクredeem時刻、録音upload時刻、visit確定時刻、後から変更されたdelay設定値からの逆算は用いません。これらの正本値はD1 view `analysis_intervals`から取得します。
 
-6つのparticipant URLを用意しますが、token/sessionの境界はpre、immediate、delayedの3 visitです。immediate内とdelayed内では同じsession epochを引き継ぎます。次segmentの開始前に、前segmentの録音がすべてR2へ保存済みであることをserverが検査します。
+6つのparticipant URLを用意しますが、token/sessionの境界はpre、immediate、delayedの3 visitです。招待linkに経過時間による失効はありません。短期session tokenには認証上の有効期限がありますが、同じactiveな招待linkを開き直せば未完了位置から再開できるため、これは参加期限ではありません。immediate内とdelayed内では同じsession epochを引き継ぎます。次segmentの開始前に、前segmentの録音がすべてR2へ保存済みであることをserverが検査します。
 
 ## 10. 分析前の重要フラグ
 
@@ -151,7 +151,9 @@ PN練習2 → PN本番24 → L2練習3 → L2本番24
 - `missing_input_frames>0`: 録音workletで入力欠落。
 - RMSが低い、clipping ratioが高い、録音が欠損。
 - visibility change、audio timing deviation、ネットワーク再送。
-- pre完了→学習開始、学習完了→直後PN開始、PN完了→L2開始の間隔。
+- pre完了→学習開始、学習完了→直後PN開始、PN完了→L2開始の間隔。間隔だけを理由に自動除外しない。
 - 遅延間隔の目標からの偏差。
+
+受付を無期限にしても、数週・数か月後の測定を一律に「7日後」と解釈できるわけではありません。全観測を保持した上で実間隔の分布を報告し、7日付近を対象とするestimand、連続時間として扱うmodel、感度分析のどれを主要とするかを結果を見る前に固定します。特にdelayed実施時期は、条件や直後成績、継続意思の影響を受け得るpost-treatment変数です。機械的な共変量調整で脱落・選択biasが解消すると仮定しません。
 
 効果の方向、除外閾値、主要モデル、欠測処理は結果を見ずに事前登録してください。

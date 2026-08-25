@@ -25,7 +25,7 @@ const PARTICIPANT_ERROR_MESSAGES = Object.freeze({
   visit_closed: "このセッションはすでに終了しています。担当者に知らせてください。",
   visit_not_available: "このセッションはまだ受付時刻に達していません。担当者の案内後に開き直してください。",
   invalid_session: "セッション情報を確認できません。担当者から届いたリンクを開き直してください。",
-  session_expired: "セッションの有効時間が切れました。担当者から届いた招待リンクを開き直してください。",
+  session_expired: "安全のため一時セッションを更新します。参加期限ではありません。担当者から届いた同じ招待リンクを開き直すと、保存済み位置から再開できます。",
   session_superseded: "別のタブまたは再開操作により、この画面は無効になりました。この画面では続行しないでください。",
   production_collection_blocked: "実験環境が本番開始条件を満たしていないため停止しました。担当者に知らせてください。",
   placeholder_assets_disabled: "本番刺激を確認できないため停止しました。担当者に知らせてください。",

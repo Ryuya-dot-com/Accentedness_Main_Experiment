@@ -8,12 +8,15 @@
     "deploy:check": "wrangler deploy --env=\"\" --dry-run",
     "deploy:check:production": "wrangler deploy --env production --dry-run",
     "db:migrate:local": "wrangler d1 migrations apply main-experiment --local",
+    "backup:init": "node scripts/backup-production.mjs init",
+    "backup:production": "node scripts/backup-production.mjs run",
+    "test:backup-cli": "node scripts/test-backup-cli.mjs",
     "test": "vitest run",
     "audit:randomization": "node scripts/audit-randomization.mjs",
     "test:watch": "vitest",
     "types": "wrangler types",
     "types:check": "wrangler types --check",
-    "verify": "npm run types:check && npm test && npm run audit:randomization && npm run deploy:check && npm run deploy:check:production"
+    "verify": "npm run types:check && npm run test:backup-cli && npm test && npm run audit:randomization && npm run deploy:check && npm run deploy:check:production"
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "^1.0.0",
