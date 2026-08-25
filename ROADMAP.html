@@ -88,8 +88,9 @@
 
   <h2>5. Cloudflare非本番配備 — 現在の作業</h2>
   <ul>
+    <li><label><input type="checkbox" checked> 2026-08-26のread-only inventoryで対象Worker 2件、D1 2件、R2 4件のexact-name collisionが0件であることを確認した。target account・plan・担当者は未確定</label></li>
     <li><label><input type="checkbox"> 使用するCloudflare account、主担当、代替担当を確定する</label></li>
-    <li><label><input type="checkbox"> Workers Paidまたは同等以上のplanを選び、participant作成の311-statement atomic D1 batchと録音処理を実環境で通す</label></li>
+    <li><label><input type="checkbox"> 現行実装に必要なWorkers PaidをDashboardで確認する</label></li>
     <li><label><input type="checkbox"> 非本番用Worker、D1、RECORDINGS R2、STIMULI R2を作成する</label></li>
     <li><label><input type="checkbox"> D1 migrationを適用し、productionとは分離したrandomization secretとadmin tokenを登録する</label></li>
     <li><label><input type="checkbox"> プレースホルダーを許可したdevelopment設定のまま非本番Workerをdeployする</label></li>
@@ -97,6 +98,7 @@
     <li><label><input type="checkbox"> 非本番healthが<code>environment=development</code>、<code>placeholder_assets=true</code>、<code>collection_ready=false</code>でもplaceholder participantを実行できることを確認し、production readinessと混同しない</label></li>
     <li><label><input type="checkbox"> 実URLのhealth、commit SHA、assignment/seed/asset version、binding先を記録する</label></li>
     <li><label><input type="checkbox"> 管理画面からplaceholder participantを作成し、pre linkを手動発行できることを確認する</label></li>
+    <li><label><input type="checkbox"> participant作成の311-statement atomic D1 batchが部分状態0で完了し、D1 batch durationが30秒未満であることを実測する</label></li>
   </ul>
 
   <h2>6. 敵対的E2E pilot — プレースホルダーで実施</h2>
@@ -109,6 +111,8 @@
     <li><label><input type="checkbox"> fault-injection専用IDで応答送信中とWAV送信中に通信を切り、IndexedDB outboxからcanonical dataが重複なく再送されることを確認する</label></li>
     <li><label><input type="checkbox"> clean-path完遂者1名についてD1 response 276件、R2 WAV 132件、pending録音0件と、各WAVのbyte count・hashを照合する</label></li>
     <li><label><input type="checkbox"> 保存WAVを実際に再生し、Picture Namingの語頭欠落、L2刺激と録音開始・応答窓のずれ、無音、channel、sample rate、duration、RMS、clippingを確認する</label></li>
+    <li><label><input type="checkbox"> 通常WAVと上限4 MiB WAVをuploadし、HTTP/R2/D1 ACK一致とWorker resource-limit error 0件を確認する</label></li>
+    <li><label><input type="checkbox"> 想定同時実施数が未確定の間は2–3名の同時操作だけを試し、D1 overload、R2 429、5xx、欠損、重複が0件であることを確認する</label></li>
     <li><label><input type="checkbox"> microphone拒否→再許可、入力device切替または無入力を試し、異常が通常完了としてsilentに扱われないことを確認する</label></li>
     <li><label><input type="checkbox"> Delayed完了前に参加者ZIPを取得できず、完了後には取得できることを確認する</label></li>
     <li><label><input type="checkbox"> clean-pathの3 visit分ZIPを参加者端末へ保存し、再保存・展開・134 entries・hashを確認する</label></li>
