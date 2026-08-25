@@ -10,7 +10,6 @@
     <main>
       <h1>実験リンク管理</h1>
       <p>研究担当者専用です。参加者IDは募集順に割り当て、条件を選ぶ目的で欠番を作らないでください。</p>
-      <p><a href="/admin/exports">録音ZIP管理を開く</a></p>
 
       <section>
         <h2>認証</h2>
@@ -28,6 +27,7 @@
           <button type="button" data-visit="pre">Preリンクを発行</button>
           <button type="button" data-visit="immediate">Main Experimentリンクを発行</button>
           <button type="button" data-visit="delayed">Delayedリンクを発行</button>
+          <button id="download-results" type="button">収集済み結果ZIPを保存</button>
         </div>
       </section>
 
@@ -39,10 +39,10 @@
 
       <section>
         <h2>遅延テスト対象</h2>
-        <p>直後テストの行動完了から7日後に受付を開始し、それ以後の上限期限は設けません。</p>
+        <p>直後L2-to-L1の最終回答から5日以上が経過し、Immediateの全データ保存が確定した参加者を表示します。上限期限は設けません。</p>
         <button id="load-due" type="button">受付可能な参加者を取得</button>
         <table border="1" cellpadding="6">
-          <thead><tr><th>参加者ID</th><th>目標時刻</th><th>未送信録音</th><th>状態</th><th>操作</th></tr></thead>
+          <thead><tr><th>参加者ID</th><th>目標時刻</th><th>状態</th><th>操作</th></tr></thead>
           <tbody id="due-visits"></tbody>
         </table>
       </section>

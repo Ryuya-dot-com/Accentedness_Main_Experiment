@@ -11,8 +11,8 @@ import {
   requireUuid,
 } from "./lib/http.js";
 import { collectionConfiguration, placeholderAssetsAllowed } from "./lib/config.js";
-import { ensureRecordingExportQueued } from "./lib/recording-exports.js";
-import { crc32 } from "./lib/zip.js";
+import { DELAY_MINIMUM_MS } from "./lib/protocol.js";
+import { crc32 } from "./lib/stored-zip.js";
 
 const VALID_VISITS = new Set(["pre", "immediate", "delayed"]);
 const VALID_EVENT_TYPES = new Set([
@@ -786,7 +786,7 @@ export async function saveTrialResponse(request, env, trialUuidInput) {
     attemptUuid,
   ));
   if (isLastVisitTrial && session.visit_type === "immediate") {
-    const targetMs = nowMs + numericEnv(env, "DELAY_DAYS", 7) * 86_400_000;
+    const targetMs = nowMs + DELAY_MINIMUM_MS;
     statements.push(env.DB.prepare(`
       UPDATE visits
       SET target_at_ms = COALESCE(target_at_ms, ?),
@@ -1035,13 +1035,6 @@ async function finalizeRecordingObject(env, recording, headers, object, session,
     if (canonical?.state === "uploaded"
         && canonical.sha256 === headers.checksum
         && Number(canonical.byte_count) === headers.contentLength) {
-      await ensureRecordingExportQueued(env, session.visit_uuid, recording.segment).catch((error) => {
-        console.error(JSON.stringify({
-          message: "recording_export_schedule_failed",
-          segment: recording.segment,
-          error: String(error),
-        }));
-      });
       return jsonResponse({
         ok: true,
         duplicate: true,
@@ -1051,13 +1044,6 @@ async function finalizeRecordingObject(env, recording, headers, object, session,
     }
     throw new ApiError(409, "session_superseded", "Recording was received after this session was superseded");
   }
-  await ensureRecordingExportQueued(env, session.visit_uuid, recording.segment).catch((error) => {
-    console.error(JSON.stringify({
-      message: "recording_export_schedule_failed",
-      segment: recording.segment,
-      error: String(error),
-    }));
-  });
   return jsonResponse({
     ok: true,
     duplicate,

@@ -4,6 +4,7 @@ import { randomToken, sha256Hex, stableJson } from "./lib/crypto.js";
 import { ApiError, jsonResponse, readJson, requireMethod, requireUuid } from "./lib/http.js";
 import { requireAdmin } from "./lib/auth.js";
 import { collectionConfiguration } from "./lib/config.js";
+import { DELAY_MINIMUM_DAYS } from "./lib/protocol.js";
 
 function assertProductionCollectionSafe(env) {
   const configuration = collectionConfiguration(env);
@@ -60,10 +61,15 @@ async function issueInvitation(env, requestUrl, visitUuid, nowMs) {
       throw new ApiError(409, "delayed_not_scheduled", "Immediate testing must finish before delayed invitation issuance");
     }
     if (Number(visit.available_at_ms) > nowMs) {
-      throw new ApiError(409, "delayed_not_available", "The seven-day target has not been reached", {
-        available_at_ms: visit.available_at_ms,
-        server_now_ms: nowMs,
-      });
+      throw new ApiError(
+        409,
+        "delayed_not_available",
+        `The ${DELAY_MINIMUM_DAYS}-day minimum has not been reached`,
+        {
+          available_at_ms: visit.available_at_ms,
+          server_now_ms: nowMs,
+        },
+      );
     }
   }
   const generationRow = await env.DB.prepare(`
@@ -230,19 +236,13 @@ export async function listDueDelayed(request, env) {
   const result = await env.DB.prepare(`
     SELECT
       v.visit_uuid, p.numeric_id, v.target_at_ms, v.available_at_ms, v.status,
-      MAX(i.issued_at_ms) AS last_invited_at_ms,
-      (
-        SELECT COUNT(*)
-        FROM visits immediate_visit
-        JOIN trial_manifest tm ON tm.visit_uuid = immediate_visit.visit_uuid
-        LEFT JOIN recordings r ON r.attempt_uuid = tm.canonical_attempt_uuid
-        WHERE immediate_visit.participant_uuid = v.participant_uuid
-          AND immediate_visit.visit_type = 'immediate'
-          AND tm.expects_recording = 1
-          AND COALESCE(r.state, 'missing') != 'uploaded'
-      ) AS immediate_missing_recordings
+      MAX(i.issued_at_ms) AS last_invited_at_ms
     FROM visits v
     JOIN participants p ON p.participant_uuid = v.participant_uuid
+    JOIN visits immediate_visit
+      ON immediate_visit.participant_uuid = v.participant_uuid
+      AND immediate_visit.visit_type = 'immediate'
+      AND immediate_visit.status = 'completed'
     LEFT JOIN invitations i ON i.visit_uuid = v.visit_uuid
     WHERE v.visit_type = 'delayed'
       AND v.status IN ('scheduled', 'invited', 'started')
@@ -300,8 +300,6 @@ export async function adminSummary(request, env) {
         SUM(CASE WHEN pre.behavioral_completed_at_ms IS NOT NULL THEN 1 ELSE 0 END)
           AS pre_behavioral_completed_count,
         SUM(CASE WHEN pre.finalized_at_ms IS NOT NULL THEN 1 ELSE 0 END) AS pre_finalized_count,
-        -- Compatibility aliases. New consumers should use the explicit funnel fields above.
-        SUM(CASE WHEN pre.status = 'completed' THEN 1 ELSE 0 END) AS pre_completed_count,
         SUM(COALESCE(immediate_invitation.issued, 0)) AS immediate_issued_count,
         SUM(COALESCE(immediate_invitation.redeemed, 0)) AS immediate_redeemed_count,
         SUM(COALESCE(immediate_trial.first_trial, 0)) AS immediate_first_trial_count,
@@ -309,18 +307,13 @@ export async function adminSummary(request, env) {
           AS immediate_behavioral_completed_count,
         SUM(CASE WHEN immediate.finalized_at_ms IS NOT NULL THEN 1 ELSE 0 END)
           AS immediate_finalized_count,
-        -- first_started_at_ms is set on invitation redemption; preserve the legacy meaning.
-        SUM(CASE WHEN immediate.first_started_at_ms IS NOT NULL THEN 1 ELSE 0 END) AS immediate_started_count,
-        SUM(CASE WHEN immediate.status = 'completed' THEN 1 ELSE 0 END) AS immediate_completed_count,
         SUM(COALESCE(delayed_invitation.issued, 0)) AS delayed_issued_count,
         SUM(COALESCE(delayed_invitation.redeemed, 0)) AS delayed_redeemed_count,
         SUM(COALESCE(delayed_trial.first_trial, 0)) AS delayed_first_trial_count,
         SUM(CASE WHEN delayed.behavioral_completed_at_ms IS NOT NULL THEN 1 ELSE 0 END)
           AS delayed_behavioral_completed_count,
         SUM(CASE WHEN delayed.finalized_at_ms IS NOT NULL THEN 1 ELSE 0 END)
-          AS delayed_finalized_count,
-        SUM(CASE WHEN delayed.first_started_at_ms IS NOT NULL THEN 1 ELSE 0 END) AS delayed_started_count,
-        SUM(CASE WHEN delayed.status = 'completed' THEN 1 ELSE 0 END) AS delayed_completed_count
+          AS delayed_finalized_count
       FROM participants p
       JOIN visits pre
         ON pre.participant_uuid = p.participant_uuid AND pre.visit_type = 'pre'

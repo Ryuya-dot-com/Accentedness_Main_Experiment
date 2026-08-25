@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import { ApiClientError, shouldClearInvitationFragment } from "../public/js/api.js";
+import {
+  ApiClientError,
+  participantCopyFilename,
+  shouldClearInvitationFragment,
+  writeResponseToFile,
+} from "../public/js/api.js";
 import {
   microphoneCheckStorageKey,
   redirectToCanonical,
@@ -109,6 +114,10 @@ describe("frontend reliability guards", () => {
       code: "session_expired",
       message: "The session expired",
     })).toContain("参加期限ではありません");
+    expect(participantErrorMessage({
+      code: "participant_copy_session_expired",
+      message: "The session expired",
+    })).toContain("研究担当者へ依頼");
   });
 
   it("stops monitoring and closes audio before a post-start canonical redirect", () => {
@@ -196,6 +205,102 @@ describe("frontend reliability guards", () => {
     await expect(runner.completeVisitWithRetry()).resolves.toEqual({ ok: true });
     expect(completeVisit).toHaveBeenCalledTimes(2);
     expect(ui.prompt).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses one safe filename for the single participant ZIP", () => {
+    expect(participantCopyFilename('attachment; filename="accentedness_results.zip"'))
+      .toBe("accentedness_results.zip");
+    expect(participantCopyFilename('attachment; filename="../../unsafe.zip"'))
+      .toBe("accentedness_results.zip");
+  });
+
+  it("streams a ZIP response to a selected file without creating a Blob", async () => {
+    const written = [];
+    const writable = {
+      write: vi.fn(async (chunk) => written.push(new Uint8Array(chunk))),
+      close: vi.fn(async () => {}),
+      abort: vi.fn(async () => {}),
+    };
+    const fileHandle = { createWritable: vi.fn(async () => writable) };
+    const bytes = new Uint8Array([1, 2, 3, 4, 5]);
+    const response = new Response(bytes, {
+      headers: { "Content-Length": String(bytes.byteLength) },
+    });
+
+    await expect(writeResponseToFile(response, fileHandle)).resolves.toBe(bytes.byteLength);
+    expect(fileHandle.createWritable).toHaveBeenCalledTimes(1);
+    expect(written.reduce((sum, chunk) => sum + chunk.byteLength, 0)).toBe(bytes.byteLength);
+    expect(writable.close).toHaveBeenCalledTimes(1);
+    expect(writable.abort).not.toHaveBeenCalled();
+  });
+
+  it("aborts a direct file save when the ZIP response is truncated", async () => {
+    const writable = {
+      write: vi.fn(async () => {}),
+      close: vi.fn(async () => {}),
+      abort: vi.fn(async () => {}),
+    };
+    const response = new Response(new Uint8Array([1, 2, 3]), {
+      headers: { "Content-Length": "5" },
+    });
+
+    await expect(writeResponseToFile(response, {
+      createWritable: vi.fn(async () => writable),
+    })).rejects.toThrow("最後まで受信");
+    expect(writable.close).not.toHaveBeenCalled();
+    expect(writable.abort).toHaveBeenCalledTimes(1);
+  });
+
+  it("labels a file-system write failure so the participant can choose another target", async () => {
+    const response = new Response(new Uint8Array([1, 2, 3]), {
+      headers: { "Content-Length": "3" },
+    });
+    const writable = {
+      write: vi.fn().mockRejectedValue(new DOMException("disk full", "QuotaExceededError")),
+      close: vi.fn(),
+      abort: vi.fn(async () => {}),
+    };
+
+    await expect(writeResponseToFile(response, {
+      createWritable: vi.fn(async () => writable),
+    })).rejects.toMatchObject({ code: "participant_copy_file_write_failed" });
+    expect(writable.abort).toHaveBeenCalledTimes(1);
+    expect(writable.close).not.toHaveBeenCalled();
+  });
+
+  it("retries participant ZIP preparation without changing visit completion", async () => {
+    const state = stateWith();
+    const fetchParticipantCopy = vi.fn()
+      .mockRejectedValueOnce(new TypeError("temporary copy failure"))
+      .mockResolvedValue({ blob: new Blob(["zip"]), filename: "accentedness_results.zip" });
+    const { runner, ui } = runnerFor(state, { fetchParticipantCopy });
+    const fileHandle = { createWritable: vi.fn() };
+
+    await expect(runner.prepareParticipantCopyWithRetry(fileHandle)).resolves.toMatchObject({
+      filename: "accentedness_results.zip",
+    });
+    expect(fetchParticipantCopy).toHaveBeenCalledTimes(2);
+    expect(fetchParticipantCopy).toHaveBeenNthCalledWith(1, fileHandle);
+    expect(fetchParticipantCopy).toHaveBeenNthCalledWith(2, fileHandle);
+    expect(ui.prompt).toHaveBeenCalledWith(
+      expect.stringContaining("研究用サーバーへの保存は完了しています"),
+      "ZIPを再準備する",
+    );
+  });
+
+  it("stops ZIP retries with accurate guidance after the completed session expires", async () => {
+    const state = stateWith();
+    const fetchParticipantCopy = vi.fn().mockRejectedValue(
+      new ApiClientError(401, "session_expired", "The session expired"),
+    );
+    const { runner, ui } = runnerFor(state, { fetchParticipantCopy });
+
+    await expect(runner.prepareParticipantCopyWithRetry()).rejects.toMatchObject({
+      code: "participant_copy_session_expired",
+      status: 401,
+    });
+    expect(fetchParticipantCopy).toHaveBeenCalledTimes(1);
+    expect(ui.prompt).not.toHaveBeenCalled();
   });
 
   it("keeps a durably queued trial in place and retries a transient response PUT", async () => {

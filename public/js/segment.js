@@ -29,6 +29,35 @@ const copy = {
   },
 }[expectedSegment];
 
+async function saveParticipantCopy() {
+  while (true) {
+    let fileHandle;
+    try {
+      fileHandle = await ui.chooseParticipantCopyTarget();
+    } catch (error) {
+      if (error?.code !== "participant_copy_picker_failed") throw error;
+      await ui.prompt(
+        "保存先を直接選択できませんでした。通常のダウンロードでZIPを保存します。",
+        "通常ダウンロードを試す",
+      );
+      const archive = await runner.prepareParticipantCopyWithRetry(null);
+      await ui.downloadParticipantCopy(archive);
+      return archive;
+    }
+    try {
+      const archive = await runner.prepareParticipantCopyWithRetry(fileHandle);
+      if (archive.blob) await ui.downloadParticipantCopy(archive);
+      return archive;
+    } catch (error) {
+      if (error?.code !== "participant_copy_file_write_failed") throw error;
+      await ui.prompt(
+        "選択した場所へZIPを書き込めませんでした。空き容量と保存権限を確認し、別の保存先を選んでください。",
+        "別の保存先を選ぶ",
+      );
+    }
+  }
+}
+
 async function runMicrophoneCheck(state) {
   const checkKey = microphoneCheckStorageKey(state, expectedSegment);
   if (sessionStorage.getItem(checkKey) === "yes") return;
@@ -62,12 +91,17 @@ async function finalizeAlreadyCompleted(state) {
   runner.stopMonitoring();
   audio.close();
   await runner.completeVisitWithRetry();
-  api.clearSession();
+  if (state.visit.visit_type === "delayed") {
+    await saveParticipantCopy();
+  }
+  if (state.visit.visit_type !== "delayed") api.clearSession();
   ui.completed(state.visit.visit_type === "pre"
     ? "Pre Picture Namingは保存済みです。Main Experimentのリンクは担当者から別途お送りします。"
     : state.visit.visit_type === "immediate"
       ? "直後テストは保存済みです。遅延テストの案内をお待ちください。"
-      : "遅延テストは保存済みです。ご協力ありがとうございました。");
+      : "遅延テストは保存済みです。ZIPをもう一度保存する場合は、下のボタンを押してください。ご協力ありがとうございました。", {
+    preserveDownload: state.visit.visit_type === "delayed",
+  });
 }
 
 async function main() {
@@ -155,12 +189,17 @@ async function main() {
     return;
   }
   await runner.completeVisitWithRetry();
-  api.clearSession();
+  if (expectedVisit === "delayed") {
+    await saveParticipantCopy();
+  }
+  if (expectedVisit !== "delayed") api.clearSession();
   ui.completed(expectedVisit === "pre"
     ? "Pre Picture Namingは終了しました。Main Experimentのリンクは担当者から別途お送りします。"
     : expectedVisit === "immediate"
-      ? "直後テストは終了しました。すべての回答と録音が保存されました。遅延テストの案内をお待ちください。"
-      : "遅延テストは終了しました。すべての回答と録音が保存されました。ご協力ありがとうございました。");
+      ? "直後テストは終了しました。すべての回答と録音が研究用サーバーに保存されました。遅延テストの案内をお待ちください。"
+      : "遅延テストは終了しました。研究用サーバーと、このパソコンへのZIP保存が完了しました。必要なら下のボタンから再度保存できます。ご協力ありがとうございました。", {
+    preserveDownload: expectedVisit === "delayed",
+  });
 }
 
 main().catch((error) => {

@@ -59,8 +59,23 @@ button:disabled {
   cursor: not-allowed;
 }
 
+.button-link {
+  min-height: 46px;
+  border-radius: 8px;
+  padding: 11px 20px;
+  background: var(--brand);
+  color: #fff;
+  font-weight: 800;
+  text-decoration: none;
+}
+
+.button-link:hover {
+  background: var(--brand-dark);
+}
+
 button:focus-visible,
-input:focus-visible {
+input:focus-visible,
+.button-link:focus-visible {
   outline: 4px solid var(--focus);
   outline-offset: 3px;
 }

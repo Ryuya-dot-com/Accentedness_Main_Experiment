@@ -84,7 +84,9 @@ describe("admin allocation monitoring", () => {
       ]),
     );
     expect(totalsByAccent).toEqual({ english: 0, chinese: 2, japanese: 1 });
-    expect(summary.json.assignment_flow.every((row) => Number(row.pre_completed_count) === 0)).toBe(true);
+    expect(summary.json.assignment_flow.every(
+      (row) => Number(row.pre_behavioral_completed_count) === 0,
+    )).toBe(true);
   });
 
   it("separates invitation, redemption, first trial, behavioral completion, and finalization", async () => {
@@ -191,21 +193,16 @@ describe("admin allocation monitoring", () => {
       pre_first_trial_count: 2,
       pre_behavioral_completed_count: 1,
       pre_finalized_count: 1,
-      pre_completed_count: 1,
       immediate_issued_count: 1,
       immediate_redeemed_count: 1,
       immediate_first_trial_count: 1,
       immediate_behavioral_completed_count: 1,
       immediate_finalized_count: 1,
-      immediate_started_count: 1,
-      immediate_completed_count: 1,
       delayed_issued_count: 1,
       delayed_redeemed_count: 1,
       delayed_first_trial_count: 1,
       delayed_behavioral_completed_count: 1,
       delayed_finalized_count: 0,
-      delayed_started_count: 1,
-      delayed_completed_count: 0,
     });
   });
 });

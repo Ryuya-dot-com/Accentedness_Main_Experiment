@@ -54,7 +54,7 @@ describe("canonical analysis intervals", () => {
     const immediatePictureNamingCompletedAt = 1_800_000;
     const immediateL2StartedAt = immediatePictureNamingCompletedAt + 2_345;
     const immediateCompletedAt = 2_000_000;
-    const delayedTargetAt = immediateCompletedAt + 7 * DAY_MS;
+    const delayedTargetAt = immediateCompletedAt + 5 * DAY_MS;
     const delayedPictureNamingStartedAt = delayedTargetAt + 12_345;
     const delayedPictureNamingCompletedAt = delayedPictureNamingStartedAt + 50_000;
     const delayedL2StartedAt = delayedPictureNamingCompletedAt + 6_789;
@@ -121,7 +121,7 @@ describe("canonical analysis intervals", () => {
       immediate_pn_to_l2_interval_ms: 2_345,
       immediate_behavioral_completed_at_ms: immediateCompletedAt,
       delayed_picture_naming_started_at_ms: delayedPictureNamingStartedAt,
-      retention_interval_ms: 7 * DAY_MS + 12_345,
+      retention_interval_ms: 5 * DAY_MS + 12_345,
       delayed_target_at_ms: delayedTargetAt,
       target_deviation_ms: 12_345,
       delayed_picture_naming_completed_at_ms: delayedPictureNamingCompletedAt,

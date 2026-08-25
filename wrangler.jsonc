@@ -26,32 +26,10 @@
     {
       "binding": "STIMULI",
       "bucket_name": "main-experiment-stimuli"
-    },
-    {
-      "binding": "EXPORTS",
-      "bucket_name": "main-experiment-exports"
     }
   ],
-  "queues": {
-    "producers": [
-      {
-        "binding": "EXPORT_QUEUE",
-        "queue": "main-experiment-recording-exports"
-      }
-    ],
-    "consumers": [
-      {
-        "queue": "main-experiment-recording-exports",
-        "max_batch_size": 1,
-        "max_batch_timeout": 5,
-        "max_retries": 4,
-        "retry_delay": 60,
-        "dead_letter_queue": "main-experiment-recording-exports-dlq"
-      }
-    ]
-  },
   "triggers": {
-    "crons": ["*/5 * * * *"]
+    "crons": []
   },
   "vars": {
     "ENVIRONMENT": "development",
@@ -61,7 +39,6 @@
     "ALLOW_PLACEHOLDER_ASSETS": "true",
     "TEST_TOKEN_POLICY": "undecided",
     "SESSION_TTL_SECONDS": "43200",
-    "DELAY_DAYS": "7",
     "MAX_RECORDING_BYTES": "4194304"
   },
   "observability": {
@@ -92,29 +69,10 @@
         {
           "binding": "STIMULI",
           "bucket_name": "main-experiment-stimuli-production"
-        },
-        {
-          "binding": "EXPORTS",
-          "bucket_name": "main-experiment-exports-production"
         }
       ],
-      "queues": {
-        "producers": [
-          {
-            "binding": "EXPORT_QUEUE",
-            "queue": "main-experiment-recording-exports-production"
-          }
-        ],
-        "consumers": [
-          {
-            "queue": "main-experiment-recording-exports-production",
-            "max_batch_size": 1,
-            "max_batch_timeout": 5,
-            "max_retries": 4,
-            "retry_delay": 60,
-            "dead_letter_queue": "main-experiment-recording-exports-production-dlq"
-          }
-        ]
+      "triggers": {
+        "crons": []
       },
       "vars": {
         "ENVIRONMENT": "production",
@@ -124,7 +82,6 @@
         "ALLOW_PLACEHOLDER_ASSETS": "true",
         "TEST_TOKEN_POLICY": "undecided",
         "SESSION_TTL_SECONDS": "43200",
-        "DELAY_DAYS": "7",
         "MAX_RECORDING_BYTES": "4194304"
       },
       "observability": {

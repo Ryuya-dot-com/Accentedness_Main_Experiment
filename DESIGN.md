@@ -8,8 +8,8 @@
 |---|---|---|
 | 学習時アクセント | American English / Mandarin-accented English / Japanese-accented English | between-participant |
 | 学習時話者変動性 | No Variability / High Variability | within-participant |
-| Picture Naming時点 | pre / 学習直後（実間隔を記録） / 直後完了＋7日を目標（以後も受付） | within-participant |
-| L2-to-L1時点 | 学習直後（実間隔を記録） / 直後完了＋7日を目標（以後も受付） | within-participant |
+| Picture Naming時点 | pre / 学習直後（実間隔を記録） / Immediate最終行動応答＋5日を目標（以後も受付） | within-participant |
+| L2-to-L1時点 | 学習直後（実間隔を記録） / Immediate最終行動応答＋5日を目標（以後も受付） | within-participant |
 | L2-to-L1テスト音声アクセント | English / Chinese / Japanese | within-participant |
 
 Picture Matching は行いません。preではPicture Namingだけを行い、L2-to-L1は行いません。直後・遅延のテスト順はPicture Naming、L2-to-L1で固定します。課題順を固定する理由は、L2-to-L1で正答語を聞くことがPicture Namingを促進するテスト効果を避けるためです。
@@ -138,9 +138,11 @@ PN練習2 → PN本番24
 PN練習2 → PN本番24 → L2練習3 → L2本番24
 ```
 
-合計53試行、録音53件です。遅延目標は直後の行動課題完了時刻＋7日です。この7日はdelayed操作を保つ開始下限であり、目標時刻以後は常に受付可能で、期限切れにしません。実際の保持間隔は、直後L2-to-L1最終試行の行動応答受理時刻から遅延Picture Naming最初の試行開始時刻までとします。目標偏差は、遅延Picture Naming最初の試行開始時刻から保存済み目標時刻を引きます。リンクredeem時刻、録音upload時刻、visit確定時刻、後から変更されたdelay設定値からの逆算は用いません。これらの正本値はD1 view `analysis_intervals`から取得します。
+合計53試行、録音53件です。遅延目標はImmediate最終L2-to-L1試行の行動応答をserverが受理した時刻＋5日です。この5日はdelayed操作を保つ開始下限です。開始にはImmediateの全応答・録音の保存確定も必要ですが、その確定時刻から5日を再計算しません。両条件を満たした後は期限切れにしません。実際の保持間隔は、直後L2-to-L1最終試行の行動応答受理時刻から遅延Picture Naming最初の試行開始時刻までとします。目標偏差は、遅延Picture Naming最初の試行開始時刻から保存済み目標時刻を引きます。リンクredeem時刻、録音upload時刻、visit確定時刻、後から変更されたdelay設定値からの逆算は用いません。これらの正本値はD1 view `analysis_intervals`から取得します。
 
 6つのparticipant URLを用意しますが、token/sessionの境界はpre、immediate、delayedの3 visitです。招待linkに経過時間による失効はありません。短期session tokenには認証上の有効期限がありますが、同じactiveな招待linkを開き直せば未完了位置から再開できるため、これは参加期限ではありません。immediate内とdelayed内では同じsession epochを引き継ぎます。次segmentの開始前に、前segmentの録音がすべてR2へ保存済みであることをserverが検査します。
+
+Pre・直後で録音や回答を参加者へdownloadさせると、聞き返し・復習が遅延成績を汚染し得るため、参加者向けZIPは提示しません。Delayed L2-to-L1を含むvisitをserver側で完了確定した後だけ、3 visitすべてのcanonical回答とWAVを単一ZIPとして明示ボタンから提供します。download失敗で保存済みvisitを未完了へ戻しません。
 
 ## 10. 分析前の重要フラグ
 
@@ -154,6 +156,6 @@ PN練習2 → PN本番24 → L2練習3 → L2本番24
 - pre完了→学習開始、学習完了→直後PN開始、PN完了→L2開始の間隔。間隔だけを理由に自動除外しない。
 - 遅延間隔の目標からの偏差。
 
-受付を無期限にしても、数週・数か月後の測定を一律に「7日後」と解釈できるわけではありません。全観測を保持した上で実間隔の分布を報告し、7日付近を対象とするestimand、連続時間として扱うmodel、感度分析のどれを主要とするかを結果を見る前に固定します。特にdelayed実施時期は、条件や直後成績、継続意思の影響を受け得るpost-treatment変数です。機械的な共変量調整で脱落・選択biasが解消すると仮定しません。
+受付を無期限にしても、数週・数か月後の測定を一律に「5日後」と解釈できるわけではありません。全観測を保持した上で実間隔の分布を報告し、5日付近を対象とするestimand、連続時間として扱うmodel、感度分析のどれを主要とするかを結果を見る前に固定します。特にdelayed実施時期は、条件や直後成績、継続意思の影響を受け得るpost-treatment変数です。機械的な共変量調整で脱落・選択biasが解消すると仮定しません。
 
 効果の方向、除外閾値、主要モデル、欠測処理は結果を見ずに事前登録してください。

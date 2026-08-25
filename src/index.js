@@ -16,15 +16,22 @@ import {
   startTrial,
   uploadRecording,
 } from "./routes-participant.js";
+import {
+  downloadAdminParticipantCopy,
+  downloadParticipantCopy,
+} from "./routes-participant-copy.js";
 import { ApiError, errorResponse, jsonResponse } from "./lib/http.js";
 import { collectionConfiguration } from "./lib/config.js";
-import { downloadRecordingZip, listRecordingExports } from "./routes-recording-export.js";
-import { processRecordingExport, reconcileRecordingExports } from "./lib/recording-exports.js";
 
 const UUID_IN_PATH = /\/[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?=\/|$)/giu;
 
 function privacySafeLogPath(pathname) {
-  return pathname.replace(UUID_IN_PATH, "/:uuid");
+  return pathname
+    .replace(UUID_IN_PATH, "/:uuid")
+    .replace(
+      /^\/api\/admin\/participants\/[1-9][0-9]*\/results\.zip$/u,
+      "/api/admin/participants/:id/results.zip",
+    );
 }
 
 function enforceOrigin(request) {
@@ -36,7 +43,7 @@ function enforceOrigin(request) {
   }
 }
 
-async function routeApi(request, env, ctx) {
+async function routeApi(request, env) {
   const url = new URL(request.url);
   const path = url.pathname;
   enforceOrigin(request);
@@ -59,20 +66,20 @@ async function routeApi(request, env, ctx) {
   if (path === "/api/admin/participants") return createParticipant(request, env);
   if (path === "/api/admin/delayed/due") return listDueDelayed(request, env);
   if (path === "/api/admin/summary") return adminSummary(request, env);
-  if (path === "/api/admin/exports") return listRecordingExports(request, env);
 
-  let match = /^\/api\/admin\/visits\/([^/]+)\/invitations$/u.exec(path);
+  let match = /^\/api\/admin\/participants\/([^/]+)\/results\.zip$/u.exec(path);
+  if (match) return downloadAdminParticipantCopy(request, env, match[1]);
+
+  match = /^\/api\/admin\/visits\/([^/]+)\/invitations$/u.exec(path);
   if (match) return createInvitation(request, env, match[1]);
   match = /^\/api\/admin\/invitations\/([^/]+)\/revoke$/u.exec(path);
   if (match) return revokeInvitation(request, env, match[1]);
-  match = /^\/api\/admin\/visits\/([^/]+)\/recordings\/(picture_naming|l2_to_l1)\.zip$/u.exec(path);
-  if (match) return downloadRecordingZip(request, env, match[1], match[2]);
-
   if (path === "/api/invitations/redeem") return redeemInvitation(request, env);
   if (path === "/api/session") return sessionState(request, env);
   if (path === "/api/session/heartbeat") return heartbeat(request, env);
   if (path === "/api/events") return saveEvents(request, env);
   if (path === "/api/visit/complete") return completeVisit(request, env);
+  if (path === "/api/visit/results.zip") return downloadParticipantCopy(request, env);
 
   match = /^\/api\/trials\/([^/]+)\/start$/u.exec(path);
   if (match) return startTrial(request, env, match[1]);
@@ -87,14 +94,14 @@ async function routeApi(request, env, ctx) {
 }
 
 export default {
-  async fetch(request, env, ctx) {
+  async fetch(request, env) {
     const requestId = crypto.randomUUID();
     const url = new URL(request.url);
     const loggedPath = privacySafeLogPath(url.pathname);
     const started = Date.now();
     try {
       const response = url.pathname.startsWith("/api/")
-        ? await routeApi(request, env, ctx)
+        ? await routeApi(request, env)
         : await env.ASSETS.fetch(request);
       console.log(JSON.stringify({
         message: "request_complete",
@@ -120,28 +127,5 @@ export default {
       }));
       return response;
     }
-  },
-  async queue(batch, env) {
-    for (const message of batch.messages) {
-      try {
-        const exportUuid = String(message.body?.export_uuid ?? "");
-        if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(exportUuid)) {
-          throw new Error("recording_export_message_invalid");
-        }
-        await processRecordingExport(env, exportUuid);
-        message.ack();
-      } catch (error) {
-        console.error(JSON.stringify({
-          message: "recording_export_consumer_failed",
-          queue_message_id: message.id,
-          attempts: message.attempts,
-          error: String(error),
-        }));
-        message.retry({ delaySeconds: 60 });
-      }
-    }
-  },
-  async scheduled(_event, env, ctx) {
-    ctx.waitUntil(reconcileRecordingExports(env));
   },
 };

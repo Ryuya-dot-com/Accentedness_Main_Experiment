@@ -1,3 +1,5 @@
+import { participantCopyFilename, writeResponseToFile } from "./api.js";
+
 const tokenInput = document.getElementById("admin-token");
 const participantForm = document.getElementById("participant-form");
 const participantInput = document.getElementById("participant-id");
@@ -7,6 +9,7 @@ const invitationUrl = document.getElementById("invitation-url");
 const dueBody = document.getElementById("due-visits");
 const summary = document.getElementById("summary");
 const status = document.getElementById("status");
+const downloadResults = document.getElementById("download-results");
 
 let participant = null;
 
@@ -62,6 +65,75 @@ async function issueVisit(visitType) {
   showInvitation(payload.invitation);
 }
 
+async function downloadParticipantResults() {
+  if (!participant) throw new Error("先に参加者IDを参照してください。");
+  const suggestedName = `accentedness_p${participant.participant_id}_results.zip`;
+  let fileHandle = null;
+  if (typeof window.showSaveFilePicker === "function") {
+    try {
+      fileHandle = await window.showSaveFilePicker({
+        suggestedName,
+        types: [{
+          description: "ZIP archive",
+          accept: { "application/zip": [".zip"] },
+        }],
+      });
+    } catch (error) {
+      if (error?.name === "AbortError") {
+        status.textContent = "保存先の選択をキャンセルしました。";
+        return;
+      }
+      fileHandle = null;
+      status.textContent = "保存先を直接選択できないため、通常ダウンロードに切り替えます。";
+    }
+  }
+  if (fileHandle) {
+    status.textContent = "結果ZIPを準備しています。";
+  } else if (typeof window.showSaveFilePicker !== "function") {
+    status.textContent = "結果ZIPを準備しています。通常ダウンロードを使用します。";
+  }
+  const response = await fetch(
+    `/api/admin/participants/${participant.participant_id}/results.zip`,
+    {
+      headers: { Authorization: `Bearer ${tokenInput.value}` },
+      cache: "no-store",
+    },
+  );
+  if (!response.ok) {
+    const payload = (response.headers.get("Content-Type") ?? "").includes("application/json")
+      ? await response.json()
+      : null;
+    throw new Error(payload?.error?.message ?? `Request failed (${response.status})`);
+  }
+  const contentType = response.headers.get("Content-Type") ?? "";
+  if (!contentType.includes("application/zip")) {
+    await response.body?.cancel().catch(() => {});
+    throw new Error("結果ファイルの形式を確認できませんでした。");
+  }
+  const filename = participantCopyFilename(
+    response.headers.get("Content-Disposition"),
+  );
+  if (fileHandle) {
+    await writeResponseToFile(response, fileHandle);
+    status.textContent = `${filename} を保存しました。`;
+    return;
+  }
+  const expectedSize = Number(response.headers.get("Content-Length"));
+  const blob = await response.blob();
+  if (Number.isSafeInteger(expectedSize) && expectedSize > 0 && blob.size !== expectedSize) {
+    throw new Error("結果ZIPを最後まで受信できませんでした。");
+  }
+  const objectUrl = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = objectUrl;
+  link.download = filename ?? suggestedName;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
+  status.textContent = "収集済み結果ZIPのダウンロードを開始しました。";
+}
+
 async function loadDueVisits() {
   const payload = await authorizedJson("/api/admin/delayed/due");
   dueBody.replaceChildren();
@@ -70,7 +142,6 @@ async function loadDueVisits() {
     for (const value of [
       visit.numeric_id,
       new Date(Number(visit.target_at_ms)).toLocaleString("ja-JP"),
-      visit.immediate_missing_recordings,
       visit.status,
     ]) {
       const cell = document.createElement("td");
@@ -81,7 +152,6 @@ async function loadDueVisits() {
     const button = document.createElement("button");
     button.type = "button";
     button.textContent = "Delayedリンクを発行";
-    button.disabled = Number(visit.immediate_missing_recordings) !== 0;
     button.addEventListener("click", () => authorizedJson(
       `/api/admin/visits/${visit.visit_uuid}/invitations`,
       { method: "POST", body: {} },
@@ -116,6 +186,7 @@ participantActions.addEventListener("click", (event) => {
 });
 document.getElementById("load-due").addEventListener("click", () => loadDueVisits().catch(showError));
 document.getElementById("load-summary").addEventListener("click", () => loadSummary().catch(showError));
+downloadResults.addEventListener("click", () => downloadParticipantResults().catch(showError));
 window.addEventListener("pagehide", () => {
   tokenInput.value = "";
   invitationUrl.value = "";

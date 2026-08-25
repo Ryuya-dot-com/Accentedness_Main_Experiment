@@ -5,9 +5,8 @@
 - D1: 条件割当、manifest、試行応答、時刻、QC、監査ログ
 - R2 `RECORDINGS`: 参加者のWAV録音
 - R2 `STIMULI`: 非公開の本番刺激
-- R2 `EXPORTS`: phase単位で自動生成した非公開ZIP。D1へBLOBは保存しない
 
-上記remote storageを収集時の正本とします。参加者browserのIndexedDBは、D1応答とR2録音の受理確認までBlobを保持する一時outboxです。両方の確認後にrecordを削除し、参加者端末へraw音声を恒久保存しません。研究者管理端末のlocal copyは、D1/R2から別工程で作る暗号化・access制御されたbackupであり、収集要求と同期する第二書込先ではありません。
+上記remote storageを収集時の正本とします。参加者browserのIndexedDBは、D1応答とR2録音の受理確認までBlobを保持する一時outboxで、両方の確認後にrecordを削除します。最終Delayed完了後の明示操作でだけ、D1/R2のcanonical dataから3 visit分の参加者向けZIPをオンデマンド生成します。このZIPは正本でもbackupでもありません。
 
 クライアントへは全試行の骨格manifestだけを渡し、語、訳、条件、話者、R2 keyは渡しません。刺激は現在の未回答試行を認可します。現在試行にserver-sideの開始記録ができた後だけ、通信待ちを試行間隔から分離するため同じsegment内の次の1試行も先読みできます。segment境界と2試行以上先は拒否します。
 
@@ -24,9 +23,6 @@
 | `sessions` | browser session | epoch、token hash、有効期限、supersede状態 |
 | `trial_attempts` | 試行attempt | start/response key、応答JSON、再提示フラグ |
 | `recordings` | canonical attempt | R2 key、SHA-256、CRC-32、bytes、WAV状態、実測sample rate/count/duration、server算出QC |
-| `recording_exports` | visit×録音segment | source snapshot hash、Queue/lease状態、非公開ZIP key、bytes、download回数 |
-| `recording_export_members` | ZIP×WAV | 固定されたattempt/trial、archive名、元R2 key、hash、bytes、practice |
-| `recording_export_downloads` | 管理者download request | method、range、応答status、request時刻。ローカル保存成功とはみなさない |
 | `events` | telemetry event | onset、visibility、audio、network等の時刻とpayload |
 | `audit_log` | 管理・system操作 | 招待・完了などの監査証跡 |
 | `analysis_intervals` | 参加者（view） | 行動endpointに基づくpre→学習、課題間、保持、遅延目標偏差の各間隔 |
@@ -42,8 +38,6 @@ accent×counterbalance cellごとに、`assigned_count`と各visit prefix（`pre
 | `*_first_trial_count` | そのvisitの `trial_attempts` が1件以上serverへ記録された |
 | `*_behavioral_completed_count` | 最終trialのcanonical responseが受理され、`behavioral_completed_at_ms` が記録された |
 | `*_finalized_count` | 必要な応答・録音が揃い、`finalized_at_ms` が記録された |
-
-`pre_completed_count`、`immediate_started_count`、`immediate_completed_count`、`delayed_started_count`、`delayed_completed_count` はAPI互換のためだけに残した旧aliasです。旧 `*_started_count` は `visits.first_started_at_ms`、すなわち招待redeemに基づくため、最初の行動trialを開始した人数として解釈しません。
 
 ## 3. 主要な割当列
 
@@ -101,9 +95,9 @@ recordings/{participant_uuid}/{visit_type}/{segment}/{trial_uuid}/{attempt_uuid}
 
 raw録音は声紋・発話内容を含み得るため、匿名化済みの表データより厳しいアクセス制御と保管期間を適用します。
 
-各phase（pre PN、immediate PN、immediate L2、delayed PN、delayed L2）の全WAVが揃うと、Queue consumerがWAVを1本ずつ読み、圧縮なしZIPを`EXPORTS`へstreaming PUTします。ZIPには`manifest.json`と練習を含む全WAVを入れます。WAV archive名は `wav/recording_XX.wav` のopaque名とし、語・accent・話者をfile名へ露出しません。manifestはattempt/trial ID、practice、archive名、SHA-256、bytes、upload時刻を含みます。元WAVとZIP全体をWorker memoryへ展開しません。ZIP生成はat-least-once delivery、20分lease、5回上限、immutable R2 key、source snapshot hashにより冪等化します。scheduled reconcilerはexport row自体が欠落した完了segmentも再発見します。
+ZIPは保存済みのcanonical responseをD1から、対応するWAVをR2から読み、圧縮なしでresponseへ直接streamします。派生ZIPをR2やD1へ保存しません。entry名は `recordings/{visit_type}/{segment}/recording_NNN.wav` とし、刺激語、訳語、accent、話者、内部UUIDを含めません。参加者版`responses.json`にも内部UUIDや条件labelを含めず、試行順、応答payload、WAVのSHA-256等だけを記録します。研究者版は採点・正本照合のため、同じopaque WAV entryへ刺激、条件、trial/attempt ID、再提示flag、R2 key、server算出QCを対応づけます。
 
-ZIP downloadは管理者APIだけが許可され、Range/conditional requestをprivate R2へ渡します。配信前にR2 objectのsize、ETag、export UUID、source snapshot hashをD1と照合します。参加者端末へはdownloadしません。download auditは「応答streamを開始した」記録であり、研究者端末への保存完了を保証しません。`recording_exports.expires_at_ms`は予定値にすぎず、削除・配信停止はproduction R2 lifecycleと運用手順で別途実施します。
+参加者APIはDelayed visitの完了後だけ利用でき、pre・immediate・delayedの3 visitがすべてcompletedで、全canonical応答と録音が揃うことを再検査します。研究者API `GET /api/admin/participants/{numeric_id}/results.zip` はADMIN_TOKENを要求し、その時点の収集済みcanonical応答と利用可能なWAVを返します。対応Chromeでは選択済みfileへresponse bodyを直接streamし、書込closeと`Content-Length`一致を成功条件にします。未対応browserのBlob fallbackでは検知できるのはZIP受信とdownload開始までで、disk保存完了とはみなしません。
 
 ## 6. 時刻の定義
 
@@ -113,7 +107,7 @@ ZIP downloadは管理者APIだけが許可され、Range/conditional requestをp
 | `client_*_perf_ms` | そのpage lifecycle内のmonotonic clock |
 | `performance_time_origin_ms` | performance clockとepochの対応 |
 | `*_context_s` | AudioContext clock |
-| `target_at_ms` | immediate behavioral completion＋7日 |
+| `target_at_ms` | Immediate最終L2-to-L1行動応答のserver受理時刻＋5日 |
 | delayed実施開始 | delayedの最初のPicture Naming trialのserver開始 |
 | pre→学習間隔 | immediateのlearning `segments.started_at_ms` − pre `behavioral_completed_at_ms` |
 | learning→直後PN間隔 | immediate PN `segments.started_at_ms` − immediate learning `segments.completed_at_ms` |
@@ -122,7 +116,9 @@ ZIP downloadは管理者APIだけが許可され、Range/conditional requestをp
 | 遅延目標偏差 | delayedのPicture Naming `segments.started_at_ms` − delayed `target_at_ms` |
 | 遅延PN→L2間隔 | delayed L2 `segments.started_at_ms` − delayed PN `segments.completed_at_ms` |
 
-6つの分析用間隔はD1 view `analysis_intervals`を正本とします。`visits.first_started_at_ms`は招待linkをredeemしてvisit sessionを開始した時刻、`visits.finalized_at_ms`は全応答・録音が揃ってvisitを確定した時刻であり、行動endpoint間隔には使いません。時刻源を直接混ぜず、保存されたanchorから同一clock内の差または明示的な変換を使います。受付上限を設けないことと時間を無視することは同義ではなく、実間隔を全例保持して条件別報告と事前登録済み感度分析に用います。`target_deviation_ms`は`retention_interval_ms − 7日`と定数差なので、同じmodelへ両方を説明変数として入れません。またdelayed時期はpost-treatmentになり得るため、自動的な共変量調整を欠測・脱落biasの解決策とみなしません。
+6つの分析用間隔はD1 view `analysis_intervals`を正本とします。`visits.first_started_at_ms`は招待linkをredeemしてvisit sessionを開始した時刻、`visits.finalized_at_ms`は全応答・録音が揃ってvisitを確定した時刻であり、行動endpoint間隔には使いません。時刻源を直接混ぜず、保存されたanchorから同一clock内の差または明示的な変換を使います。受付上限を設けないことと時間を無視することは同義ではなく、実間隔を全例保持して条件別報告と事前登録済み感度分析に用います。`target_deviation_ms`は`retention_interval_ms − 5日`と定数差なので、同じmodelへ両方を説明変数として入れません。またdelayed時期はpost-treatmentになり得るため、自動的な共変量調整を欠測・脱落biasの解決策とみなしません。
+
+`target_at_ms`は保持間隔の下限を示す行動時刻です。Delayed招待の発行には、これに加えてImmediate visitが全応答・録音の保存確認を終えた`completed`状態であることを要求します。保存確認が遅れてもtargetを後ろへ再計算せず、実際の保持間隔をそのまま記録します。
 
 ## 7. 分析対象と除外候補
 

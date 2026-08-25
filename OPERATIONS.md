@@ -7,12 +7,12 @@
 - D1: 参加者、割当、visit、試行、応答、イベント、監査ログ
 - R2 `STIMULI`: 非公開の本番画像・音声
 - R2 `RECORDINGS`: 非公開の参加者録音
-- Queue `main-experiment-recording-exports-production`: phase完了後のZIP生成
-- R2 `EXPORTS`: 自動生成した非公開ZIP
 
 管理APIはBearer tokenで保護されています。本番ではそれに加え、`/api/admin/*` をCloudflare Accessで研究チームだけに制限してください。参加者IDには学籍番号や氏名を使わず、研究用の連番だけを使います。
 
 ## 2. 初回セットアップ
+
+本番accountでは先にWorkers Paidを有効化します。1参加者の作成時に、参加者・3 visit・24 item割当・6 segment・276 trial・監査記録を311文のD1 batchで原子的に保存します。これはD1 Freeの1 invocation 50 query上限を超えます。また録音受理では最大4 MiBのPCM検査、SHA-256、CRC-32を行うため、Workers Freeの10 ms CPU上限を本番要件にしません。Cloudflare公式の [D1 limits](https://developers.cloudflare.com/d1/platform/limits/) と [Workers limits](https://developers.cloudflare.com/workers/platform/limits/) を収集開始時にも再確認してください。Free対応のために作成処理を複数requestへ分割すると部分作成状態が生じるため、本研究では採用しません。
 
 ```bash
 npm install
@@ -20,9 +20,6 @@ npx wrangler login
 npx wrangler d1 create main-experiment-production
 npx wrangler r2 bucket create main-experiment-recordings-production
 npx wrangler r2 bucket create main-experiment-stimuli-production
-npx wrangler r2 bucket create main-experiment-exports-production
-npx wrangler queues create main-experiment-recording-exports-production
-npx wrangler queues create main-experiment-recording-exports-production-dlq
 ```
 
 D1作成時に表示される`database_id`を `wrangler.jsonc` のD1設定へ追記します。秘密値は設定ファイルへ書かず、Secretsに登録します。
@@ -40,7 +37,9 @@ npx wrangler secret put RANDOMIZATION_SECRET --env production
 npx wrangler d1 migrations apply DB --remote --env production
 ```
 
-環境別のD1、R2、Queue、varsは継承されないため、`wrangler.jsonc` の `env.production` にすべて明記します。production用resource IDを作成後に固定し、default開発環境と取り違えないことを別担当者が確認してください。
+`0005_remove_recording_exports.sql` が削除するのは、旧Queue方式で作った派生ZIPの状態表だけです。canonical応答・録音metadata・監査logは削除しません。旧版を一度でも配置した環境では、bindingを設定から消しても既存のQueue、DLQ、旧`EXPORTS` bucketは自動削除されません。未作成ならこの確認はN/Aです。存在する場合は、正本DB・`RECORDINGS`・`STIMULI`と取り違えていないこと、必要な派生ZIPがないことを二名で確認してから、Cloudflare側で旧資源だけを廃止します。旧5分cronは設定省略では残るため、`wrangler.jsonc` のroot・production双方で`"triggers": { "crons": [] }`を明示し、次回deploy後にDashboardで消滅を確認します。確認までは空配列を削除しません。
+
+環境別のD1、R2、varsは継承されないため、`wrangler.jsonc` の `env.production` にすべて明記します。production用resource IDを作成後に固定し、default開発環境と取り違えないことを別担当者が確認してください。
 
 ## 3. ローカル開発
 
@@ -74,9 +73,9 @@ npm run verify
 npx wrangler deploy --env production
 ```
 
-`GET /api/health` の `collection_ready` が `true` であることを確認します。さらに、非本番IDで全導線を実施し、D1応答数、R2録音数、音声内容、直後完了から遅延目標時刻の算出を確認します。
+`GET /api/health` の `collection_ready` が `true` であることを確認します。さらに、非本番IDで全導線を実施し、D1応答数、R2録音数、音声内容、Immediate最終L2-to-L1行動応答のserver受理時刻から遅延目標時刻までが正確に5日であることを確認します。
 
-録音ZIPは最大27本×4 MiBとなり得ます。実装は全体をmemoryへ載せずstreamingしますが、Queue consumerのCPU余裕を確保するため、本番はWorkers Paidを前提に容量試験を行ってください。Queueと`EXPORTS` bucketが存在しない状態では録音自体は保存できますが、ZIP自動生成は完了しません。
+参加者向け結果ZIPは3 visit分のWAVをR2から直接streamします。通常の48 kHz mono PCMでは概算130 MiB前後、各録音の上限4 MiBを単純合計した保守的上限では約520 MiBになり得ます。対応するdesktop ChromeではFile System Access APIで選択済みfileへ直接書き、browser memoryへ全量保持しません。転送中に進捗しているZIPを固定15分で切る上限は設けず、response headerの受信開始だけを30秒でtimeoutします。未対応時だけBlob downloadへfallbackするため、本番相当データで直接保存が使われること、生成時間、memory、再試行をpilotしてください。ZIP失敗はすでに完了したvisitやD1/R2正本を取り消しません。
 
 ## 5. preリンクとMain Experimentリンクの手動発行
 
@@ -110,14 +109,12 @@ curl -sS -X POST "https://EXPERIMENT.example/api/admin/visits/IMMEDIATE_VISIT_UU
 
 ## 6. 遅延リンクの手動発行
 
-直後テスト完了後、遅延visitは「直後の行動完了＋7日」でscheduledになります。7日はdelayed操作を守る開始下限です。以後の上限期限はなく、遅れても受付可能です。対象一覧を確認します。
+Immediate最終L2-to-L1回答をserverが受理すると、その時刻＋5日で遅延visitがscheduledになります。Delayedリンクは、この5日下限とImmediateの全応答・録音の保存確定を両方満たした後に発行できます。以後の上限期限はなく、遅れても受付可能です。対象一覧を確認します。
 
 ```bash
 curl -sS "https://EXPERIMENT.example/api/admin/delayed/due" \
   -H "Authorization: Bearer ADMIN_TOKEN"
 ```
-
-各行の `immediate_missing_recordings` が0であることを確認します。0でない場合は、直後visitの録音outbox回収または研究チームの判断を先に行います。
 
 対象visitへ遅延リンクを発行します。
 
@@ -154,7 +151,6 @@ curl -sS "https://EXPERIMENT.example/api/admin/summary" \
 - `participant_id_span.missing_ids_through_maximum` が発番台帳と一致し、ID 1から最大IDまでに説明のない欠番がない。
 - `assignment_flow` のaccent×counterbalance cell別に、各visitの `issued` → `redeemed` → `first_trial` → `behavioral_completed` → `finalized` を確認し、条件別離脱を隠さない。`redeemed`はlinkを受け付けてsessionを発行した段階、`first_trial`は最初のtrialをserverへ開始記録した段階であり、同一視しない。
 - 各セルで `assigned_count >= *_issued_count >= *_redeemed_count >= *_first_trial_count >= *_behavioral_completed_count >= *_finalized_count` を満たすことを確認する。違反は参加者の除外理由ではなく、まず状態遷移またはデータ完全性の異常として調査する。
-- 後方互換の `pre_completed_count`、`immediate_started_count`、`immediate_completed_count`、`delayed_started_count`、`delayed_completed_count` は残るが、新しい監視・分析には使わない。特に旧 `*_started_count` はtrial開始ではなくlink redeem時刻に基づく。
 - behavioral completion済みだが録音未送信のvisitがない。
 - R2録音件数がD1の`recordings.state=uploaded`と一致する。
 - `recordings.state=pending`が残る場合は完了扱いにせず、IndexedDBの元Blobを保持したまま担当者が原因を確認する。
@@ -163,103 +159,37 @@ curl -sS "https://EXPERIMENT.example/api/admin/summary" \
 
 ## 9. 録音ZIP
 
-各phaseの最後のWAVがR2へ保存されると、QueueがZIPを自動生成します。状態を取得します。
+研究者は `/admin/` で参加者IDを参照し、「収集済み結果ZIPを保存」を押します。CLIでは次のようにオンデマンド取得できます。
 
 ```bash
-curl -sS "https://EXPERIMENT.example/api/admin/exports?participant_id=1" \
-  -H "Authorization: Bearer ADMIN_TOKEN"
-```
-
-`state=ready`になった行は、返された`download_path`または次の形式で取得できます。
-
-```bash
-curl -fL "https://EXPERIMENT.example/api/admin/visits/VISIT_UUID/recordings/picture_naming.zip" \
+curl -fL "https://EXPERIMENT.example/api/admin/participants/1/results.zip" \
   -H "Authorization: Bearer ADMIN_TOKEN" \
-  --output recordings.zip
+  --output accentedness_p1_results.zip
 ```
 
-ブラウザでは`/admin/exports`にADMIN_TOKENと参加者IDを入力すると、完成済みZIPを1クリックでdownloadできます。この画面はZIP全体をbrowser Blobへ保持してから保存するため、大容量archiveは上記の `curl --output` を使ってください。この静的ページは公開され得ますがAPIはtokenで保護されています。本番ではparticipant route全体ではなく、`/admin/*`と`/api/admin/*`だけをCloudflare Accessで研究チームに制限してください。`EXPORTS` bucketのpublic accessと`r2.dev`は無効のままにします。
+研究者APIは収集済みcanonical応答と、その時点でR2に存在するWAVを返します。研究者版filenameには研究用participant IDを含め、台帳との取り違えを防ぎます。参加者版filenameはIDを含まない固定名です。WAV entry名はvisit/segment/ordinalだけのopaque名ですが、研究者版`responses.json`には採点・照合に必要な刺激、条件、trial/attempt ID、再提示flag、R2 key、録音QCとの対応を含めます。参加者版にはこれらの研究用metadataを含めません。派生ZIPをCloudflareに保存するQueue・専用R2・export tableはありません。
 
-ZIP生成はQueueのat-least-once deliveryを前提に冪等化され、20分leaseと5回の試行上限を持ちます。5分ごとのscheduled reconcilerは欠落したexport row、未送信job、期限切れleaseを回復します。ZIP内WAV名は順番だけを示すopaque名で、語・accent・話者を含みません。download前にR2 objectのsize、ETag、export UUID、source snapshotをD1と照合します。
-
-`attempt_count=5` の `state=failed` はterminalで、DLQを再送してもconsumerはskipします。現行APIにreset操作はありません。D1を手作業で変更せず、本番前に、元WAVとmember snapshotの診断、理由・担当者の監査記録、明示的な再試行を一体化した管理者用recovery手順を実装してください。それまではterminal failureをproduction運用で自動回復できるとみなしません。
-
-D1の `expires_at_ms` は監査用の予定時刻であり、現行コードはその時刻に配信停止・削除をしません。raw WAVとZIPの保管期間を倫理審査・同意文書に合わせて別々に定め、production bucketへR2 lifecycleを設定し、backup/restoreを確認してから削除を有効化してください。D1のdownload記録はHTTP stream開始の監査であり、研究者端末への保存完了を意味しません。
+参加者にはPre・直後でZIPを提示しません。Delayed visitを先に完了確定し、3 visitの全応答・録音が揃うことをserverが再検査した場合だけ、完了画面で保存操作を提示します。対応Chromeでは本人が保存先を選んだ後にfileへ直接streamし、全bytesの書込と`Content-Length`一致を確認してから完了表示にします。12時間のsession有効中なら完了画面の「もう一度保存」から再取得できます。未対応browserのBlob fallbackではdownload開始後にChromeのdownload一覧を本人に確認してもらいます。session失効後に再取得が必要なら研究担当者が管理APIから渡します。共用PCに音声を残すprivacy riskを同意・削除手順へ明記してください。
 
 ## 10. 中断・再開
 
 - 同じ招待リンクを同じブラウザで開くと、保存済み位置から再開します。
 - 別タブで再redeemすると新しいsession epochが発行され、古いタブはsupersededになります。
-- 旧タブは次の15秒heartbeatまで動作し得るため、本番pilotでは録音中の二重タブを明示的に試験します。BroadcastChannel/Web Locksによる即時単一タブ制御は未実装です。
+- 同じリンクを複数タブで開かないよう案内します。再度開いた場合は最新sessionだけが有効になり、旧タブは次のheartbeatまたはAPI要求で停止します。
 - 試行onset後のreloadは再提示として記録され、`repeated_after_interruption` が立ちます。
 - 応答PUTの一時失敗は同じ冪等keyで再送します。応答と録音の送信はIndexedDB outboxに保持されます。serverが録音待ちなのに対応するlocal Blobもない場合は、次試行へ進まず明示的に停止します。
 - IndexedDBはserver保存前のcrash recovery専用です。D1の応答受理とR2の録音受理を両方確認したrecordは、visitを問わず次回flushまでに削除し、参加者端末を第二の恒久保存先にしません。
 - 共用PCではvisitごとにoutboxを分離していますが、参加後はブラウザデータを研究運用規程に従って扱います。
 - 中断・放棄された未送信WAVを自動削除する実装はありません。誤削除を避ける回収・破棄方針と保存期間を倫理手順に定めます。
 
-## 11. セキュリティとバックアップ
+## 11. セキュリティとデータ保全
 
 - R2 bucketを公開しない。
 - D1/R2/Workerへの権限を最小限にする。
-- Access、rate limiting、アラートを本番ドメインに設定する。
+- `/admin/*` と `/api/admin/*` をCloudflare Accessで研究チームだけに制限する。
 - `ADMIN_TOKEN` と `RANDOMIZATION_SECRET` をログ、文書、チャットへ貼らない。
 - raw録音は個人識別性のある研究データとして扱う。
 
-rate limitingとCloudflare Accessはリポジトリ外のアカウント設定です。コードが存在するだけでは有効にならないため、本番チェックリストで別項目として確認します。
+Cloudflare Accessはリポジトリ外のアカウント設定です。コードが存在するだけでは有効にならないため、本番チェックリストで別項目として確認します。
 
-### 保存層の役割
-
-収集時の正本はD1とprivate R2です。参加者browserのIndexedDBは未送信データの一時outboxであり、研究者local backupではありません。R2内の自動ZIPも同じCloudflare障害領域にある派生物なので、独立backupとは数えません。
-
-研究者管理端末への保存は、Workerから参加者ごとに同期的に二重書きしません。研究者端末の電源・network・空き容量で参加を失敗させないためです。代わりに、専用端末がD1と3つのR2 bucketをpullし、SHA-256 manifestを持つcomplete snapshotを作ります。raw音声をこのrepositoryや通常のDropbox同期領域へ置かず、倫理審査で承認された暗号化volumeを使ってください。
-
-### backup CLIの準備
-
-本repoのWranglerを使い、keyring保存を明示的に有効化してからnamed auth profileを作成します。WranglerのOAuth scopeにはD1 read-onlyがないため、exportに必要な範囲として `account:read`、`user:read`、`d1:write` の3つだけを指定します。`d1:write`は名称どおり更新権限も含むので、このprofileをbackup以外へ流用しません。
-
-```bash
-npx wrangler auth keyring enable
-npx wrangler auth create research-production \
-  --scopes account:read \
-  --scopes user:read \
-  --scopes d1:write
-```
-
-別途rclone 1.75.0以降のstable版を導入し、Cloudflare R2のS3-compatible endpointへ、対象3 bucketだけを読めるObject Read tokenでremoteを作成します。1.75.0はlocal path containment修正版であり、CLIはversionを強制します。`rclone config redacted` でproviderとendpointを照合するため、remote sectionへ `global.*` または `override.*` を追加しません（filterやlocal encodingを全commandへ注入できるため、CLIも拒否します）。`rclone config`へ秘密値を対話入力し、config fileをrepo外、mode `0600`で保管します。秘密値をbackup command、shell history、`.env`、repoへ渡しません。`env_auth`は有効にしません。bucket-level tokenでbucket確認が拒否される場合は、Cloudflareの案内どおりrclone configへ `no_check_bucket = true` を設定します。
-
-最初に、空の専用backup rootを初期化します。rootは絶対pathで指定し、repositoryの内側・外側の親directory・home directoryそのもの・既知のDropbox/iCloud等の同期領域は拒否されます。flagは暗号化済み保存先を担当者が確認したというattestationであり、暗号化を技術的に検出するものではありません。
-
-```bash
-npm run backup:init -- \
-  --destination /ABSOLUTE/ENCRYPTED/accentedness-backup \
-  --confirm-encrypted-storage
-```
-
-### complete snapshotの取得
-
-D1のfull export中は他のdatabase requestが遮断されます。参加者が実施していないことを運用上確認し、短いquiet windowを確保した場合だけ次を実行します。`--confirm-d1-quiet-window`は安全確認を代替せず、担当者が確認したことを明示するflagです。リンクに参加期限を設けない運用と無人の頻回D1 exportは両立しないため、現段階ではこのfull backupを盲目的なcronへ登録しません。
-
-```bash
-npm run backup:production -- \
-  --destination /ABSOLUTE/ENCRYPTED/accentedness-backup \
-  --wrangler-profile research-production \
-  --rclone-remote accentedness-r2 \
-  --expected-cloudflare-account-id 0123456789abcdef0123456789abcdef \
-  --expected-d1-database-id 11111111-2222-3333-4444-555555555555 \
-  --confirm-d1-quiet-window \
-  --confirm-encrypted-storage
-```
-
-上の2つのIDは例ではなく、本番Dashboardで確認したaccount IDとD1 UUIDへ置換します。CLIはCloudflare認証を指定accountへ固定し、明示的な空の `--env-file` でrepo内の `.env.production` 自動読込を遮断し、解決後のD1 UUIDとrclone endpointを照合してmanifestへ記録します。`CLOUDFLARE_API_TOKEN`、`CLOUDFLARE_ACCOUNT_ID`、すべての`RCLONE_*`等がshell環境に残っている場合は、named profileやremoteのsilent overrideを避けるためfail-stopします。値はerrorへ出しません。
-
-CLIは次を行います。
-
-1. production D1を`.partial` SQLへexportし、非空・SHA-256を検査してrenameする。
-2. `RECORDINGS`、`EXPORTS`、`STIMULI`を共有local mirrorへ`rclone copy --immutable`で追加copyする。`sync`やdeleteは使わない。
-3. `rclone check --one-way --download`で、現在remoteにある全objectを実際に読み、local内容と一致することを確認する。remote hashを比較できないobjectでもsize-onlyへ暗黙に弱めない。localに保持した過去objectは許容する。
-4. その時点のremote membershipを別に取得し、その一覧に属するobjectだけのbyte数とlocal SHA-256をmanifestへ記録する。各current objectと親directoryを `fsync` してからpublishし、mirrorに残った過去objectを当該snapshotの復元対象へ混ぜない。
-5. 全工程成功後だけstaging directoryを`snapshots/<id>`へrenameし、`LATEST`をatomicに更新する。途中失敗はcomplete snapshotとして公開しない。
-
-D1 export後にR2をcopyするため、両storeを単一transactionの同一点に固定するものではありません。quiet windowでwriteを止め、manifestの開始・完了時刻とsource一覧を残します。次回以降はimmutable object mirrorを再利用し、現在remoteに属する全fileを再hashするため、容量に応じた所要時間をpilotしてください。remoteで期限削除されたobjectは共有mirrorに残り得るので、manifestのcurrent membershipだけをrestore対象にし、local mirror自体にも別途retention・削除台帳・crypto-erasureを適用します。
-
-backup jobの成功だけでは復旧可能性を証明しません。別の非本番D1/R2へrestoreし、D1のuploaded recording rowとlocal WAV、ready export rowとZIP、件数、byte数、hashを照合するrehearsalを定期実施してください。失敗通知、backup保管期間、鍵管理、二名以上のaccess承認、期限後削除を倫理審査・同意文書と一致させます。参加linkの受付上限をなくすことは、raw音声の保管期限をなくすことを意味しません。
+収集時の正本はD1とprivate R2です。IndexedDBは未送信データの一時outbox、結果ZIPは正本から要求時に作る派生copyです。Workerから研究者PCへ同期二重書きする機構や、本repo固有のbackup CLIは持ちません。ただし、backupを未決定のまま本番収集は開始しません。所属機関の規程に沿うCloudflare標準機能または機関管理の保管先を確定し、隔離した検証先へのD1復元を1回、WAV 1件のR2復旧とD1記録の`byte_count`・SHA-256照合を1回行い、担当者・日時・結果を残します。保管期限後にD1、R2、参加者端末copyをどう削除するかも同じ手順書で固定します。参加linkの受付上限をなくすことは、raw音声の保管期限をなくすことを意味しません。

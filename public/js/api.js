@@ -5,6 +5,7 @@ const JSON_TIMEOUT_MS = 30_000;
 const HEARTBEAT_TIMEOUT_MS = 10_000;
 const STIMULUS_TIMEOUT_MS = 30_000;
 const RECORDING_TIMEOUT_MS = 60_000;
+const PARTICIPANT_COPY_HEADER_TIMEOUT_MS = 30_000;
 
 export class ApiClientError extends Error {
   constructor(status, code, message, details = null) {
@@ -39,6 +40,79 @@ export function shouldClearInvitationFragment(error) {
     && error.status < 500
     && !new Set([408, 425, 429]).has(error.status)
     && !new Set(["invitation_redeem_conflict", "visit_not_available"]).has(error.code);
+}
+
+export function participantCopyFilename(contentDisposition) {
+  const match = /filename="([A-Za-z0-9._-]+\.zip)"/u.exec(contentDisposition ?? "");
+  return match?.[1] ?? "accentedness_results.zip";
+}
+
+function participantCopyFileError(cause) {
+  const error = new Error("選択した保存先へZIPを書き込めませんでした。");
+  error.code = "participant_copy_file_write_failed";
+  error.cause = cause;
+  return error;
+}
+
+export async function writeResponseToFile(response, fileHandle) {
+  if (!response.body) throw new TypeError("結果コピーの受信streamを開始できませんでした。");
+  const expectedSize = Number(response.headers.get("Content-Length"));
+  let writable;
+  try {
+    writable = await fileHandle.createWritable();
+  } catch (error) {
+    await response.body.cancel(error).catch(() => {});
+    throw participantCopyFileError(error);
+  }
+  const reader = response.body.getReader();
+  let receivedSize = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      receivedSize += value.byteLength;
+      try {
+        await writable.write(value);
+      } catch (error) {
+        throw participantCopyFileError(error);
+      }
+    }
+    if (Number.isSafeInteger(expectedSize)
+        && expectedSize > 0
+        && receivedSize !== expectedSize) {
+      throw new TypeError("結果コピーを最後まで受信できませんでした。");
+    }
+    try {
+      await writable.close();
+    } catch (error) {
+      throw participantCopyFileError(error);
+    }
+    return receivedSize;
+  } catch (error) {
+    await reader.cancel(error).catch(() => {});
+    await writable.abort(error).catch(() => {});
+    throw error;
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+async function fetchWithHeaderDeadline(path, options, timeoutMs) {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(path, { ...options, signal: controller.signal });
+  } catch (error) {
+    if (controller.signal.aborted || error?.name === "AbortError") {
+      const timeout = new TypeError("通信の開始がタイムアウトしました。ネットワーク接続を確認してください。");
+      timeout.code = "request_timeout";
+      timeout.status = 408;
+      throw timeout;
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timer);
+  }
 }
 
 async function parseApiResponse(response) {
@@ -194,6 +268,41 @@ export class ExperimentApi {
 
   completeVisit() {
     return this.request("/api/visit/complete", { method: "POST", json: {} });
+  }
+
+  async fetchParticipantCopy(fileHandle = null) {
+    const response = await fetchWithHeaderDeadline(
+      "/api/visit/results.zip",
+      {
+        headers: { Authorization: `Bearer ${this.sessionToken}` },
+        cache: "no-store",
+      },
+      PARTICIPANT_COPY_HEADER_TIMEOUT_MS,
+    );
+    if (!response.ok) await parseApiResponse(response);
+    const contentType = response.headers.get("Content-Type") ?? "";
+    if (!contentType.includes("application/zip")) {
+      await response.body?.cancel().catch(() => {});
+      throw new TypeError("結果コピーの形式を確認できませんでした。");
+    }
+    const expectedSize = Number(response.headers.get("Content-Length"));
+    const filename = participantCopyFilename(
+      response.headers.get("Content-Disposition"),
+    );
+    if (fileHandle) {
+      const byteCount = await writeResponseToFile(response, fileHandle);
+      return { blob: null, filename, byteCount, savedToDisk: true };
+    }
+    const blob = await response.blob();
+    if (Number.isSafeInteger(expectedSize) && expectedSize > 0 && blob.size !== expectedSize) {
+      throw new TypeError("結果コピーを最後まで受信できませんでした。");
+    }
+    return {
+      blob,
+      filename,
+      byteCount: blob.size,
+      savedToDisk: false,
+    };
   }
 
   async fetchStimulus(endpoint) {

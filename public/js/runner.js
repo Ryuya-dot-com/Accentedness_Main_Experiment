@@ -198,6 +198,36 @@ export class ExperimentRunner {
     }
   }
 
+  async prepareParticipantCopyWithRetry(fileHandle = null) {
+    while (true) {
+      try {
+        this.ui.setSaveState("saving");
+        const archive = await this.api.fetchParticipantCopy(fileHandle);
+        this.ui.setSaveState("saved");
+        return archive;
+      } catch (error) {
+        this.ui.setSaveState("queued");
+        if (error?.code === "session_expired") {
+          const expired = new Error(
+            "The completed-session credential expired; request a participant copy from the researcher",
+          );
+          expired.code = "participant_copy_session_expired";
+          expired.status = 401;
+          throw expired;
+        }
+        if (error?.code === "participant_copy_file_write_failed") throw error;
+        if (["session_superseded", "visit_closed"].includes(error.code)) throw error;
+        const retryableStatus = [408, 425, 429].includes(Number(error.status))
+          || Number(error.status) >= 500;
+        if (!(error instanceof TypeError) && !retryableStatus) throw error;
+        await this.ui.prompt(
+          `研究用サーバーへの保存は完了していますが、このパソコン向けZIPをまだ準備できません。ネットワーク接続を確認してください。\n\n${error.message}`,
+          "ZIPを再準備する",
+        );
+      }
+    }
+  }
+
   resetInterTrialClock() {
     this.nextOnsetNotBeforePerfMs = null;
   }

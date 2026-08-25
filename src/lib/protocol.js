@@ -1,0 +1,2 @@
+export const DELAY_MINIMUM_DAYS = 5;
+export const DELAY_MINIMUM_MS = DELAY_MINIMUM_DAYS * 86_400_000;

@@ -48,6 +48,7 @@ document.getElementById("app").innerHTML = `
       <div id="recording-indicator" class="recording-indicator" hidden><span></span>録音中</div>
       <div id="stage-message" class="stage-message" hidden></div>
       <button id="continue-button" class="continue-button" type="button" hidden>続ける</button>
+      <a id="download-link" class="continue-button button-link" href="#" hidden>ZIPをこのパソコンに保存</a>
     </div>
     <p id="task-status" class="task-status" role="status"></p>
   </section>

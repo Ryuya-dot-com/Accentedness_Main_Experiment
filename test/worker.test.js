@@ -1,8 +1,6 @@
 import { env, exports } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
-import { sha256Hex } from "../src/lib/crypto.js";
-import { ensureRecordingExportQueued, processRecordingExport } from "../src/lib/recording-exports.js";
-import { crc32 } from "../src/lib/zip.js";
+import { crc32 } from "../src/lib/stored-zip.js";
 
 const ORIGIN = "https://experiment.test";
 const ADMIN_TOKEN = "test-admin-token-that-is-long-and-private";
@@ -454,7 +452,7 @@ describe("Worker API", () => {
     expect(newHeartbeat.response.status).toBe(200);
   });
 
-  it("does not issue the delayed invitation before immediate completion plus seven days", async () => {
+  it("does not issue the delayed invitation before the immediate behavioral endpoint plus five days", async () => {
     const created = await createParticipant(4);
     const delayedIssue = await api(`/api/admin/visits/${created.participant.delayed_visit_id}/invitations`, {
       method: "POST",
@@ -464,7 +462,7 @@ describe("Worker API", () => {
     expect(delayedIssue.response.status).toBe(409);
     expect(delayedIssue.json.error.code).toBe("immediate_not_completed");
 
-    const futureTarget = Date.now() + 7 * 86_400_000;
+    const futureTarget = Date.now() + 5 * 86_400_000;
     await env.DB.batch([
       env.DB.prepare(`
         UPDATE visits SET status = 'completed', behavioral_completed_at_ms = ?, finalized_at_ms = ?
@@ -482,6 +480,63 @@ describe("Worker API", () => {
     });
     expect(tooEarly.response.status).toBe(409);
     expect(tooEarly.json.error.code).toBe("delayed_not_available");
+  });
+
+  it("schedules delayed exactly five days after the immediate behavioral endpoint", async () => {
+    const created = await createParticipant(40);
+    const redeemed = await api("/api/invitations/redeem", {
+      method: "POST",
+      body: {
+        token: tokenFromInvitation(created.invitation.invitation_url),
+        client_instance_id: "40404040-4040-4040-8040-404040404040",
+        expected_visit_type: "immediate",
+      },
+    });
+    expect(redeemed.response.status).toBe(200);
+
+    const lastTrial = redeemed.json.manifest.at(-1);
+    expect(lastTrial.segment).toBe("l2_to_l1");
+    await env.DB.prepare(`
+      UPDATE trial_manifest
+      SET canonical_attempt_uuid = 'test-skip-prior-immediate-trials',
+          expects_recording = 0
+      WHERE visit_uuid = ? AND ordinal < ?
+    `).bind(created.participant.immediate_visit_id, lastTrial.ordinal).run();
+
+    const started = await api(`/api/trials/${lastTrial.trial_id}/start`, {
+      method: "POST",
+      token: redeemed.json.session_token,
+      body: {
+        start_key: "40404040-4040-4040-8040-404040404041",
+        client_started_perf_ms: 1,
+      },
+    });
+    expect(started.response.status).toBe(201);
+    await env.DB.prepare(`
+      UPDATE trial_attempts SET server_started_at_ms = server_started_at_ms - 12000
+      WHERE attempt_uuid = ?
+    `).bind(started.json.attempt_id).run();
+
+    const saved = await api(`/api/trials/${lastTrial.trial_id}/response`, {
+      method: "PUT",
+      token: redeemed.json.session_token,
+      body: {
+        attempt_id: started.json.attempt_id,
+        response_key: "40404040-4040-4040-8040-404040404042",
+        payload: validL2Payload(),
+      },
+    });
+    expect(saved.response.status).toBe(200);
+
+    const immediate = await env.DB.prepare(`
+      SELECT behavioral_completed_at_ms FROM visits WHERE visit_uuid = ?
+    `).bind(created.participant.immediate_visit_id).first();
+    const delayed = await env.DB.prepare(`
+      SELECT target_at_ms, available_at_ms FROM visits WHERE visit_uuid = ?
+    `).bind(created.participant.delayed_visit_id).first();
+    expect(Number(delayed.target_at_ms) - Number(immediate.behavioral_completed_at_ms))
+      .toBe(5 * 86_400_000);
+    expect(delayed.available_at_ms).toBe(delayed.target_at_ms);
   });
 
   it("flags a durable-start replay and rejects non-WAV recording bytes", async () => {
@@ -648,7 +703,7 @@ describe("Worker API", () => {
     const recordingRow = await env.DB.prepare(`
       SELECT state, sample_rate_hz, sample_count, duration_seconds,
              analysis_start_seconds, analyzed_sample_count,
-             rms_amplitude, peak_amplitude, clipping_ratio
+             rms_amplitude, peak_amplitude, clipping_ratio, crc32
       FROM recordings WHERE attempt_uuid = ?
     `).bind(started.json.attempt_id).first();
     expect(recordingRow).toMatchObject({
@@ -661,6 +716,7 @@ describe("Worker API", () => {
       rms_amplitude: 0,
       peak_amplitude: 0,
       clipping_ratio: 0,
+      crc32: crc32(validBytes),
     });
   });
 
@@ -770,109 +826,6 @@ describe("Worker API", () => {
     expect(result.response.status).toBe(400);
   });
 
-  it("builds an immutable private ZIP after every recording in a phase is ready", async () => {
-    const created = await createParticipant(8, "pre");
-    const redeemed = await api("/api/invitations/redeem", {
-      method: "POST",
-      body: {
-        token: tokenFromInvitation(created.invitation.invitation_url),
-        client_instance_id: "12345678-1234-4234-8234-123456789abc",
-        expected_visit_type: "pre",
-      },
-    });
-    const trialResult = await env.DB.prepare(`
-      SELECT trial_uuid, segment_ordinal FROM trial_manifest
-      WHERE visit_uuid = ? AND segment = 'picture_naming'
-      ORDER BY segment_ordinal
-    `).bind(created.participant.pre_visit_id).all();
-    const statements = [];
-    for (const [index, trial] of trialResult.results.entries()) {
-      const attemptUuid = crypto.randomUUID();
-      const bytes = new Uint8Array([82, 73, 70, 70, index]);
-      const sha256 = await sha256Hex(bytes);
-      const r2Key = `recordings/export-test/${attemptUuid}.wav`;
-      const object = await env.RECORDINGS.put(r2Key, bytes, {
-        httpMetadata: { contentType: "audio/wav" },
-        customMetadata: { sha256, crc32: String(crc32(bytes)) },
-      });
-      statements.push(
-        env.DB.prepare(`
-          INSERT INTO trial_attempts (
-            attempt_uuid, trial_uuid, attempt_no, session_uuid, start_key, response_key,
-            state, repeated_after_interruption, extra_exposure, server_started_at_ms,
-            server_received_at_ms, payload_hash, payload_json
-          ) VALUES (?, ?, 1, ?, ?, ?, 'response_saved', 0, 0, ?, ?, ?, '{}')
-        `).bind(
-          attemptUuid,
-          trial.trial_uuid,
-          redeemed.json.session.session_id,
-          crypto.randomUUID(),
-          crypto.randomUUID(),
-          Date.now() - 100,
-          Date.now(),
-          sha256,
-        ),
-        env.DB.prepare(`
-          UPDATE trial_manifest SET canonical_attempt_uuid = ? WHERE trial_uuid = ?
-        `).bind(attemptUuid, trial.trial_uuid),
-        env.DB.prepare(`
-          INSERT INTO recordings (
-            attempt_uuid, r2_key, state, sha256, etag, byte_count, mime_type,
-            crc32, received_at_ms, uploaded_at_ms, updated_at_ms
-          ) VALUES (?, ?, 'uploaded', ?, ?, ?, 'audio/wav', ?, ?, ?, ?)
-        `).bind(
-          attemptUuid,
-          r2Key,
-          sha256,
-          object.etag,
-          bytes.byteLength,
-          crc32(bytes),
-          Date.now(),
-          Date.now(),
-          Date.now(),
-        ),
-      );
-    }
-    statements.push(env.DB.prepare(`
-      UPDATE segments SET status = 'completed', completed_at_ms = ?
-      WHERE visit_uuid = ? AND segment = 'picture_naming'
-    `).bind(Date.now(), created.participant.pre_visit_id));
-    await env.DB.batch(statements);
-
-    const scheduled = await ensureRecordingExportQueued(
-      env,
-      created.participant.pre_visit_id,
-      "picture_naming",
-    );
-    expect(scheduled.ready).toBe(true);
-    await processRecordingExport(env, scheduled.export_uuid);
-    const exportRow = await env.DB.prepare(`
-      SELECT * FROM recording_exports WHERE export_uuid = ? LIMIT 1
-    `).bind(scheduled.export_uuid).first();
-    expect(exportRow).toMatchObject({
-      state: "ready",
-      phase_code: "pre_picture_naming",
-      member_count: 26,
-    });
-    expect(Number(exportRow.zip_byte_count)).toBeGreaterThan(Number(exportRow.source_total_bytes));
-
-    const forbidden = await api(
-      `/api/admin/visits/${created.participant.pre_visit_id}/recordings/picture_naming.zip`,
-    );
-    expect(forbidden.response.status).toBe(401);
-    const downloaded = await exports.default.fetch(new Request(
-      `${ORIGIN}/api/admin/visits/${created.participant.pre_visit_id}/recordings/picture_naming.zip`,
-      { headers: { Authorization: `Bearer ${ADMIN_TOKEN}` } },
-    ));
-    expect(downloaded.status).toBe(200);
-    expect(downloaded.headers.get("Content-Type")).toBe("application/zip");
-    expect((await downloaded.arrayBuffer()).byteLength).toBe(Number(exportRow.zip_byte_count));
-    const audit = await env.DB.prepare(`
-      SELECT COUNT(*) AS count FROM recording_export_downloads WHERE export_uuid = ?
-    `).bind(scheduled.export_uuid).first();
-    expect(Number(audit.count)).toBe(1);
-  });
-
   it("serves six canonical task URLs", async () => {
     const pages = new Map([
       ["/main-experiment/", 'data-visit-type="immediate" data-segment="learning"'],
@@ -888,6 +841,10 @@ describe("Worker API", () => {
       const html = await response.text();
       expect(html, path).toContain("/js/task-page.js");
       expect(html, path).toContain(expectedConfiguration);
+    }
+    for (const legacyPath of ["/learning.html", "/test.html", "/immediate/", "/delayed/"]) {
+      const response = await exports.default.fetch(new Request(`${ORIGIN}${legacyPath}`));
+      expect(response.status, legacyPath).toBe(404);
     }
   });
 

@@ -80,10 +80,10 @@ describe("no upper participation deadlines", () => {
     expect(redeemed.json.visit.visit_type).toBe("pre");
   });
 
-  it("issues and redeems a delayed invitation long after the seven-day minimum", async () => {
+  it("issues and redeems a delayed invitation long after the five-day minimum", async () => {
     const created = await createParticipant(820_003, false);
     const immediateCompletionAt = Date.now() - 400 * DAY_MS;
-    const delayedTargetAt = immediateCompletionAt + 7 * DAY_MS;
+    const delayedTargetAt = immediateCompletionAt + 5 * DAY_MS;
     await env.DB.batch([
       env.DB.prepare(`
         UPDATE visits
@@ -109,6 +109,45 @@ describe("no upper participation deadlines", () => {
     const redeemed = await redeem(issued.json.invitation.invitation_url, "delayed");
     expect(redeemed.response.status).toBe(200);
     expect(redeemed.json.visit.target_at_ms).toBe(delayedTargetAt);
+  });
+
+  it("lists a delayed visit as due only after the immediate data are finalized", async () => {
+    const created = await createParticipant(820_005, false);
+    const delayedTargetAt = Date.now() - DAY_MS;
+    await env.DB.batch([
+      env.DB.prepare(`
+        UPDATE visits
+        SET status = 'awaiting_uploads', behavioral_completed_at_ms = ?
+        WHERE visit_uuid = ?
+      `).bind(
+        delayedTargetAt - 5 * DAY_MS,
+        created.participant.immediate_visit_id,
+      ),
+      env.DB.prepare(`
+        UPDATE visits SET status = 'scheduled', target_at_ms = ?, available_at_ms = ?
+        WHERE visit_uuid = ?
+      `).bind(delayedTargetAt, delayedTargetAt, created.participant.delayed_visit_id),
+    ]);
+
+    const beforeFinalization = await api("/api/admin/delayed/due", { token: ADMIN_TOKEN });
+    expect(beforeFinalization.response.status).toBe(200);
+    expect(beforeFinalization.json.visits.some(
+      (visit) => Number(visit.numeric_id) === created.participant.participant_id,
+    )).toBe(false);
+
+    await env.DB.prepare(`
+      UPDATE visits SET status = 'completed', finalized_at_ms = ? WHERE visit_uuid = ?
+    `).bind(Date.now(), created.participant.immediate_visit_id).run();
+    const afterFinalization = await api("/api/admin/delayed/due", { token: ADMIN_TOKEN });
+    const dueVisit = afterFinalization.json.visits.find(
+      (visit) => Number(visit.numeric_id) === created.participant.participant_id,
+    );
+    expect(dueVisit).toMatchObject({
+      numeric_id: created.participant.participant_id,
+      target_at_ms: delayedTargetAt,
+      status: "scheduled",
+    });
+    expect(dueVisit).not.toHaveProperty("immediate_missing_recordings");
   });
 
   it("rejects an expired session but resumes the same unfinished trial from the active invitation", async () => {
