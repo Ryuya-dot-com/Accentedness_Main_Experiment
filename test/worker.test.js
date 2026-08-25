@@ -198,6 +198,20 @@ describe("Worker API", () => {
   it("creates an immutable pre manifest with no L2-to-L1 and a separate pre invitation", async () => {
     const created = await createParticipant(1, "pre");
     expect(created.participant.participant_id).toBe(1);
+    expect(created.participant).toMatchObject({
+      training_accent: "english",
+      counterbalance_cell: 1,
+    });
+    const existingParticipant = await api("/api/admin/participants", {
+      method: "POST",
+      token: ADMIN_TOKEN,
+      body: { participant_id: 1, issue_pre_invitation: false },
+    });
+    expect(existingParticipant.response.status).toBe(200);
+    expect(existingParticipant.json.participant).toMatchObject({
+      training_accent: "english",
+      counterbalance_cell: 1,
+    });
     expect(created.invitation.invitation_url).toContain("/pre-picture-naming/#t=");
     const inviteToken = tokenFromInvitation(created.invitation.invitation_url);
     const redeemed = await api("/api/invitations/redeem", {
@@ -243,6 +257,62 @@ describe("Worker API", () => {
     });
     expect(prematureMain.response.status).toBe(409);
     expect(prematureMain.json.error.code).toBe("pre_not_completed");
+  });
+
+  it("rejects an invitation on the wrong visit URL and another participant's stimulus", async () => {
+    const first = await createParticipant(101, "pre");
+    const second = await createParticipant(102, "pre");
+    const firstToken = tokenFromInvitation(first.invitation.invitation_url);
+
+    const wrongRoute = await api("/api/invitations/redeem", {
+      method: "POST",
+      body: {
+        token: firstToken,
+        client_instance_id: "10110110-1101-4101-8101-101101101101",
+        expected_visit_type: "immediate",
+      },
+    });
+    expect(wrongRoute.response.status).toBe(409);
+    expect(wrongRoute.json.error.code).toBe("wrong_visit_route");
+
+    const redeemed = await api("/api/invitations/redeem", {
+      method: "POST",
+      body: {
+        token: firstToken,
+        client_instance_id: "10110110-1101-4101-8101-101101101102",
+        expected_visit_type: "pre",
+      },
+    });
+    expect(redeemed.response.status).toBe(200);
+
+    const otherTrial = await env.DB.prepare(`
+      SELECT trial_uuid FROM trial_manifest
+      WHERE visit_uuid = ? ORDER BY ordinal LIMIT 1
+    `).bind(second.participant.pre_visit_id).first();
+    const crossParticipant = await api(`/api/stimuli/${otherTrial.trial_uuid}/image`, {
+      token: redeemed.json.session_token,
+    });
+    expect(crossParticipant.response.status).toBe(409);
+    expect(crossParticipant.json.error.code).toBe("stimulus_not_current");
+
+    const currentTrial = redeemed.json.manifest.find((trial) => trial.current);
+    const sensitiveKey = "stimuli/real/images/secret-target-word.webp";
+    await env.DB.prepare(`
+      UPDATE trial_manifest SET placeholder_asset = 0, image_key = ?
+      WHERE trial_uuid = ?
+    `).bind(sensitiveKey, currentTrial.trial_id).run();
+    const missingAsset = await api(`/api/trials/${currentTrial.trial_id}/start`, {
+      method: "POST",
+      token: redeemed.json.session_token,
+      body: {
+        start_key: "10110110-1101-4101-8101-101101101103",
+        client_started_perf_ms: 1,
+      },
+    });
+    expect(missingAsset.response.status).toBe(503);
+    expect(missingAsset.json.error.code).toBe("stimulus_asset_missing");
+    expect(missingAsset.json.error.details).toBeNull();
+    expect(JSON.stringify(missingAsset.json)).not.toContain(sensitiveKey);
   });
 
   it("makes trial start and response idempotent and rejects a conflicting retry", async () => {
@@ -393,6 +463,25 @@ describe("Worker API", () => {
     });
     expect(delayedIssue.response.status).toBe(409);
     expect(delayedIssue.json.error.code).toBe("immediate_not_completed");
+
+    const futureTarget = Date.now() + 7 * 86_400_000;
+    await env.DB.batch([
+      env.DB.prepare(`
+        UPDATE visits SET status = 'completed', behavioral_completed_at_ms = ?, finalized_at_ms = ?
+        WHERE visit_uuid = ?
+      `).bind(Date.now(), Date.now(), created.participant.immediate_visit_id),
+      env.DB.prepare(`
+        UPDATE visits SET status = 'scheduled', target_at_ms = ?, available_at_ms = ?
+        WHERE visit_uuid = ?
+      `).bind(futureTarget, futureTarget, created.participant.delayed_visit_id),
+    ]);
+    const tooEarly = await api(`/api/admin/visits/${created.participant.delayed_visit_id}/invitations`, {
+      method: "POST",
+      token: ADMIN_TOKEN,
+      body: {},
+    });
+    expect(tooEarly.response.status).toBe(409);
+    expect(tooEarly.json.error.code).toBe("delayed_not_available");
   });
 
   it("flags a durable-start replay and rejects non-WAV recording bytes", async () => {

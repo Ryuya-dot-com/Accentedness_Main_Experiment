@@ -1,23 +1,17 @@
 import { ExperimentApi } from "./api.js";
 import { ExperimentAudio } from "./audio-engine.js";
+import { redirectToCanonical } from "./flow-guards.js";
 import { ExperimentRunner } from "./runner.js";
 import { ExperimentUi, validateBrowserEnvironment } from "./ui.js";
 
 const ui = new ExperimentUi();
-const api = new ExperimentApi("immediate");
-const audio = new ExperimentAudio(api);
+let api = null;
+let audio = null;
 let runner = null;
 
-function redirectToCanonical(state) {
-  if (!state.next_route) return false;
-  const current = window.location.pathname.replace(/\/+$/u, "") || "/";
-  const expected = state.next_route.replace(/\/+$/u, "") || "/";
-  if (current === expected) return false;
-  window.location.replace(state.next_route);
-  return true;
-}
-
 async function main() {
+  api = new ExperimentApi("immediate");
+  audio = new ExperimentAudio(api);
   const failures = validateBrowserEnvironment({ microphone: false });
   if (failures.length) throw new Error(failures.join(" "));
   let state = await api.bootstrap();
@@ -34,7 +28,7 @@ async function main() {
   ui.beginTask();
   runner.startMonitoring();
   state = await runner.reconcileOutbox();
-  if (redirectToCanonical(state)) return;
+  if (redirectToCanonical(state, { runner, audio })) return;
   const accepted = runner.acceptedTrialIds();
   const learningTrials = state.manifest.filter((trial) => trial.segment === "learning");
   const remaining = learningTrials.filter((trial) => !accepted.has(trial.trial_id));
@@ -83,7 +77,7 @@ main().catch((error) => {
   runner?.stopMonitoring();
   ui.setConnected(false);
   ui.fatal(error);
-  audio.close();
+  audio?.close();
 });
 
-window.addEventListener("pagehide", () => audio.close(), { once: true });
+window.addEventListener("pagehide", () => audio?.close(), { once: true });

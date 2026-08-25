@@ -213,6 +213,8 @@ export async function insertParticipantDesign(db, design, nowMs) {
     participant: {
       participant_uuid: assignment.participantUuid,
       numeric_id: assignment.numericId,
+      training_accent: assignment.trainingAccent,
+      counterbalance_cell: assignment.counterbalanceCell,
       pre_visit_uuid: preVisitUuid,
       immediate_visit_uuid: immediateVisitUuid,
       delayed_visit_uuid: delayedVisitUuid,

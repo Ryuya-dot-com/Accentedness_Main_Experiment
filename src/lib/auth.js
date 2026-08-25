@@ -27,7 +27,7 @@ export async function requireSession(request, env, { allowCompleted = false } = 
   if (!completedRetry && Number(session.epoch) !== Number(session.active_session_epoch)) {
     throw new ApiError(409, "session_superseded", "This session is no longer the active visit session");
   }
-  if (!completedRetry && Number(session.expires_at_ms) <= nowMs) {
+  if (Number(session.expires_at_ms) <= nowMs) {
     throw new ApiError(401, "session_expired", "The session expired; reopen the invitation link to resume");
   }
   if (!completedRetry && ["completed", "withdrawn"].includes(session.visit_status)) {

@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex,nofollow" />
+    <title>実験リンク管理</title>
+  </head>
+  <body>
+    <main>
+      <h1>実験リンク管理</h1>
+      <p>研究担当者専用です。参加者IDは募集順に割り当て、条件を選ぶ目的で欠番を作らないでください。</p>
+      <p><a href="/admin/exports">録音ZIP管理を開く</a></p>
+
+      <section>
+        <h2>認証</h2>
+        <p><label>ADMIN_TOKEN <input id="admin-token" type="password" required autocomplete="off" /></label></p>
+      </section>
+
+      <section>
+        <h2>参加者</h2>
+        <form id="participant-form">
+          <p><label>参加者ID <input id="participant-id" inputmode="numeric" pattern="[1-9][0-9]*" required /></label></p>
+          <button type="submit">登録／既存IDを参照</button>
+        </form>
+        <div id="participant-actions" hidden>
+          <p id="participant-state"></p>
+          <button type="button" data-visit="pre">Preリンクを発行</button>
+          <button type="button" data-visit="immediate">Main Experimentリンクを発行</button>
+          <button type="button" data-visit="delayed">Delayedリンクを発行</button>
+        </div>
+      </section>
+
+      <section>
+        <h2>発行結果</h2>
+        <p>表示されたURLを該当参加者だけに手動配布してください。再発行すると以前のリンクと実行中sessionは無効になります。</p>
+        <textarea id="invitation-url" rows="4" cols="100" readonly aria-label="発行した招待URL"></textarea>
+      </section>
+
+      <section>
+        <h2>遅延テスト対象</h2>
+        <button id="load-due" type="button">受付可能な参加者を取得</button>
+        <table border="1" cellpadding="6">
+          <thead><tr><th>参加者ID</th><th>目標時刻</th><th>未送信録音</th><th>状態</th><th>操作</th></tr></thead>
+          <tbody id="due-visits"></tbody>
+        </table>
+      </section>
+
+      <section>
+        <h2>全体状態</h2>
+        <button id="load-summary" type="button">状態を取得</button>
+        <pre id="summary"></pre>
+      </section>
+
+      <p id="status" role="status"></p>
+    </main>
+    <script type="module" src="/js/admin-operations.js"></script>
+  </body>
+</html>

@@ -9,17 +9,9 @@ const EXPORTABLE_PHASES = new Set([
   "delayed_l2_to_l1",
 ]);
 const MAX_FILES_PER_EXPORT = 30;
-const LEASE_MS = 10 * 60_000;
+const MAX_EXPORT_ATTEMPTS = 5;
+const LEASE_MS = 20 * 60_000;
 const EXPORT_RETENTION_MS = 7 * 86_400_000;
-
-function slug(value, fallback = "unknown") {
-  const clean = String(value ?? "")
-    .toLowerCase()
-    .replace(/[^a-z0-9_-]+/gu, "-")
-    .replace(/^-+|-+$/gu, "")
-    .slice(0, 48);
-  return clean || fallback;
-}
 
 function timestampSlug(nowMs) {
   return new Date(nowMs).toISOString().replace(/[-:]/gu, "").replace(/\.\d{3}Z$/u, "Z");
@@ -27,11 +19,7 @@ function timestampSlug(nowMs) {
 
 function archiveEntryName(row) {
   const ordinal = String(row.segment_ordinal).padStart(2, "0");
-  const phase = Number(row.practice) === 1 ? "practice" : "main";
-  const item = slug(row.item_word, `item-${row.item_id}`);
-  const accent = row.test_accent ? `_${slug(row.test_accent)}` : "";
-  const talker = row.talker_id ? `_${slug(row.talker_id)}` : "";
-  return `wav/${ordinal}_${phase}_${item}${accent}${talker}.wav`;
+  return `wav/recording_${ordinal}.wav`;
 }
 
 async function readyRecordingRows(env, visitUuid, segment) {
@@ -64,7 +52,6 @@ async function sendExportMessage(env, exportUuid) {
   } catch (error) {
     console.error(JSON.stringify({
       message: "recording_export_enqueue_failed",
-      export_uuid: exportUuid,
       error: String(error),
     }));
     return false;
@@ -100,11 +87,11 @@ export async function ensureRecordingExportQueued(env, visitUuid, segment) {
   }));
   const sourceSnapshotSha256 = await sha256Hex(stableJson(members));
   const existing = await env.DB.prepare(`
-    SELECT export_uuid, state FROM recording_exports
+    SELECT export_uuid, state, attempt_count FROM recording_exports
     WHERE visit_uuid = ? AND segment = ? LIMIT 1
   `).bind(visitUuid, segment).first();
   if (existing) {
-    if (existing.state === "failed") {
+    if (existing.state === "failed" && Number(existing.attempt_count) < MAX_EXPORT_ATTEMPTS) {
       const nowMs = Date.now();
       await env.DB.prepare(`
         UPDATE recording_exports
@@ -192,11 +179,12 @@ export async function processRecordingExport(env, exportUuid) {
         attempt_count = attempt_count + 1,
         started_at_ms = COALESCE(started_at_ms, ?), updated_at_ms = ?
     WHERE export_uuid = ?
+      AND attempt_count < ?
       AND (
         state IN ('pending', 'failed')
         OR (state = 'building' AND COALESCE(lease_expires_at_ms, 0) <= ?)
       )
-  `).bind(leaseToken, nowMs + LEASE_MS, nowMs, nowMs, exportUuid, nowMs).run();
+  `).bind(leaseToken, nowMs + LEASE_MS, nowMs, nowMs, exportUuid, MAX_EXPORT_ATTEMPTS, nowMs).run();
   if (Number(claimed.meta.changes ?? 0) !== 1) {
     const current = await env.DB.prepare(`
       SELECT state FROM recording_exports WHERE export_uuid = ? LIMIT 1
@@ -205,23 +193,24 @@ export async function processRecordingExport(env, exportUuid) {
     return { skipped: true, state: current.state };
   }
 
-  const exportRow = await env.DB.prepare(`
-    SELECT * FROM recording_exports WHERE export_uuid = ? LIMIT 1
-  `).bind(exportUuid).first();
-  const memberResult = await env.DB.prepare(`
-    SELECT * FROM recording_export_members
-    WHERE export_uuid = ? ORDER BY segment_ordinal
-  `).bind(exportUuid).all();
-  const members = memberResult.results;
-  if (!exportRow || members.length !== Number(exportRow.member_count)) {
-    throw new Error("recording_export_snapshot_incomplete");
-  }
-
   try {
+    const exportRow = await env.DB.prepare(`
+      SELECT * FROM recording_exports WHERE export_uuid = ? LIMIT 1
+    `).bind(exportUuid).first();
+    const memberResult = await env.DB.prepare(`
+      SELECT * FROM recording_export_members
+      WHERE export_uuid = ? ORDER BY segment_ordinal
+    `).bind(exportUuid).all();
+    const members = memberResult.results;
+    if (!exportRow || members.length !== Number(exportRow.member_count)) {
+      throw new Error("recording_export_snapshot_incomplete");
+    }
+
     const existingObject = await env.EXPORTS.head(exportRow.r2_key);
     let object = existingObject;
     if (existingObject
-        && existingObject.customMetadata?.source_snapshot_sha256 !== exportRow.source_snapshot_sha256) {
+        && (existingObject.customMetadata?.export_uuid !== exportUuid
+          || existingObject.customMetadata?.source_snapshot_sha256 !== exportRow.source_snapshot_sha256)) {
       throw new Error("recording_export_object_conflict");
     }
     if (!object) {
@@ -290,6 +279,7 @@ export async function processRecordingExport(env, exportUuid) {
         await completionResult;
         object = await env.EXPORTS.head(exportRow.r2_key);
         if (!object
+            || object.customMetadata?.export_uuid !== exportUuid
             || object.customMetadata?.source_snapshot_sha256 !== exportRow.source_snapshot_sha256) {
           throw new Error("recording_export_put_conflict");
         }
@@ -300,7 +290,7 @@ export async function processRecordingExport(env, exportUuid) {
     }
 
     const readyAtMs = Date.now();
-    await env.DB.batch([
+    const readyResults = await env.DB.batch([
       env.DB.prepare(`
         UPDATE recording_exports
         SET state = 'ready', zip_byte_count = ?, r2_etag = ?, ready_at_ms = ?,
@@ -319,15 +309,26 @@ export async function processRecordingExport(env, exportUuid) {
       env.DB.prepare(`
         INSERT INTO audit_log (
           audit_uuid, actor_type, action, participant_uuid, visit_uuid, server_at_ms, details_json
-        ) VALUES (?, 'system', 'recording_export_ready', ?, ?, ?, ?)
+        )
+        SELECT ?, 'system', 'recording_export_ready', ?, ?, ?, ?
+        WHERE EXISTS (
+          SELECT 1 FROM recording_exports
+          WHERE export_uuid = ? AND state = 'ready' AND ready_at_ms = ? AND r2_etag = ?
+        )
       `).bind(
         crypto.randomUUID(),
         exportRow.participant_uuid,
         exportRow.visit_uuid,
         readyAtMs,
         stableJson({ export_uuid: exportUuid, zip_byte_count: object.size, r2_etag: object.etag }),
+        exportUuid,
+        readyAtMs,
+        object.etag,
       ),
     ]);
+    if (Number(readyResults[0]?.meta?.changes ?? 0) !== 1) {
+      throw new Error("recording_export_lease_lost");
+    }
     return { skipped: false, state: "ready" };
   } catch (error) {
     const failedAtMs = Date.now();
@@ -345,17 +346,68 @@ export async function processRecordingExport(env, exportUuid) {
 export async function reconcileRecordingExports(env) {
   const nowMs = Date.now();
   const staleBeforeMs = nowMs - 10 * 60_000;
+  await env.DB.prepare(`
+    UPDATE recording_exports
+    SET state = 'failed', failed_at_ms = COALESCE(failed_at_ms, ?),
+        last_error_code = COALESCE(last_error_code, 'attempt_limit_exceeded'),
+        lease_token = NULL, lease_expires_at_ms = NULL, updated_at_ms = ?
+    WHERE state != 'ready' AND attempt_count >= ?
+      AND (state != 'building' OR COALESCE(lease_expires_at_ms, 0) <= ?)
+  `).bind(nowMs, nowMs, MAX_EXPORT_ATTEMPTS, nowMs).run();
+
+  const missingResult = await env.DB.prepare(`
+    SELECT s.visit_uuid, s.segment
+    FROM segments s
+    WHERE s.status = 'completed'
+      AND s.segment IN ('picture_naming', 'l2_to_l1')
+      AND EXISTS (
+        SELECT 1 FROM trial_manifest tm
+        WHERE tm.visit_uuid = s.visit_uuid AND tm.segment = s.segment
+          AND tm.expects_recording = 1
+      )
+      AND NOT EXISTS (
+        SELECT 1
+        FROM trial_manifest tm
+        LEFT JOIN recordings r ON r.attempt_uuid = tm.canonical_attempt_uuid
+        WHERE tm.visit_uuid = s.visit_uuid AND tm.segment = s.segment
+          AND tm.expects_recording = 1
+          AND COALESCE(r.state, 'missing') != 'uploaded'
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM recording_exports e
+        WHERE e.visit_uuid = s.visit_uuid AND e.segment = s.segment
+      )
+    ORDER BY s.completed_at_ms, s.visit_uuid, s.segment
+    LIMIT 25
+  `).all();
+  let discovered = 0;
+  for (const row of missingResult.results) {
+    try {
+      const queued = await ensureRecordingExportQueued(env, row.visit_uuid, row.segment);
+      if (queued.ready) discovered += 1;
+    } catch (error) {
+      console.error(JSON.stringify({
+        message: "recording_export_discovery_failed",
+        segment: row.segment,
+        error: String(error),
+      }));
+    }
+  }
+
   const result = await env.DB.prepare(`
     SELECT export_uuid FROM recording_exports
     WHERE (
-      state = 'pending' AND (enqueued_at_ms IS NULL OR enqueued_at_ms <= ?)
-    ) OR (
-      state = 'building' AND COALESCE(lease_expires_at_ms, 0) <= ?
-    ) OR (
-      state = 'failed' AND attempt_count < 5 AND updated_at_ms <= ?
+      (
+        state = 'pending' AND (enqueued_at_ms IS NULL OR enqueued_at_ms <= ?)
+      ) OR (
+        state = 'building' AND COALESCE(lease_expires_at_ms, 0) <= ?
+      ) OR (
+        state = 'failed' AND updated_at_ms <= ?
+      )
     )
+      AND attempt_count < ?
     ORDER BY requested_at_ms LIMIT 50
-  `).bind(staleBeforeMs, nowMs, staleBeforeMs).all();
+  `).bind(staleBeforeMs, nowMs, staleBeforeMs, MAX_EXPORT_ATTEMPTS).all();
   for (const row of result.results) {
     await env.DB.prepare(`
       UPDATE recording_exports
@@ -365,5 +417,5 @@ export async function reconcileRecordingExports(env) {
     `).bind(nowMs, row.export_uuid).run();
     await sendExportMessage(env, row.export_uuid);
   }
-  return result.results.length;
+  return discovered + result.results.length;
 }

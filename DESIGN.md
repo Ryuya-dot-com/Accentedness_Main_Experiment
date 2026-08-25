@@ -59,7 +59,7 @@ pre・直後・遅延の各時点で練習2試行、本番24試行です。
 - 条件連続は最大2。
 - pre・直後・遅延では別domain seedを使い、3順序の完全同一をpairwiseに明示的に拒否。
 
-preでは正答語、英語音声、綴り、正誤feedbackを提示しません。それでも、同じ24画像を見て英語語彙を検索・発話しようとする行為は画像馴化とpretesting/retrieval-attempt効果を導入します。このため、主要推論の対象は「pre Picture Namingを受けた学習者」に限られ、preなしの学習へ直接一般化できません。pre完了から学習開始までの間隔とpre後離脱を条件別に報告し、許容間隔を事前登録します。参加者IDはpre後の離脱があっても再利用しません。
+preでは正答語、英語音声、綴り、正誤feedbackを提示しません。それでも、同じ24画像を見て英語語彙を検索・発話しようとする行為は画像馴化とpretesting/retrieval-attempt効果を導入します。このため、主要推論の対象は「pre Picture Namingを受けた学習者」に限られ、preなしの学習へ直接一般化できません。pre完了から学習開始までの間隔とpre後離脱を条件別に報告し、許容間隔を事前登録します。参加者IDはpre後の離脱があっても再利用しません。pre→学習間隔の正本は、pre Picture Naming最終試行の行動応答受理時刻からimmediate学習最初の試行開始時刻までとします。招待linkのredeem時刻や、録音upload完了後のvisit確定時刻はこの間隔に用いません。
 
 ## 6. L2-to-L1
 
@@ -97,6 +97,8 @@ root seedから、`learning/...`、`picture_naming/pre/...`、`picture_naming/im
 - `SEED_ALGORITHM_VERSION` または `ASSIGNMENT_VERSION` を変えるとroot seedが変わる。
 - 作成後のmanifest、hash、root seed、versionをD1に保存し、途中で再生成しない。
 - secret自体はD1、クライアント、ログへ出さない。
+
+生成後のmanifestは再利用可能なinvariant checkerで検査します。学習・各テストの試行数、録音数、High話者頻度、Picture NamingのNo/High pair orientation、L2 miniblockの6 strata、直後・遅延の語→accent→話者→WAV写像を契約として扱います。監査scriptはID 1–2160を独立した2つのrandomization secretで生成し、計4,320 designを検査します。同じserial positionの一致数は報告指標であり、恣意的に順序を再抽選する制約にはしません。
 
 `RANDOMIZATION_SECRET` を変更しても既存参加者のmanifestは変わりません。ただし、同一assignment version中にsecretを変更すると、新規参加者だけ別の乱数系列になります。収集中は固定し、変更時はassignment versionを上げて運用記録に残します。
 
@@ -136,7 +138,7 @@ PN練習2 → PN本番24
 PN練習2 → PN本番24 → L2練習3 → L2本番24
 ```
 
-合計53試行、録音53件です。遅延目標は直後の行動課題完了時刻＋7日です。目標時刻以後は常に受付可能で、期限切れにしません。実際の遅延間隔はリンクredeem時刻ではなく、遅延Picture Naming最初の試行開始時刻との差で分析します。
+合計53試行、録音53件です。遅延目標は直後の行動課題完了時刻＋7日です。目標時刻以後は常に受付可能で、期限切れにしません。実際の保持間隔は、直後L2-to-L1最終試行の行動応答受理時刻から遅延Picture Naming最初の試行開始時刻までとします。目標偏差は、遅延Picture Naming最初の試行開始時刻から保存済み目標時刻を引きます。リンクredeem時刻、録音upload時刻、visit確定時刻、後から変更されたdelay設定値からの逆算は用いません。これらの正本値はD1 view `analysis_intervals`から取得します。
 
 6つのparticipant URLを用意しますが、token/sessionの境界はpre、immediate、delayedの3 visitです。immediate内とdelayed内では同じsession epochを引き継ぎます。次segmentの開始前に、前segmentの録音がすべてR2へ保存済みであることをserverが検査します。
 

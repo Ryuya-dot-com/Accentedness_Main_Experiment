@@ -133,10 +133,10 @@ export function createStoredZipStream({ bucket, entries, generatedAt, onComplete
           await writer.write(entry.bytes);
         } else {
           const object = await bucket.get(entry.key);
-          if (!object) throw new Error(`recording_object_missing:${entry.key}`);
-          if (Number(object.size) !== entry.size) throw new Error(`recording_object_size_mismatch:${entry.key}`);
+          if (!object) throw new Error("recording_object_missing");
+          if (Number(object.size) !== entry.size) throw new Error("recording_object_size_mismatch");
           if (entry.sha256 && object.customMetadata?.sha256 !== entry.sha256) {
-            throw new Error(`recording_object_checksum_mismatch:${entry.key}`);
+            throw new Error("recording_object_checksum_mismatch");
           }
           const reader = object.body.getReader();
           while (true) {
@@ -146,7 +146,7 @@ export function createStoredZipStream({ bucket, entries, generatedAt, onComplete
             await writer.write(value);
           }
         }
-        if (streamed !== entry.size) throw new Error(`recording_stream_size_mismatch:${entry.key}`);
+        if (streamed !== entry.size) throw new Error("recording_stream_size_mismatch");
         offset += streamed;
         centralRecords.push(centralHeader(nameBytes, entry, timestamp, localOffset));
       }

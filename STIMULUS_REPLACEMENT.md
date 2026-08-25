@@ -39,6 +39,8 @@ stimuli/{ASSET_VERSION}/test/{accent}/{talker_id}/{word}.wav
 
 このkeyはtimepointを含まないため、現行実装では直後と遅延に同一WAVを使います。同一の3話者を維持しつつ時点別の別takeを使う場合は、差し替え作業の前に`test/{timepoint}/...`等へkey規約とmanifest生成を同時に変更し、`ASSIGNMENT_VERSION`を更新してください。
 
+本番ゲートの `TEST_TOKEN_POLICY` は、この決定を設定として明示するためのものです。現行コードが受け付ける値は `same_token` だけです。別takeを選んだ場合は、新key規約を実装・検証するまでは `undecided` のままにし、production回収を解除しません。
+
 L2練習音声:
 
 ```text
@@ -79,7 +81,7 @@ stimuli/{ASSET_VERSION}/practice/{accent}/{talker_id}/{word}.wav
 5. 別担当者が一覧と音声内容を照合する。
 6. R2 `STIMULI`へuploadする。
 7. `ASSET_VERSION` と `ASSIGNMENT_VERSION` を更新する。
-8. `ALLOW_PLACEHOLDER_ASSETS=false`、`ENVIRONMENT=production` にする。
+8. `env.production.vars` で `ALLOW_PLACEHOLDER_ASSETS=false`、`ENVIRONMENT=production`、現行方針なら `TEST_TOKEN_POLICY=same_token` にする。
 9. 新規の非本番IDで全試行を生成し、404やplaceholder fallbackが1件もないことを確認する。
 10. 直後・遅延を通しで実施し、音声・画像・録音・時刻を人手でも確認する。
 

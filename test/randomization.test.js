@@ -164,7 +164,13 @@ describe("participant-level manifest invariants", () => {
       expect(prePn.map((trial) => trial.itemId)).not.toEqual(delayedPn.map((trial) => trial.itemId));
       expect(immediatePn.map((trial) => trial.itemId)).not.toEqual(delayedPn.map((trial) => trial.itemId));
       expect(immediateL2.map((trial) => trial.itemId)).not.toEqual(delayedL2.map((trial) => trial.itemId));
-      const mapping = (trials) => Object.fromEntries(trials.map((trial) => [trial.itemId, [trial.variability, trial.testAccent, trial.talkerId]]));
+      const mapping = (trials) => Object.fromEntries(trials.map((trial) => [trial.itemId, [
+        trial.variability,
+        trial.testAccent,
+        trial.talkerId,
+        trial.audioKey,
+        trial.protocol.timing.responseWindowAfterAudioMs,
+      ]]));
       expect(mapping(immediateL2)).toEqual(mapping(delayedL2));
       expect(design.pre.expectedTrialCount).toBe(26);
       expect(design.pre.expectedRecordingCount).toBe(26);

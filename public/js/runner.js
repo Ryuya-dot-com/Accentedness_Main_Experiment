@@ -3,6 +3,7 @@ import {
   clearTrialStart,
   flushOutbox,
   getOrCreateTrialStart,
+  hasQueuedRecording,
   markTrialStimulusShown,
   queueTrial,
   uploadQueuedRecording,
@@ -102,9 +103,34 @@ export class ExperimentRunner {
     }]);
   }
 
-  async reconcileOutbox() {
+  async reconcileOutbox(hasQueuedRecordingForAttempt = hasQueuedRecording) {
     await this.flushWithRetry();
     this.state = await this.api.state();
+    const manifestByTrialId = new Map(
+      this.state.manifest.map((trial) => [trial.trial_id, trial]),
+    );
+    const pendingRecordings = this.state.accepted.filter((accepted) => (
+      manifestByTrialId.get(accepted.trial_id)?.expects_recording
+        && accepted.recording_state !== "uploaded"
+    ));
+    for (const accepted of pendingRecordings) {
+      const recoverable = await hasQueuedRecordingForAttempt(
+        this.state.visit.visit_id,
+        accepted.attempt_id,
+      );
+      if (!recoverable) {
+        const error = new Error(
+          "送信前の録音がこのブラウザに残っていません。これ以上進めず、担当者に知らせてください。",
+        );
+        error.code = "local_recording_missing";
+        error.details = {
+          trial_id: accepted.trial_id,
+          attempt_id: accepted.attempt_id,
+          recording_state: accepted.recording_state,
+        };
+        throw error;
+      }
+    }
     return this.state;
   }
 
@@ -130,6 +156,27 @@ export class ExperimentRunner {
         await this.ui.prompt(
           `データをまだ送信できていません。ネットワーク接続を確認してください。\n\n${error.message}`,
           "再送する",
+        );
+      }
+    }
+  }
+
+  async acknowledgeTrialResponseWithRetry(
+    attemptId,
+    acknowledge = acknowledgeTrialResponse,
+  ) {
+    while (true) {
+      try {
+        return await acknowledge(this.api, attemptId);
+      } catch (error) {
+        this.ui.setSaveState("queued");
+        if (["session_superseded", "visit_closed"].includes(error.code)) throw error;
+        const retryableStatus = [408, 425, 429].includes(Number(error.status))
+          || Number(error.status) >= 500;
+        if (!(error instanceof TypeError) && !retryableStatus) throw error;
+        await this.ui.prompt(
+          `この試行の回答をまだ送信できていません。ネットワーク接続を確認してください。\n\n${error.message}`,
+          "回答を再送する",
         );
       }
     }
@@ -223,7 +270,11 @@ export class ExperimentRunner {
     const cached = this.preloadedTrials.get(trial.trial_id);
     if (cached) {
       this.preloadedTrials.delete(trial.trial_id);
-      return cached;
+      try {
+        return await cached;
+      } catch {
+        return this.loadTrialAssets(trial);
+      }
     }
     return this.loadTrialAssets(trial);
   }
@@ -251,8 +302,12 @@ export class ExperimentRunner {
     if (!trial || this.preloadedTrials.has(trial.trial_id)) return;
     const promise = new Promise((resolve) => window.setTimeout(resolve, 1_000))
       .then(() => this.loadTrialAssets(trial));
-    promise.catch(() => {});
     this.preloadedTrials.set(trial.trial_id, promise);
+    promise.catch(() => {
+      if (this.preloadedTrials.get(trial.trial_id) === promise) {
+        this.preloadedTrials.delete(trial.trial_id);
+      }
+    });
   }
 
   async authorizeTrial(trial) {
@@ -278,7 +333,7 @@ export class ExperimentRunner {
       recordingBlob,
     });
     this.ui.setSaveState("queued");
-    await acknowledgeTrialResponse(this.api, authorization.attempt_id);
+    await this.acknowledgeTrialResponseWithRetry(authorization.attempt_id);
     await clearTrialStart(trial.trial_id);
     if (trial.expects_recording) {
       this.startBackgroundRecordingUpload(authorization.attempt_id);

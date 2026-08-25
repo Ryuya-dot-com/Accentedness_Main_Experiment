@@ -27,6 +27,7 @@
 | `recording_export_downloads` | 管理者download request | method、range、応答status、request時刻。ローカル保存成功とはみなさない |
 | `events` | telemetry event | onset、visibility、audio、network等の時刻とpayload |
 | `audit_log` | 管理・system操作 | 招待・完了などの監査証跡 |
+| `analysis_intervals` | 参加者（view） | 行動endpointに基づくpre→学習間隔、保持間隔、遅延目標偏差 |
 
 ## 3. 主要な割当列
 
@@ -84,9 +85,9 @@ recordings/{participant_uuid}/{visit_type}/{segment}/{trial_uuid}/{attempt_uuid}
 
 raw録音は声紋・発話内容を含み得るため、匿名化済みの表データより厳しいアクセス制御と保管期間を適用します。
 
-各phase（pre PN、immediate PN、immediate L2、delayed PN、delayed L2）の全WAVが揃うと、Queue consumerがWAVを1本ずつ読み、圧縮なしZIPを`EXPORTS`へstreaming PUTします。ZIPには`manifest.json`と練習を含む全WAVを入れます。manifestはattempt/trial ID、practice、archive名、SHA-256、bytes、upload時刻を含みます。元WAVとZIP全体をWorker memoryへ展開しません。ZIP生成はat-least-once delivery、lease、immutable R2 key、source snapshot hashにより冪等化します。
+各phase（pre PN、immediate PN、immediate L2、delayed PN、delayed L2）の全WAVが揃うと、Queue consumerがWAVを1本ずつ読み、圧縮なしZIPを`EXPORTS`へstreaming PUTします。ZIPには`manifest.json`と練習を含む全WAVを入れます。WAV archive名は `wav/recording_XX.wav` のopaque名とし、語・accent・話者をfile名へ露出しません。manifestはattempt/trial ID、practice、archive名、SHA-256、bytes、upload時刻を含みます。元WAVとZIP全体をWorker memoryへ展開しません。ZIP生成はat-least-once delivery、20分lease、5回上限、immutable R2 key、source snapshot hashにより冪等化します。scheduled reconcilerはexport row自体が欠落した完了segmentも再発見します。
 
-ZIP downloadは管理者APIだけが許可され、Range/conditional requestをprivate R2へ渡します。参加者端末へはdownloadしません。download auditは「応答streamを開始した」記録であり、研究者端末への保存完了を保証しません。
+ZIP downloadは管理者APIだけが許可され、Range/conditional requestをprivate R2へ渡します。配信前にR2 objectのsize、ETag、export UUID、source snapshot hashをD1と照合します。参加者端末へはdownloadしません。download auditは「応答streamを開始した」記録であり、研究者端末への保存完了を保証しません。`recording_exports.expires_at_ms`は予定値にすぎず、削除・配信停止はproduction R2 lifecycleと運用手順で別途実施します。
 
 ## 6. 時刻の定義
 
@@ -98,9 +99,11 @@ ZIP downloadは管理者APIだけが許可され、Range/conditional requestをp
 | `*_context_s` | AudioContext clock |
 | `target_at_ms` | immediate behavioral completion＋7日 |
 | delayed実施開始 | delayedの最初のPicture Naming trialのserver開始 |
-| pre→学習間隔 | immediate `first_started_at_ms` − pre `finalized_at_ms` |
+| pre→学習間隔 | immediateのlearning `segments.started_at_ms` − pre `behavioral_completed_at_ms` |
+| 保持間隔 | delayedのPicture Naming `segments.started_at_ms` − immediate `behavioral_completed_at_ms` |
+| 遅延目標偏差 | delayedのPicture Naming `segments.started_at_ms` − delayed `target_at_ms` |
 
-時刻源を直接混ぜず、保存されたanchorから同一clock内の差または明示的な変換を使います。
+3つの分析用間隔はD1 view `analysis_intervals`を正本とします。`visits.first_started_at_ms`は招待linkをredeemしてvisit sessionを開始した時刻、`visits.finalized_at_ms`は全応答・録音が揃ってvisitを確定した時刻であり、行動endpoint間隔には使いません。時刻源を直接混ぜず、保存されたanchorから同一clock内の差または明示的な変換を使います。
 
 ## 7. 分析対象と除外候補
 

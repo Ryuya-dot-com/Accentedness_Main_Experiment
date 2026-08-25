@@ -4,7 +4,7 @@ Barcroft and Sommers (2005) の Experiment 2 を基礎に、学習時アクセ�
 
 ## 現在の状態
 
-コードとプレースホルダー刺激による検証は可能です。ただし、実刺激・話者・画像が未確定のため、現時点では本番データを収集できません。`ENVIRONMENT=production` でプレースホルダー設定が残っている場合、参加者作成と招待発行をサーバーが拒否します。
+コードとプレースホルダー刺激による検証は可能です。ただし、実刺激・話者・画像が未確定のため、現時点では本番データを収集できません。production環境では、プレースホルダーが残っている場合、または直後・遅延で同一WAV tokenを使うかが明示されていない場合、参加者作成・招待発行・招待redeem・新規trial開始をサーバーが拒否します。
 
 本番開始前の必須条件は次のとおりです。
 
@@ -12,6 +12,7 @@ Barcroft and Sommers (2005) の Experiment 2 を基礎に、学習時アクセ�
 - 学習用は各アクセント6話者、テスト用は各アクセント1名の女性話者（計3名）を用意する。
 - 音声の切り出し、音量、無音区間、形式、明瞭度を検査する。
 - `ASSIGNMENT_VERSION`、`SEED_ALGORITHM_VERSION`、`ASSET_VERSION` を確定し、プレースホルダーを無効化する。
+- 現行実装どおり直後・遅延で同一WAVを使うなら `TEST_TOKEN_POLICY=same_token` を明示する。別takeを採用する場合は、先にkey規約とmanifest生成を実装する。
 - 予定サンプルサイズに対応する均衡水準と統計解析計画を事前登録する。
 
 ## 参加者用URL
@@ -27,7 +28,7 @@ Barcroft and Sommers (2005) の Experiment 2 を基礎に、学習時アクセ�
 
 招待tokenはURLごとではなくvisitごとの3本です。pre、immediate、delayedのリンクを担当者が順に手動配布し、同一visit内の課題間では同じsessionを引き継ぎます。サーバーが未完了trialのordinalと未送信録音を検査するため、後続URLを直接開いても課題を飛ばせません。preにはL2-to-L1を含めません。
 
-Picture Matching は実施しません。テストでは発話をWAVとして非公開R2へ保存します。各phaseの全録音が揃うとQueueがZIPを自動生成して別の非公開R2へ保存し、`/admin/exports`から管理者だけがダウンロードできます。参加者端末への自動保存は行いません。
+Picture Matching は実施しません。テストでは発話をWAVとして非公開R2へ保存します。各phaseの全録音が揃うとQueueがZIPを自動生成して別の非公開R2へ保存し、`/admin/exports`から管理者だけがダウンロードできます。参加者端末への自動保存は行いません。手動リンク発行・遅延対象確認・割付状況確認は内部ページ `/admin/` から行えます。
 
 ## 設計の要点
 
@@ -66,10 +67,11 @@ npm run dev
 npm run types
 npm run types:check
 npm test
-npm run deploy:check
+npm run audit:randomization
+npm run verify
 ```
 
-`npm test` は、参加者ID割当、216名周期の均衡、学習144試行、pre・直後・遅延順序の独立化、アクセント連続制約、6 URL、冪等な保存、segment越境刺激の遮断、WAV/PCM品質検証、ZIPのbyte一致・認可・監査などを検査します。
+`npm test` は、参加者ID割当、216名周期の均衡、学習144試行、pre・直後・遅延順序の独立化、アクセント連続制約、6 URL、再開・再送、segment越境刺激の遮断、WAV/PCM品質検証、ZIPの回復性・認可・整合性などを検査します。`npm run audit:randomization` はID 1–2160を独立した2つのsecretで生成し、計4,320 designの不変条件を監査します。push時にも同じ `npm run verify` をGitHub Actionsで実行します。
 
 ## 文書
 

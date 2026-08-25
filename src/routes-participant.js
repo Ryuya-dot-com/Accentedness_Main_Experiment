@@ -28,6 +28,24 @@ function numericEnv(env, key, fallback) {
   return Number.isFinite(value) ? value : fallback;
 }
 
+function assertParticipantCollectionConfigured(env) {
+  const collection = collectionConfiguration(env);
+  if (!collection.blocked) return;
+  throw new ApiError(
+    503,
+    "production_collection_blocked",
+    "Production participation requires real assets and an explicit supported test-token policy",
+    {
+      asset_version: env.ASSET_VERSION,
+      assignment_version: env.ASSIGNMENT_VERSION,
+      placeholder_assets: collection.placeholder,
+      allow_placeholder_assets: collection.placeholderAllowed,
+      test_token_policy: collection.testTokenPolicy,
+      test_token_policy_ready: collection.tokenPolicyReady,
+    },
+  );
+}
+
 function finiteField(object, key, { minimum = -Infinity, maximum = Infinity } = {}) {
   const value = object?.[key];
   if (typeof value !== "number" || !Number.isFinite(value) || value < minimum || value > maximum) {
@@ -322,6 +340,7 @@ function validateResponsePayload(payload, attempt, nowMs) {
 
 export async function redeemInvitation(request, env) {
   requireMethod(request, ["POST"]);
+  assertParticipantCollectionConfigured(env);
   const body = await readJson(request);
   const rawToken = String(body.token ?? "");
   if (!/^[A-Za-z0-9_-]{40,100}$/u.test(rawToken)) {
@@ -461,14 +480,13 @@ async function assertAssetReady(env, trial) {
   const heads = await Promise.all(keys.map((key) => env.STIMULI.head(key)));
   const missingIndex = heads.findIndex((head) => head === null);
   if (missingIndex >= 0) {
-    throw new ApiError(503, "stimulus_asset_missing", "A required stimulus is missing", {
-      asset_key: keys[missingIndex],
-    });
+    throw new ApiError(503, "stimulus_asset_missing", "A required stimulus is missing");
   }
 }
 
 export async function startTrial(request, env, trialUuidInput) {
   requireMethod(request, ["POST"]);
+  assertParticipantCollectionConfigured(env);
   const session = await requireSession(request, env);
   const trialUuid = requireUuid(trialUuidInput, "trial_id");
   const body = await readJson(request);
@@ -838,7 +856,7 @@ function ascii(view, offset, length) {
   return output;
 }
 
-function validatePcmWav(bytes, segment) {
+export function validatePcmWav(bytes, segment) {
   if (bytes.byteLength < 44) throw new ApiError(422, "invalid_wav", "WAV file is too short");
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   if (ascii(view, 0, 4) !== "RIFF" || ascii(view, 8, 4) !== "WAVE") {
@@ -888,6 +906,9 @@ function validatePcmWav(bytes, segment) {
   }
   if (formatOffset !== 12 || dataOffset !== 36) {
     throw new ApiError(422, "invalid_wav", "WAV chunks are not in the canonical encoder order");
+  }
+  if (dataBytes + 44 !== bytes.byteLength) {
+    throw new ApiError(422, "invalid_wav", "WAV must end immediately after its canonical PCM data chunk");
   }
   if (format.audioFormat !== 1 || format.channels !== 1 || format.bitsPerSample !== 16
       || format.blockAlign !== 2 || format.byteRate !== format.sampleRate * 2
@@ -1017,7 +1038,6 @@ async function finalizeRecordingObject(env, recording, headers, object, session,
       await ensureRecordingExportQueued(env, session.visit_uuid, recording.segment).catch((error) => {
         console.error(JSON.stringify({
           message: "recording_export_schedule_failed",
-          visit_uuid: session.visit_uuid,
           segment: recording.segment,
           error: String(error),
         }));
@@ -1034,7 +1054,6 @@ async function finalizeRecordingObject(env, recording, headers, object, session,
   await ensureRecordingExportQueued(env, session.visit_uuid, recording.segment).catch((error) => {
     console.error(JSON.stringify({
       message: "recording_export_schedule_failed",
-      visit_uuid: session.visit_uuid,
       segment: recording.segment,
       error: String(error),
     }));
@@ -1281,18 +1300,19 @@ export async function saveEvents(request, env) {
 export async function completeVisit(request, env) {
   requireMethod(request, ["POST"]);
   const session = await requireSession(request, env, { allowCompleted: true });
-  const completionPayload = (finalizedAtMs) => {
-    const delayedStartMs = session.picture_naming_started_at_ms ?? session.first_started_at_ms;
+  const completionPayload = async (finalizedAtMs) => {
+    const intervals = session.visit_type === "delayed"
+      ? await env.DB.prepare(`
+          SELECT retention_interval_ms, target_deviation_ms
+          FROM analysis_intervals WHERE participant_uuid = ? LIMIT 1
+        `).bind(session.participant_uuid).first()
+      : null;
     return {
       ok: true,
       visit_type: session.visit_type,
       finalized_at_ms: Number(finalizedAtMs),
-      retention_interval_ms: session.visit_type === "delayed" && session.target_at_ms !== null
-        ? Number(delayedStartMs) - (Number(session.target_at_ms) - numericEnv(env, "DELAY_DAYS", 7) * 86_400_000)
-        : null,
-      target_deviation_ms: session.visit_type === "delayed" && session.target_at_ms !== null
-        ? Number(delayedStartMs) - Number(session.target_at_ms)
-        : null,
+      retention_interval_ms: intervals?.retention_interval_ms ?? null,
+      target_deviation_ms: intervals?.target_deviation_ms ?? null,
     };
   };
   const completeness = await env.DB.prepare(`
@@ -1306,7 +1326,7 @@ export async function completeVisit(request, env) {
   const missingResponses = Number(completeness?.missing_responses ?? 0);
   const missingRecordings = Number(completeness?.missing_recordings ?? 0);
   if (session.visit_status === "completed" && session.finalized_at_ms !== null) {
-    return jsonResponse({ ...completionPayload(session.finalized_at_ms), duplicate: true });
+    return jsonResponse({ ...(await completionPayload(session.finalized_at_ms)), duplicate: true });
   }
   if (missingResponses > 0 || missingRecordings > 0) {
     throw new ApiError(409, "visit_incomplete", "Visit cannot be finalized while data are missing", {
@@ -1379,14 +1399,14 @@ export async function completeVisit(request, env) {
   try {
     const results = await env.DB.batch(statements);
     if (Number(results[0]?.meta?.changes ?? 0) === 1) {
-      return jsonResponse({ ...completionPayload(nowMs), duplicate: false });
+      return jsonResponse({ ...(await completionPayload(nowMs)), duplicate: false });
     }
   } catch (error) {
     const completed = await env.DB.prepare(`
       SELECT status, finalized_at_ms FROM visits WHERE visit_uuid = ? LIMIT 1
     `).bind(session.visit_uuid).first();
     if (completed?.status === "completed" && completed.finalized_at_ms !== null) {
-      return jsonResponse({ ...completionPayload(completed.finalized_at_ms), duplicate: true });
+      return jsonResponse({ ...(await completionPayload(completed.finalized_at_ms)), duplicate: true });
     }
     throw error;
   }
@@ -1394,7 +1414,7 @@ export async function completeVisit(request, env) {
     SELECT status, finalized_at_ms FROM visits WHERE visit_uuid = ? LIMIT 1
   `).bind(session.visit_uuid).first();
   if (completed?.status === "completed" && completed.finalized_at_ms !== null) {
-    return jsonResponse({ ...completionPayload(completed.finalized_at_ms), duplicate: true });
+    return jsonResponse({ ...(await completionPayload(completed.finalized_at_ms)), duplicate: true });
   }
   throw new ApiError(409, "session_superseded", "This visit session was superseded before completion");
 }
@@ -1484,13 +1504,13 @@ export async function serveStimulus(request, env, trialUuidInput, kind) {
       placeholder_asset: Boolean(trial.placeholder_asset),
     });
   }
-  const headers = new Headers({
-    "Cache-Control": "private, no-store",
-    "Content-Type": kind === "audio" ? "audio/wav" : "image/webp",
-    "Referrer-Policy": "no-referrer",
-    "X-Content-Type-Options": "nosniff",
-  });
+  const headers = new Headers();
   object.writeHttpMetadata(headers);
+  // Storage metadata is not trusted to loosen the participant-facing privacy policy.
+  headers.set("Cache-Control", "private, no-store");
+  headers.set("Content-Type", kind === "audio" ? "audio/wav" : "image/webp");
+  headers.set("Referrer-Policy", "no-referrer");
+  headers.set("X-Content-Type-Options", "nosniff");
   headers.set("ETag", object.httpEtag);
   return new Response(object.body, { headers });
 }

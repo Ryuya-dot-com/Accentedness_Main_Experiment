@@ -83,3 +83,7 @@ form.addEventListener("submit", (event) => {
     status.textContent = error.message;
   });
 });
+
+window.addEventListener("pagehide", () => {
+  tokenInput.value = "";
+}, { once: true });

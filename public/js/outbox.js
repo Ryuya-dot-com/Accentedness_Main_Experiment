@@ -131,6 +131,19 @@ async function queuedTrial(attemptId) {
   return withStore(OUTBOX_STORE, "readonly", (store) => store.get(attemptId));
 }
 
+export async function hasQueuedRecording(visitId, attemptId) {
+  const record = await queuedTrial(attemptId);
+  return Boolean(
+    record
+      && record.visitId === visitId
+      && record.attemptId === attemptId
+      && record.expectsRecording
+      && !record.recordingAck
+      && record.recordingBlob instanceof Blob
+      && record.recordingSha256,
+  );
+}
+
 export async function acknowledgeTrialResponse(api, attemptId) {
   const record = await queuedTrial(attemptId);
   if (!record) throw new Error(`保存待ち試行が見つかりません: ${attemptId}`);

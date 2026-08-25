@@ -33,6 +33,10 @@ function clearInvitationFragment() {
   history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
 }
 
+export function shouldClearInvitationFragment(error) {
+  return error instanceof ApiClientError && error.status >= 400 && error.status < 500;
+}
+
 async function parseApiResponse(response) {
   const contentType = response.headers.get("Content-Type") ?? "";
   const body = contentType.includes("application/json") ? await response.json() : null;
@@ -69,8 +73,16 @@ async function fetchWithDeadline(path, options, timeoutMs, consume) {
 export class ExperimentApi {
   constructor(expectedVisitType) {
     this.expectedVisitType = expectedVisitType;
-    this.sessionToken = sessionStorage.getItem(SESSION_TOKEN_KEY);
-    this.clientInstanceId = getOrCreateClientInstanceId();
+    try {
+      this.sessionToken = sessionStorage.getItem(SESSION_TOKEN_KEY);
+      this.clientInstanceId = getOrCreateClientInstanceId();
+    } catch {
+      throw new ApiClientError(
+        0,
+        "session_storage_unavailable",
+        "このブラウザではセッションを安全に一時保存できません。通常モードのGoogle Chromeで開き直し、担当者に知らせてください。",
+      );
+    }
   }
 
   async request(path, options = {}) {
@@ -96,21 +108,27 @@ export class ExperimentApi {
   async bootstrap() {
     const invitationToken = invitationTokenFromFragment();
     if (invitationToken) {
-      const state = await fetchWithDeadline(
-        "/api/invitations/redeem",
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            token: invitationToken,
-            client_instance_id: this.clientInstanceId,
-            expected_visit_type: this.expectedVisitType,
-          }),
-          cache: "no-store",
-        },
-        JSON_TIMEOUT_MS,
-        parseApiResponse,
-      );
+      let state;
+      try {
+        state = await fetchWithDeadline(
+          "/api/invitations/redeem",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              token: invitationToken,
+              client_instance_id: this.clientInstanceId,
+              expected_visit_type: this.expectedVisitType,
+            }),
+            cache: "no-store",
+          },
+          JSON_TIMEOUT_MS,
+          parseApiResponse,
+        );
+      } catch (error) {
+        if (shouldClearInvitationFragment(error)) clearInvitationFragment();
+        throw error;
+      }
       clearInvitationFragment();
       this.sessionToken = state.session_token;
       sessionStorage.setItem(SESSION_TOKEN_KEY, this.sessionToken);

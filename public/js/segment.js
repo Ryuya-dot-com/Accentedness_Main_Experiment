@@ -1,5 +1,6 @@
 import { ExperimentApi } from "./api.js";
 import { ExperimentAudio } from "./audio-engine.js";
+import { microphoneCheckStorageKey, redirectToCanonical } from "./flow-guards.js";
 import { ExperimentRunner } from "./runner.js";
 import { ExperimentUi, validateBrowserEnvironment } from "./ui.js";
 
@@ -13,8 +14,8 @@ if (!new Set(["picture_naming", "l2_to_l1"]).has(expectedSegment)) {
 }
 
 const ui = new ExperimentUi();
-const api = new ExperimentApi(expectedVisit);
-const audio = new ExperimentAudio(api);
+let api = null;
+let audio = null;
 let runner = null;
 
 const copy = {
@@ -28,17 +29,8 @@ const copy = {
   },
 }[expectedSegment];
 
-function redirectToCanonical(state) {
-  if (!state.next_route) return false;
-  const current = window.location.pathname.replace(/\/+$/u, "") || "/";
-  const expected = state.next_route.replace(/\/+$/u, "") || "/";
-  if (current === expected) return false;
-  window.location.replace(state.next_route);
-  return true;
-}
-
 async function runMicrophoneCheck(state) {
-  const checkKey = `microphone_checked:${state.visit.visit_id}:${state.session.epoch}`;
+  const checkKey = microphoneCheckStorageKey(state, expectedSegment);
   if (sessionStorage.getItem(checkKey) === "yes") return;
   for (let attempt = 1; attempt <= 2; attempt += 1) {
     await ui.prompt("マイク確認を行います。次の画面で「テスト」と普段の声で話してください。", "録音を開始");
@@ -67,7 +59,9 @@ async function runMicrophoneCheck(state) {
 }
 
 async function finalizeAlreadyCompleted(state) {
-  await api.completeVisit();
+  runner.stopMonitoring();
+  audio.close();
+  await runner.completeVisitWithRetry();
   api.clearSession();
   ui.completed(state.visit.visit_type === "pre"
     ? "Pre Picture Namingは保存済みです。Main Experimentのリンクは担当者から別途お送りします。"
@@ -77,6 +71,8 @@ async function finalizeAlreadyCompleted(state) {
 }
 
 async function main() {
+  api = new ExperimentApi(expectedVisit);
+  audio = new ExperimentAudio(api);
   const failures = validateBrowserEnvironment({ microphone: true });
   if (failures.length) throw new Error(failures.join(" "));
   let state = await api.bootstrap();
@@ -92,11 +88,10 @@ async function main() {
   runner = new ExperimentRunner(api, ui, audio, state);
   runner.startMonitoring();
   state = await runner.reconcileOutbox();
-  if (redirectToCanonical(state)) return;
+  if (redirectToCanonical(state, { runner, audio })) return;
   const nextTrial = state.manifest.find((trial) => trial.trial_id === state.next_trial_id);
   if (!nextTrial) {
     await finalizeAlreadyCompleted(state);
-    runner.stopMonitoring();
     return;
   }
   if (nextTrial.segment !== expectedSegment) {
@@ -159,7 +154,7 @@ async function main() {
     window.location.assign(state.next_route);
     return;
   }
-  await api.completeVisit();
+  await runner.completeVisitWithRetry();
   api.clearSession();
   ui.completed(expectedVisit === "pre"
     ? "Pre Picture Namingは終了しました。Main Experimentのリンクは担当者から別途お送りします。"
@@ -172,7 +167,7 @@ main().catch((error) => {
   runner?.stopMonitoring();
   ui.setConnected(false);
   ui.fatal(error);
-  audio.close();
+  audio?.close();
 });
 
-window.addEventListener("pagehide", () => audio.close(), { once: true });
+window.addEventListener("pagehide", () => audio?.close(), { once: true });

@@ -18,6 +18,29 @@ export function validateBrowserEnvironment({ microphone }) {
   return failures;
 }
 
+const PARTICIPANT_ERROR_MESSAGES = Object.freeze({
+  invalid_invitation: "招待リンクの形式を確認できません。担当者から届いたリンクを開き直してください。",
+  invitation_not_found: "この招待リンクは無効または再発行済みです。担当者へ新しいリンクを依頼してください。",
+  wrong_visit_route: "このリンクと開いている課題が一致しません。ページを閉じ、担当者から届いたリンクを開き直してください。",
+  visit_closed: "このセッションはすでに終了しています。担当者に知らせてください。",
+  visit_not_available: "このセッションはまだ受付時刻に達していません。担当者の案内後に開き直してください。",
+  invalid_session: "セッション情報を確認できません。担当者から届いたリンクを開き直してください。",
+  session_expired: "セッションの有効時間が切れました。担当者から届いた招待リンクを開き直してください。",
+  session_superseded: "別のタブまたは再開操作により、この画面は無効になりました。この画面では続行しないでください。",
+  production_collection_blocked: "実験環境が本番開始条件を満たしていないため停止しました。担当者に知らせてください。",
+  placeholder_assets_disabled: "本番刺激を確認できないため停止しました。担当者に知らせてください。",
+  stimulus_asset_missing: "必要な刺激を読み込めないため停止しました。担当者に知らせてください。",
+});
+
+export function participantErrorMessage(error) {
+  const code = String(error?.code ?? "");
+  if (PARTICIPANT_ERROR_MESSAGES[code]) return PARTICIPANT_ERROR_MESSAGES[code];
+  if (/^(invalid_|response_|recording_|trial_|stimulus_|idempotency_|canonical_)/u.test(code)) {
+    return "データまたは課題状態の整合性を確認できないため停止しました。ページを閉じずに担当者へ知らせてください。";
+  }
+  return error?.message ?? String(error);
+}
+
 export class ExperimentUi {
   constructor() {
     this.welcome = document.getElementById("welcome");
@@ -51,7 +74,11 @@ export class ExperimentUi {
   }
 
   setParticipant(id, visitType) {
-    const visitLabel = visitType === "immediate" ? "直後セッション" : "遅延セッション";
+    const visitLabel = {
+      pre: "事前セッション",
+      immediate: "直後セッション",
+      delayed: "遅延セッション",
+    }[visitType] ?? "実験セッション";
     this.summary.textContent = `参加者ID: ${id}　／　${visitLabel}`;
     this.summary.hidden = false;
   }
@@ -174,7 +201,7 @@ export class ExperimentUi {
     this.task.hidden = true;
     this.fatalPanel.hidden = false;
     const code = error?.code ? `（${error.code}）` : "";
-    this.fatalMessage.textContent = `${error?.message ?? String(error)} ${code}`.trim();
+    this.fatalMessage.textContent = `${participantErrorMessage(error)} ${code}`.trim();
     this.fatalPanel.focus();
   }
 }

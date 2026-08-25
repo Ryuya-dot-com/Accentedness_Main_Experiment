@@ -21,6 +21,12 @@ import { collectionConfiguration } from "./lib/config.js";
 import { downloadRecordingZip, listRecordingExports } from "./routes-recording-export.js";
 import { processRecordingExport, reconcileRecordingExports } from "./lib/recording-exports.js";
 
+const UUID_IN_PATH = /\/[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?=\/|$)/giu;
+
+function privacySafeLogPath(pathname) {
+  return pathname.replace(UUID_IN_PATH, "/:uuid");
+}
+
 function enforceOrigin(request) {
   if (["GET", "HEAD"].includes(request.method)) return;
   const origin = request.headers.get("Origin");
@@ -45,6 +51,8 @@ async function routeApi(request, env, ctx) {
       environment: collection.environment,
       collection_ready: collection.collectionReady,
       placeholder_assets: collection.placeholder,
+      test_token_policy: collection.testTokenPolicy,
+      test_token_policy_ready: collection.tokenPolicyReady,
       server_now_ms: Date.now(),
     });
   }
@@ -82,6 +90,7 @@ export default {
   async fetch(request, env, ctx) {
     const requestId = crypto.randomUUID();
     const url = new URL(request.url);
+    const loggedPath = privacySafeLogPath(url.pathname);
     const started = Date.now();
     try {
       const response = url.pathname.startsWith("/api/")
@@ -91,7 +100,7 @@ export default {
         message: "request_complete",
         request_id: requestId,
         method: request.method,
-        path: url.pathname,
+        path: loggedPath,
         status: response.status,
         duration_ms: Date.now() - started,
       }));
@@ -104,7 +113,7 @@ export default {
         message: "request_failed",
         request_id: requestId,
         method: request.method,
-        path: url.pathname,
+        path: loggedPath,
         status: response.status,
         code: error instanceof ApiError ? error.code : "internal_error",
         duration_ms: Date.now() - started,

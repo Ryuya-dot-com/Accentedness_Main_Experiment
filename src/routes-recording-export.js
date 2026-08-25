@@ -87,6 +87,17 @@ export async function downloadRecordingZip(request, env, visitUuidInput, segment
         range: request.headers,
       });
   if (!object) throw new ApiError(503, "recording_export_object_missing", "The ZIP object is missing from private storage");
+  const objectMatchesDatabase = Number(object.size) === Number(exportRow.zip_byte_count)
+    && object.etag === exportRow.r2_etag
+    && object.customMetadata?.export_uuid === exportRow.export_uuid
+    && object.customMetadata?.source_snapshot_sha256 === exportRow.source_snapshot_sha256;
+  if (!objectMatchesDatabase) {
+    throw new ApiError(
+      503,
+      "recording_export_integrity_mismatch",
+      "The ZIP object does not match its database record",
+    );
+  }
   const hasBody = request.method === "GET" && "body" in object;
   let responseStatus = request.method === "GET" && !hasBody ? 412 : 200;
   const headers = new Headers({

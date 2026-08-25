@@ -10,12 +10,15 @@ function assertProductionCollectionSafe(env) {
   if (configuration.blocked) {
     throw new ApiError(
       503,
-      "production_placeholder_blocked",
-      "Production participant creation and invitation issuance are blocked while placeholder assets are configured",
+      "production_collection_blocked",
+      "Production participant creation and invitation issuance require real assets and an explicit supported test-token policy",
       {
         asset_version: env.ASSET_VERSION,
         assignment_version: env.ASSIGNMENT_VERSION,
         allow_placeholder_assets: configuration.placeholderAllowed,
+        placeholder_assets: configuration.placeholder,
+        test_token_policy: configuration.testTokenPolicy,
+        test_token_policy_ready: configuration.tokenPolicyReady,
       },
     );
   }
@@ -72,6 +75,19 @@ async function issueInvitation(env, requestUrl, visitUuid, nowMs) {
   const tokenHash = await sha256Hex(rawToken);
   const inviteUuid = crypto.randomUUID();
   await env.DB.batch([
+    env.DB.prepare(`
+      UPDATE visits
+      SET active_session_epoch = active_session_epoch + 1, updated_at_ms = ?
+      WHERE visit_uuid = ?
+        AND EXISTS (
+          SELECT 1 FROM sessions
+          WHERE sessions.visit_uuid = visits.visit_uuid AND sessions.status = 'active'
+        )
+    `).bind(nowMs, visitUuid),
+    env.DB.prepare(`
+      UPDATE sessions SET status = 'superseded', superseded_at_ms = ?
+      WHERE visit_uuid = ? AND status = 'active'
+    `).bind(nowMs, visitUuid),
     env.DB.prepare(`
       UPDATE invitations SET status = 'revoked', revoked_at_ms = ?
       WHERE visit_uuid = ? AND status = 'active'
@@ -154,6 +170,8 @@ export async function createParticipant(request, env) {
     participant: {
       participant_id: numericId,
       participant_uuid: participant.participant_uuid,
+      training_accent: participant.training_accent,
+      counterbalance_cell: Number(participant.counterbalance_cell),
       pre_visit_id: participant.pre_visit_uuid,
       immediate_visit_id: participant.immediate_visit_uuid,
       delayed_visit_id: participant.delayed_visit_uuid,
@@ -175,11 +193,31 @@ export async function revokeInvitation(request, env, inviteUuidInput) {
   await requireAdmin(request, env);
   const inviteUuid = requireUuid(inviteUuidInput, "invite_id");
   const nowMs = Date.now();
-  const result = await env.DB.prepare(`
-    UPDATE invitations SET status = 'revoked', revoked_at_ms = ?
-    WHERE invite_uuid = ? AND status = 'active'
-  `).bind(nowMs, inviteUuid).run();
-  if (Number(result.meta.changes ?? 0) === 0) {
+  const results = await env.DB.batch([
+    env.DB.prepare(`
+      UPDATE visits
+      SET active_session_epoch = active_session_epoch + 1, updated_at_ms = ?
+      WHERE visit_uuid = (
+        SELECT visit_uuid FROM invitations WHERE invite_uuid = ? AND status = 'active'
+      )
+        AND EXISTS (
+          SELECT 1 FROM sessions
+          WHERE sessions.visit_uuid = visits.visit_uuid AND sessions.status = 'active'
+        )
+    `).bind(nowMs, inviteUuid),
+    env.DB.prepare(`
+      UPDATE sessions SET status = 'superseded', superseded_at_ms = ?
+      WHERE status = 'active'
+        AND visit_uuid = (
+          SELECT visit_uuid FROM invitations WHERE invite_uuid = ? AND status = 'active'
+        )
+    `).bind(nowMs, inviteUuid),
+    env.DB.prepare(`
+      UPDATE invitations SET status = 'revoked', revoked_at_ms = ?
+      WHERE invite_uuid = ? AND status = 'active'
+    `).bind(nowMs, inviteUuid),
+  ]);
+  if (Number(results[2]?.meta?.changes ?? 0) === 0) {
     throw new ApiError(404, "active_invitation_not_found", "Active invitation was not found");
   }
   return jsonResponse({ ok: true, invite_id: inviteUuid, revoked_at_ms: nowMs });
@@ -219,10 +257,45 @@ export async function listDueDelayed(request, env) {
 export async function adminSummary(request, env) {
   requireMethod(request, ["GET"]);
   await requireAdmin(request, env);
-  const [participants, visits, recordings] = await Promise.all([
+  const [participants, visits, recordings, participantIdSpan, assignmentFlow] = await Promise.all([
     env.DB.prepare(`SELECT status, COUNT(*) AS count FROM participants GROUP BY status`).all(),
     env.DB.prepare(`SELECT visit_type, status, COUNT(*) AS count FROM visits GROUP BY visit_type, status`).all(),
     env.DB.prepare(`SELECT state, COUNT(*) AS count FROM recordings GROUP BY state`).all(),
+    env.DB.prepare(`
+      SELECT
+        COUNT(*) AS assigned_count,
+        MIN(numeric_id) AS minimum_id,
+        MAX(numeric_id) AS maximum_id,
+        CASE
+          WHEN COUNT(*) = 0 THEN 0
+          ELSE MAX(numeric_id) - MIN(numeric_id) + 1 - COUNT(*)
+        END AS missing_ids_within_span,
+        CASE
+          WHEN COUNT(*) = 0 THEN 0
+          ELSE MAX(numeric_id) - COUNT(*)
+        END AS missing_ids_through_maximum
+      FROM participants
+    `).first(),
+    env.DB.prepare(`
+      SELECT
+        p.training_accent,
+        p.counterbalance_cell,
+        COUNT(*) AS assigned_count,
+        SUM(CASE WHEN pre.status = 'completed' THEN 1 ELSE 0 END) AS pre_completed_count,
+        SUM(CASE WHEN immediate.first_started_at_ms IS NOT NULL THEN 1 ELSE 0 END) AS immediate_started_count,
+        SUM(CASE WHEN immediate.status = 'completed' THEN 1 ELSE 0 END) AS immediate_completed_count,
+        SUM(CASE WHEN delayed.first_started_at_ms IS NOT NULL THEN 1 ELSE 0 END) AS delayed_started_count,
+        SUM(CASE WHEN delayed.status = 'completed' THEN 1 ELSE 0 END) AS delayed_completed_count
+      FROM participants p
+      JOIN visits pre
+        ON pre.participant_uuid = p.participant_uuid AND pre.visit_type = 'pre'
+      JOIN visits immediate
+        ON immediate.participant_uuid = p.participant_uuid AND immediate.visit_type = 'immediate'
+      JOIN visits delayed
+        ON delayed.participant_uuid = p.participant_uuid AND delayed.visit_type = 'delayed'
+      GROUP BY p.training_accent, p.counterbalance_cell
+      ORDER BY p.training_accent, p.counterbalance_cell
+    `).all(),
   ]);
   return jsonResponse({
     ok: true,
@@ -230,5 +303,7 @@ export async function adminSummary(request, env) {
     participants: participants.results,
     visits: visits.results,
     recordings: recordings.results,
+    participant_id_span: participantIdSpan,
+    assignment_flow: assignmentFlow.results,
   });
 }
