@@ -16,17 +16,54 @@ document.getElementById("app").innerHTML = `
       <span id="connection-badge" class="badge">確認中</span>
     </div>
     <p id="page-description" class="lead"></p>
+    <form id="participant-identity-form" class="identity-form" autocomplete="off" hidden>
+      <h2>参加者情報の確認</h2>
+      <p>担当者から案内された参加者IDと、登録した氏名を入力してください。</p>
+      <div class="identity-fields">
+        <label>
+          <span>参加者ID</span>
+          <input
+            id="participant-id-input"
+            name="participant_id"
+            type="text"
+            inputmode="numeric"
+            pattern="[0-9]+"
+            maxlength="32"
+            autocomplete="off"
+            required
+          />
+        </label>
+        <label>
+          <span>氏名</span>
+          <input
+            id="participant-name-input"
+            name="participant_name"
+            type="text"
+            maxlength="80"
+            autocomplete="off"
+            required
+          />
+        </label>
+      </div>
+      <div class="actions">
+        <button id="participant-identity-submit" type="submit">招待リンクを確認</button>
+      </div>
+      <p id="participant-identity-status" class="status" role="status"></p>
+    </form>
     <div id="participant-summary" class="summary" hidden></div>
-    <div class="checklist">
-      <p>開始前に確認してください。</p>
-      <ul id="environment-checks"></ul>
-    </div>
-    <label class="consent-row">
-      <input id="ready-check" type="checkbox" />
-      <span>上記を確認し、担当者から開始の案内を受けました。</span>
-    </label>
-    <div class="actions">
-      <button id="start-button" type="button" disabled></button>
+    <div id="participation-setup" hidden>
+      <div class="checklist">
+        <p>開始前に確認してください。</p>
+        <ul id="environment-checks"></ul>
+      </div>
+      <label class="consent-row">
+        <input id="ready-check" type="checkbox" />
+        <span>上記を確認し、担当者から開始の案内を受けました。</span>
+      </label>
+      <div class="actions">
+        <button id="start-button" type="button" disabled></button>
+        <button id="welcome-interruption-button" class="secondary-button" type="button">中断・終了</button>
+      </div>
     </div>
     <p id="welcome-status" class="status" role="status">招待情報を確認しています。</p>
   </section>
@@ -35,7 +72,10 @@ document.getElementById("app").innerHTML = `
     <div class="task-progress">
       <div class="progress-row">
         <strong id="progress-label">課題を準備しています</strong>
-        <span id="save-state" class="save-state pending">データ保存：未開始</span>
+        <div class="progress-controls">
+          <span id="save-state" class="save-state pending">データ保存：未開始</span>
+          <button id="interruption-button" class="interruption-button" type="button">中断・終了</button>
+        </div>
       </div>
       <div
         id="progress-track"
@@ -47,7 +87,7 @@ document.getElementById("app").innerHTML = `
         aria-valuenow="0"
         aria-valuetext="課題開始前"
       ><div id="progress-fill"></div></div>
-      <p id="progress-detail" class="progress-detail">「全試行・録音の保存完了」と表示されるまで、このページを閉じないでください。</p>
+      <p id="progress-detail" class="progress-detail">回答は各試行後に保存されます。通常完了時には「全試行・録音の保存完了」と表示します。途中で続けられなくなった場合は「中断・終了」を選んでください。</p>
     </div>
     <div id="stage" class="stage" aria-live="polite" tabindex="-1">
       <div id="fixation" class="fixation" aria-hidden="true" hidden>+</div>
@@ -70,14 +110,23 @@ document.getElementById("app").innerHTML = `
       <div id="stage-message" class="stage-message" hidden></div>
       <button id="continue-button" class="continue-button" type="button" hidden>続ける</button>
       <a id="download-link" class="continue-button button-link" href="#" hidden>ZIPをこのパソコンに保存</a>
+      <section id="interruption-choice" class="interruption-choice" aria-labelledby="interruption-choice-title" hidden>
+        <h2 id="interruption-choice-title">課題を中断・終了しますか？</h2>
+        <p id="interruption-choice-description">一時中断は、同じ招待リンクから研究用サーバーが受け付けた位置へ戻れます。参加終了を選ぶと、これ以降の課題には参加せず、再開できません。送信待ちデータがあれば、確定前に送信を試みます。</p>
+        <div class="interruption-actions">
+          <button id="pause-participation-button" type="button">一時中断する</button>
+          <button id="terminate-participation-button" class="danger-button" type="button">参加を終了する</button>
+          <button id="cancel-interruption-button" class="secondary-button" type="button">課題に戻る</button>
+        </div>
+      </section>
     </div>
     <p id="task-status" class="task-status" role="status"></p>
   </section>
 
   <section id="fatal" class="card error-card" role="alert" tabindex="-1" hidden>
-    <h2>課題を開始できません</h2>
+    <h2>課題を続行できません</h2>
     <p id="fatal-message"></p>
-    <p>ページを閉じずに、表示内容を担当者へ知らせてください。</p>
+    <p>表示されたコードを記録し、担当者へ知らせてください。</p>
   </section>
 `;
 

@@ -7,8 +7,10 @@ import {
 } from "./routes-admin.js";
 import {
   completeVisit,
+  finalizeParticipationInterruption,
   heartbeat,
   redeemInvitation,
+  requestParticipationInterruption,
   saveEvents,
   saveTrialResponse,
   serveStimulus,
@@ -60,6 +62,10 @@ async function routeApi(request, env) {
       placeholder_assets: collection.placeholder,
       test_token_policy: collection.testTokenPolicy,
       test_token_policy_ready: collection.tokenPolicyReady,
+      admin_authentication_ready: collection.adminAuthenticationReady,
+      randomization_ready: collection.randomizationReady,
+      identity_verification_ready: collection.identityVerificationReady,
+      secrets_independent: collection.secretsIndependent,
       server_now_ms: Date.now(),
     });
   }
@@ -80,6 +86,12 @@ async function routeApi(request, env) {
   if (path === "/api/events") return saveEvents(request, env);
   if (path === "/api/visit/complete") return completeVisit(request, env);
   if (path === "/api/visit/results.zip") return downloadParticipantCopy(request, env);
+  if (path === "/api/participation/interruptions") {
+    return requestParticipationInterruption(request, env);
+  }
+
+  match = /^\/api\/participation\/interruptions\/([^/]+)\/finalize$/u.exec(path);
+  if (match) return finalizeParticipationInterruption(request, env, match[1]);
 
   match = /^\/api\/trials\/([^/]+)\/start$/u.exec(path);
   if (match) return startTrial(request, env, match[1]);

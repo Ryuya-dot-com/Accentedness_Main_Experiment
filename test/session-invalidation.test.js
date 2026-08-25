@@ -27,7 +27,7 @@ async function createAndRedeemPre(participantId) {
   const createdResult = await api("/api/admin/participants", {
     method: "POST",
     token: ADMIN_TOKEN,
-    body: { participant_id: participantId },
+    body: { participant_id: participantId, participant_name: "Test Participant" },
   });
   expect(createdResult.response.status).toBe(201);
   const created = createdResult.json;
@@ -35,6 +35,8 @@ async function createAndRedeemPre(participantId) {
     method: "POST",
     body: {
       token: invitationToken(created.invitation.invitation_url),
+      participant_id: participantId,
+      participant_name: "Test Participant",
       client_instance_id: crypto.randomUUID(),
       expected_visit_type: "pre",
     },
@@ -64,6 +66,8 @@ describe("session invalidation", () => {
       method: "POST",
       body: {
         token: invitationToken(reissued.json.invitation.invitation_url),
+        participant_id: 101,
+        participant_name: "Test Participant",
         client_instance_id: crypto.randomUUID(),
         expected_visit_type: "pre",
       },

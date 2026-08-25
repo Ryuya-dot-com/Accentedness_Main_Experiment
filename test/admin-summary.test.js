@@ -31,11 +31,13 @@ function invitationToken(invitationUrl) {
   return new URLSearchParams(new URL(invitationUrl).hash.slice(1)).get("t");
 }
 
-async function redeemInvitation(invitationUrl, expectedVisitType) {
+async function redeemInvitation(invitationUrl, expectedVisitType, participantId) {
   const redeemed = await participantRequest("/api/invitations/redeem", {
     method: "POST",
     body: {
       token: invitationToken(invitationUrl),
+      participant_id: participantId,
+      participant_name: "Test Participant",
       client_instance_id: crypto.randomUUID(),
       expected_visit_type: expectedVisitType,
     },
@@ -44,8 +46,8 @@ async function redeemInvitation(invitationUrl, expectedVisitType) {
   return redeemed;
 }
 
-async function redeemAndStartFirstTrial(invitationUrl, expectedVisitType) {
-  const redeemed = await redeemInvitation(invitationUrl, expectedVisitType);
+async function redeemAndStartFirstTrial(invitationUrl, expectedVisitType, participantId) {
+  const redeemed = await redeemInvitation(invitationUrl, expectedVisitType, participantId);
   const firstTrial = redeemed.json.manifest.find((trial) => trial.current);
   const started = await participantRequest(`/api/trials/${firstTrial.trial_id}/start`, {
     method: "POST",
@@ -60,7 +62,11 @@ describe("admin allocation monitoring", () => {
     for (const participantId of [2, 3, 5]) {
       const created = await adminRequest("/api/admin/participants", {
         method: "POST",
-        body: { participant_id: participantId, issue_pre_invitation: false },
+        body: {
+          participant_id: participantId,
+          participant_name: "Test Participant",
+          issue_pre_invitation: false,
+        },
       });
       expect(created.response.status).toBe(201);
     }
@@ -92,7 +98,7 @@ describe("admin allocation monitoring", () => {
   it("separates invitation, redemption, first trial, behavioral completion, and finalization", async () => {
     const created = await adminRequest("/api/admin/participants", {
       method: "POST",
-      body: { participant_id: 41 },
+      body: { participant_id: 41, participant_name: "Test Participant" },
     });
     expect(created.response.status).toBe(201);
 
@@ -100,19 +106,19 @@ describe("admin allocation monitoring", () => {
     // a staggered cohort so adjacent funnel stages cannot accidentally collapse.
     const assignedOnly = await adminRequest("/api/admin/participants", {
       method: "POST",
-      body: { participant_id: 113, issue_pre_invitation: false },
+      body: { participant_id: 113, participant_name: "Test Participant", issue_pre_invitation: false },
     });
     const issuedOnly = await adminRequest("/api/admin/participants", {
       method: "POST",
-      body: { participant_id: 185 },
+      body: { participant_id: 185, participant_name: "Test Participant" },
     });
     const redeemedOnly = await adminRequest("/api/admin/participants", {
       method: "POST",
-      body: { participant_id: 257 },
+      body: { participant_id: 257, participant_name: "Test Participant" },
     });
     const firstTrialOnly = await adminRequest("/api/admin/participants", {
       method: "POST",
-      body: { participant_id: 329 },
+      body: { participant_id: 329, participant_name: "Test Participant" },
     });
     for (const cohort of [assignedOnly, issuedOnly, redeemedOnly, firstTrialOnly]) {
       expect(cohort.response.status).toBe(201);
@@ -121,10 +127,10 @@ describe("admin allocation monitoring", () => {
         .toBe(created.json.participant.counterbalance_cell);
     }
     expect(assignedOnly.json.invitation).toBeNull();
-    await redeemInvitation(redeemedOnly.json.invitation.invitation_url, "pre");
-    await redeemAndStartFirstTrial(firstTrialOnly.json.invitation.invitation_url, "pre");
+    await redeemInvitation(redeemedOnly.json.invitation.invitation_url, "pre", 257);
+    await redeemAndStartFirstTrial(firstTrialOnly.json.invitation.invitation_url, "pre", 329);
 
-    await redeemAndStartFirstTrial(created.json.invitation.invitation_url, "pre");
+    await redeemAndStartFirstTrial(created.json.invitation.invitation_url, "pre", 41);
     const preFinishedAt = Date.now();
     await env.DB.prepare(`
       UPDATE visits
@@ -142,7 +148,7 @@ describe("admin allocation monitoring", () => {
       { method: "POST", body: {} },
     );
     expect(immediateInvitation.response.status).toBe(201);
-    await redeemAndStartFirstTrial(immediateInvitation.json.invitation.invitation_url, "immediate");
+    await redeemAndStartFirstTrial(immediateInvitation.json.invitation.invitation_url, "immediate", 41);
     const immediateFinishedAt = preFinishedAt + 2;
     await env.DB.prepare(`
       UPDATE visits
@@ -170,7 +176,7 @@ describe("admin allocation monitoring", () => {
       { method: "POST", body: {} },
     );
     expect(delayedInvitation.response.status).toBe(201);
-    await redeemAndStartFirstTrial(delayedInvitation.json.invitation.invitation_url, "delayed");
+    await redeemAndStartFirstTrial(delayedInvitation.json.invitation.invitation_url, "delayed", 41);
     await env.DB.prepare(`
       UPDATE visits SET status = 'awaiting_uploads', behavioral_completed_at_ms = ?, updated_at_ms = ?
       WHERE visit_uuid = ?
@@ -188,6 +194,9 @@ describe("admin allocation monitoring", () => {
     );
     expect(flow).toMatchObject({
       assigned_count: 5,
+      ever_paused_count: 0,
+      currently_paused_count: 0,
+      terminated_count: 0,
       pre_issued_count: 4,
       pre_redeemed_count: 3,
       pre_first_trial_count: 2,

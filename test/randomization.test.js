@@ -90,6 +90,66 @@ describe("participant-level manifest invariants", () => {
     }
   });
 
+  it("uses task-specific practice items and assets disjoint from all 24 main items", async () => {
+    const design = await designFor(2);
+    const allTrials = [
+      ...design.pre.trials,
+      ...design.immediate.trials,
+      ...design.delayed.trials,
+    ];
+    const practice = allTrials.filter((trial) => trial.practice);
+    const main = allTrials.filter((trial) => !trial.practice);
+    const mainIds = new Set(main.map((trial) => trial.itemId));
+    const mainWords = new Set(main.map((trial) => trial.itemWord));
+    const mainImageKeys = new Set(main.map((trial) => trial.imageKey).filter(Boolean));
+    const mainAudioKeys = new Set(main.map((trial) => trial.audioKey).filter(Boolean));
+
+    expect(new Set(practice.map((trial) => trial.itemId))).toEqual(
+      new Set([901, 902, 903, 904, 905]),
+    );
+    expect(new Set(practice.map((trial) => trial.itemWord))).toEqual(
+      new Set(["abacus", "binoculars", "thermometer", "xylophone", "detergent"]),
+    );
+    expect(practice.every((trial) => trial.excludeFromAnalysis)).toBe(true);
+    expect(practice.every((trial) => !mainIds.has(trial.itemId))).toBe(true);
+    expect(practice.every((trial) => !mainWords.has(trial.itemWord))).toBe(true);
+    expect(practice.filter((trial) => trial.imageKey)
+      .every((trial) => !mainImageKeys.has(trial.imageKey))).toBe(true);
+    expect(practice.filter((trial) => trial.audioKey)
+      .every((trial) => !mainAudioKeys.has(trial.audioKey))).toBe(true);
+
+    for (const visitType of ["pre", "immediate", "delayed"]) {
+      const picture = design[visitType].trials.filter(
+        (trial) => trial.segment === "picture_naming" && trial.practice,
+      );
+      expect(picture.map((trial) => [trial.itemId, trial.itemWord])).toEqual([
+        [901, "abacus"],
+        [902, "binoculars"],
+      ]);
+      expect(picture.every((trial) => (
+        trial.audioKey === null
+        && trial.imageKey === `stimuli/${trial.assetVersion}/images/${trial.itemWord}.webp`
+      ))).toBe(true);
+
+      const l2 = design[visitType].trials.filter(
+        (trial) => trial.segment === "l2_to_l1" && trial.practice,
+      );
+      if (visitType === "pre") {
+        expect(l2).toHaveLength(0);
+        continue;
+      }
+      expect(l2.map((trial) => [trial.itemId, trial.itemWord])).toEqual([
+        [903, "thermometer"],
+        [904, "xylophone"],
+        [905, "detergent"],
+      ]);
+      expect(l2.every((trial) => (
+        trial.imageKey === null
+        && trial.audioKey === `stimuli/${trial.assetVersion}/practice/${trial.testAccent}/${trial.talkerId}/${trial.itemWord}.wav`
+      ))).toBe(true);
+    }
+  });
+
   it("satisfies learning, test, timing, and timepoint contracts", async () => {
     for (const id of [1, 2, 3, 4, 72, 73, 216, 217]) {
       const design = await designFor(id);

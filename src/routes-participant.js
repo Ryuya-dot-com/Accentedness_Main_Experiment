@@ -1,6 +1,11 @@
 import { requireSession } from "./lib/auth.js";
 import { getVisitForInvitation, getVisitState } from "./lib/db.js";
-import { randomToken, sha256Hex, stableJson } from "./lib/crypto.js";
+import {
+  deterministicUuid,
+  randomToken,
+  sha256Hex,
+  stableJson,
+} from "./lib/crypto.js";
 import {
   ApiError,
   bearerToken,
@@ -13,6 +18,10 @@ import {
 import { collectionConfiguration, placeholderAssetsAllowed } from "./lib/config.js";
 import { DELAY_MINIMUM_MS } from "./lib/protocol.js";
 import { crc32 } from "./lib/stored-zip.js";
+import {
+  ParticipantIdentityError,
+  verifyParticipantIdentityBinding,
+} from "./lib/participant-identity.js";
 
 const VALID_VISITS = new Set(["pre", "immediate", "delayed"]);
 const VALID_EVENT_TYPES = new Set([
@@ -22,6 +31,121 @@ const VALID_EVENT_TYPES = new Set([
   "l2_audio_scheduled",
   "trial_onset_late",
 ]);
+const RESPONSE_COMMON_KEYS = Object.freeze([
+  "task",
+  "client_response_saved_perf_ms",
+  "clock_anchor",
+  "target_onset_perf_ms",
+  "onset_late_ms",
+  "visibility_interrupted",
+]);
+const RECORDING_RESPONSE_KEYS = Object.freeze([
+  "sample_rate_hz",
+  "sample_count",
+  "duration_seconds",
+  "capture_start_context_s",
+  "capture_stop_context_s",
+  "capture_stop_command_perf_ms",
+  "capture_stopped_perf_ms",
+  "scheduled_stop_context_s",
+  "expected_sample_count",
+  "sample_count_difference",
+  "missing_input_frames",
+  "quality",
+  "microphone_settings",
+]);
+const RESPONSE_KEYS_BY_TASK = Object.freeze({
+  learning: new Set([
+    ...RESPONSE_COMMON_KEYS,
+    "visual_mode",
+    "visual_onset_perf_ms",
+    "visual_onset_context_s",
+    "visual_deadline_perf_ms",
+    "visual_hidden_perf_ms",
+    "audio_scheduled_context_s",
+    "audio_scheduled_end_context_s",
+    "audio_duration_s",
+    "audio_ended_perf_ms",
+    "trial_end_perf_ms",
+    "page_visibility_at_end",
+  ]),
+  picture_naming: new Set([
+    ...RESPONSE_COMMON_KEYS,
+    ...RECORDING_RESPONSE_KEYS,
+    "visual_mode",
+    "visual_onset_perf_ms",
+    "visual_onset_context_s",
+    "response_deadline_perf_ms",
+    "response_deadline_context_s",
+    "visual_hidden_perf_ms",
+    "response_window_ms",
+    "measured_pre_roll_ms",
+  ]),
+  l2_to_l1: new Set([
+    ...RESPONSE_COMMON_KEYS,
+    ...RECORDING_RESPONSE_KEYS,
+    "audio_scheduled_context_s",
+    "audio_scheduled_end_context_s",
+    "audio_duration_s",
+    "audio_ended_perf_ms",
+    "audio_ended_context_s",
+    "response_deadline_context_s",
+    "response_deadline_perf_ms",
+    "scheduled_audio_onset_perf_ms",
+    "response_window_after_audio_ms",
+    "measured_pre_audio_ms",
+  ]),
+});
+const CLOCK_ANCHOR_KEYS = new Set([
+  "context_time_s",
+  "performance_time_ms",
+  "performance_time_origin_ms",
+  "output_context_time_s",
+  "output_performance_time_ms",
+  "base_latency_s",
+  "output_latency_s",
+  // Picture and learning onset snapshots currently carry this redundant UI field.
+  "visualMode",
+]);
+const RECORDING_QUALITY_KEYS = new Set([
+  "analysis_start_seconds",
+  "analyzed_sample_count",
+  "rms_amplitude",
+  "peak_amplitude",
+  "clipping_ratio",
+]);
+const MICROPHONE_SETTING_KEYS = new Set([
+  "sample_rate",
+  "channel_count",
+  "echo_cancellation",
+  "noise_suppression",
+  "auto_gain_control",
+]);
+const EVENT_PAYLOAD_KEYS = Object.freeze({
+  visibility_changed: new Set(["hidden"]),
+  learning_visual_onset: new Set([
+    "visual_mode",
+    "visual_onset_perf_ms",
+    "visual_onset_context_s",
+    "audio_scheduled_context_s",
+  ]),
+  picture_naming_visual_onset: new Set([
+    "visual_mode",
+    "visual_onset_perf_ms",
+    "visual_onset_context_s",
+    "capture_start_context_s",
+  ]),
+  l2_audio_scheduled: new Set([
+    "capture_start_context_s",
+    "audio_scheduled_context_s",
+    "audio_scheduled_end_context_s",
+  ]),
+  trial_onset_late: new Set([
+    "target_onset_perf_ms",
+    "actual_onset_perf_ms",
+    "onset_late_ms",
+  ]),
+});
 
 function numericEnv(env, key, fallback) {
   const value = Number(env[key]);
@@ -34,7 +158,7 @@ function assertParticipantCollectionConfigured(env) {
   throw new ApiError(
     503,
     "production_collection_blocked",
-    "Production participation requires real assets and an explicit supported test-token policy",
+    "Production participation requires real assets, an explicit supported test-token policy, and recipient verification",
     {
       asset_version: env.ASSET_VERSION,
       assignment_version: env.ASSIGNMENT_VERSION,
@@ -42,6 +166,10 @@ function assertParticipantCollectionConfigured(env) {
       allow_placeholder_assets: collection.placeholderAllowed,
       test_token_policy: collection.testTokenPolicy,
       test_token_policy_ready: collection.tokenPolicyReady,
+      admin_authentication_ready: collection.adminAuthenticationReady,
+      randomization_ready: collection.randomizationReady,
+      identity_verification_ready: collection.identityVerificationReady,
+      secrets_independent: collection.secretsIndependent,
     },
   );
 }
@@ -94,6 +222,14 @@ function plainObjectField(object, key) {
   return value;
 }
 
+function assertAllowedKeys(object, allowed, code, label) {
+  for (const key of Object.keys(object)) {
+    if (!allowed.has(key)) {
+      throw new ApiError(422, code, `${label} contains an unsupported field`);
+    }
+  }
+}
+
 function assertNear(actual, expected, tolerance, label) {
   if (Math.abs(actual - expected) > tolerance) {
     throw new ApiError(422, "invalid_response_timing", `${label} does not match the assigned protocol`, {
@@ -109,6 +245,12 @@ function validateResponsePayload(payload, attempt, nowMs) {
   if (payload.task !== expectedTask) {
     throw new ApiError(422, "task_mismatch", `Response task must be ${expectedTask}`);
   }
+  assertAllowedKeys(
+    payload,
+    RESPONSE_KEYS_BY_TASK[expectedTask] ?? new Set(),
+    "invalid_response_payload",
+    "payload",
+  );
   const clientSavedPerfMs = finiteField(payload, "client_response_saved_perf_ms", { minimum: 0 });
   const minimumElapsedMs = expectedTask === "learning" ? 4_800 : 9_500;
   const serverElapsedMs = nowMs - Number(attempt.server_started_at_ms);
@@ -126,9 +268,26 @@ function validateResponsePayload(payload, attempt, nowMs) {
     throw new ApiError(500, "manifest_protocol_invalid", "Stored trial timing protocol is invalid");
   }
   const clockAnchor = plainObjectField(payload, "clock_anchor");
+  assertAllowedKeys(
+    clockAnchor,
+    CLOCK_ANCHOR_KEYS,
+    "invalid_response_payload",
+    "clock_anchor",
+  );
   finiteField(clockAnchor, "context_time_s", { minimum: 0 });
   finiteField(clockAnchor, "performance_time_ms", { minimum: 0 });
   finiteField(clockAnchor, "performance_time_origin_ms", { minimum: 0 });
+  for (const key of [
+    "output_context_time_s",
+    "output_performance_time_ms",
+    "base_latency_s",
+    "output_latency_s",
+  ]) {
+    if (Object.hasOwn(clockAnchor, key)) nullableFiniteField(clockAnchor, key, { minimum: 0 });
+  }
+  if (Object.hasOwn(clockAnchor, "visualMode")) {
+    enumField(clockAnchor, "visualMode", ["image", "placeholder"]);
+  }
   booleanField(payload, "visibility_interrupted");
   const targetOnsetPerfMs = finiteField(payload, "target_onset_perf_ms", { minimum: 0 });
   const onsetLateMs = finiteField(payload, "onset_late_ms", { minimum: 0 });
@@ -186,6 +345,12 @@ function validateResponsePayload(payload, attempt, nowMs) {
       maximum: expectedTask === "picture_naming" ? 12.5 : 18,
     });
     const quality = plainObjectField(payload, "quality");
+    assertAllowedKeys(
+      quality,
+      RECORDING_QUALITY_KEYS,
+      "invalid_response_payload",
+      "quality",
+    );
     const reportedAnalysisStartSeconds = finiteField(quality, "analysis_start_seconds", {
       minimum: 0,
     });
@@ -196,6 +361,12 @@ function validateResponsePayload(payload, attempt, nowMs) {
     finiteField(quality, "peak_amplitude", { minimum: 0, maximum: 1.1 });
     finiteField(quality, "clipping_ratio", { minimum: 0, maximum: 1 });
     const microphoneSettings = plainObjectField(payload, "microphone_settings");
+    assertAllowedKeys(
+      microphoneSettings,
+      MICROPHONE_SETTING_KEYS,
+      "invalid_response_payload",
+      "microphone_settings",
+    );
     nullableFiniteField(microphoneSettings, "sample_rate", { minimum: 8_000, maximum: 192_000 });
     const microphoneChannels = nullableFiniteField(microphoneSettings, "channel_count", {
       minimum: 1,
@@ -361,6 +532,32 @@ export async function redeemInvitation(request, env) {
       expected: invitation.visit_type,
     });
   }
+  if (!invitation.identity_verifier_hex) {
+    throw new ApiError(409, "participant_identity_not_registered", "This invitation is not yet registered for recipient confirmation");
+  }
+  let identityMatches = false;
+  try {
+    identityMatches = await verifyParticipantIdentityBinding({
+      identitySecret: env.IDENTITY_SECRET,
+      participantUuid: invitation.participant_uuid,
+      participantId: body.participant_id,
+      participantName: body.participant_name,
+      binding: {
+        verifier_hex: invitation.identity_verifier_hex,
+        normalization_version: invitation.identity_normalization_version,
+        verifier_version: invitation.identity_verifier_version,
+      },
+    });
+  } catch (error) {
+    if (error instanceof ParticipantIdentityError
+        && error.code === "identity_secret_unconfigured") {
+      throw new ApiError(503, "identity_verification_unconfigured", "Participant identity verification is not configured");
+    }
+    identityMatches = false;
+  }
+  if (!identityMatches) {
+    throw new ApiError(409, "participant_binding_mismatch", "Participant ID and name do not match the registered recipient");
+  }
   if (["completed", "withdrawn"].includes(invitation.visit_status)) {
     throw new ApiError(409, "visit_closed", "This visit is already closed", { status: invitation.visit_status });
   }
@@ -379,7 +576,7 @@ export async function redeemInvitation(request, env) {
   const sessionTokenHash = await sha256Hex(rawSessionToken);
   const expiresAtMs = nowMs + numericEnv(env, "SESSION_TTL_SECONDS", 43_200) * 1000;
   try {
-    await env.DB.batch([
+    const statements = [
       env.DB.prepare(`
         UPDATE visits
         SET active_session_epoch = ?,
@@ -417,6 +614,11 @@ export async function redeemInvitation(request, env) {
         WHERE invite_uuid = ? AND status = 'active'
       `).bind(nowMs, nowMs, invitation.invite_uuid),
       env.DB.prepare(`
+        UPDATE participant_identity_bindings
+        SET last_confirmed_at_ms = ?, confirmation_count = confirmation_count + 1
+        WHERE participant_uuid = ? AND verifier_hex = ?
+      `).bind(nowMs, invitation.participant_uuid, invitation.identity_verifier_hex),
+      env.DB.prepare(`
         INSERT INTO audit_log (
           audit_uuid, actor_type, action, participant_uuid, visit_uuid, server_at_ms, details_json
         ) VALUES (?, 'participant', 'invitation_redeemed', ?, ?, ?, ?)
@@ -427,7 +629,33 @@ export async function redeemInvitation(request, env) {
         nowMs,
         stableJson({ epoch, client_instance_id: clientInstanceId }),
       ),
-    ]);
+    ];
+    statements.push(
+      env.DB.prepare(`
+        UPDATE participation_interruptions
+        SET state = 'resumed', resumed_at_ms = ?
+        WHERE visit_uuid = ? AND mode = 'pause' AND state = 'paused'
+      `).bind(nowMs, invitation.visit_uuid),
+      env.DB.prepare(`
+        INSERT INTO audit_log (
+          audit_uuid, actor_type, action, participant_uuid, visit_uuid,
+          server_at_ms, details_json
+        )
+        SELECT ?, 'participant', 'participation_resumed', ?, ?, ?,
+               json_object('interruption_uuid', interruption_uuid)
+        FROM participation_interruptions
+        WHERE visit_uuid = ? AND mode = 'pause' AND state = 'resumed'
+          AND resumed_at_ms = ?
+      `).bind(
+        crypto.randomUUID(),
+        invitation.participant_uuid,
+        invitation.visit_uuid,
+        nowMs,
+        invitation.visit_uuid,
+        nowMs,
+      ),
+    );
+    await env.DB.batch(statements);
   } catch {
     throw new ApiError(409, "invitation_redeem_conflict", "The invitation changed while it was being redeemed; retry the invitation link");
   }
@@ -468,6 +696,507 @@ export async function heartbeat(request, env) {
   });
 }
 
+function interruptionPayload(row) {
+  return {
+    interruption_id: row.interruption_uuid,
+    request_id: row.request_uuid,
+    mode: row.mode,
+    state: row.state,
+    requested_at_ms: Number(row.requested_at_ms),
+    finalized_at_ms: row.finalized_at_ms === null ? null : Number(row.finalized_at_ms),
+    resumed_at_ms: row.resumed_at_ms === null ? null : Number(row.resumed_at_ms),
+    accepted_trial_count: Number(row.accepted_trial_count),
+    next_ordinal: row.next_ordinal === null ? null : Number(row.next_ordinal),
+  };
+}
+
+export async function requestParticipationInterruption(request, env) {
+  requireMethod(request, ["POST"]);
+  const session = await requireSession(request, env);
+  const body = await readJson(request);
+  const requestUuid = requireUuid(body.request_id, "request_id");
+  const mode = String(body.mode ?? "");
+  if (!new Set(["pause", "terminate"]).has(mode)) {
+    throw new ApiError(400, "invalid_interruption_mode", "mode must be pause or terminate");
+  }
+
+  const existing = await env.DB.prepare(`
+    SELECT * FROM participation_interruptions WHERE request_uuid = ? LIMIT 1
+  `).bind(requestUuid).first();
+  if (existing) {
+    if (existing.participant_uuid !== session.participant_uuid
+        || existing.visit_uuid !== session.visit_uuid) {
+      throw new ApiError(409, "interruption_idempotency_conflict", "The interruption request ID was already used differently");
+    }
+    if (existing.mode === "pause"
+        && mode === "terminate"
+        && existing.state === "requested") {
+      const nowMs = Date.now();
+      const auditUuid = await deterministicUuid(
+        `participation_interruption_escalated\u001f${existing.interruption_uuid}`,
+      );
+      const results = await env.DB.batch([
+        env.DB.prepare(`
+          UPDATE participation_interruptions SET mode = 'terminate'
+          WHERE interruption_uuid = ?
+            AND participant_uuid = ?
+            AND visit_uuid = ?
+            AND request_uuid = ?
+            AND mode = 'pause'
+            AND state = 'requested'
+            AND EXISTS (
+              SELECT 1 FROM sessions active_session
+              JOIN visits active_visit
+                ON active_visit.visit_uuid = active_session.visit_uuid
+              WHERE active_session.session_uuid = ?
+                AND active_session.visit_uuid = participation_interruptions.visit_uuid
+                AND active_session.status = 'active'
+                AND active_session.epoch = active_visit.active_session_epoch
+                AND active_visit.status NOT IN ('completed', 'withdrawn')
+            )
+        `).bind(
+          existing.interruption_uuid,
+          session.participant_uuid,
+          session.visit_uuid,
+          requestUuid,
+          session.session_uuid,
+        ),
+        env.DB.prepare(`
+          INSERT OR IGNORE INTO audit_log (
+            audit_uuid, actor_type, action, participant_uuid, visit_uuid,
+            server_at_ms, details_json
+          )
+          SELECT ?, 'participant', 'participation_interruption_escalated', ?, ?, ?, ?
+          WHERE EXISTS (
+            SELECT 1 FROM participation_interruptions
+            WHERE interruption_uuid = ? AND request_uuid = ?
+              AND mode = 'terminate' AND state = 'requested'
+          )
+        `).bind(
+          auditUuid,
+          session.participant_uuid,
+          session.visit_uuid,
+          nowMs,
+          stableJson({
+            interruption_uuid: existing.interruption_uuid,
+            from_mode: "pause",
+            to_mode: "terminate",
+          }),
+          existing.interruption_uuid,
+          requestUuid,
+        ),
+      ]);
+      const escalated = await env.DB.prepare(`
+        SELECT * FROM participation_interruptions
+        WHERE interruption_uuid = ? LIMIT 1
+      `).bind(existing.interruption_uuid).first();
+      if (escalated?.mode !== "terminate" || escalated.state !== "requested") {
+        throw new ApiError(409, "interruption_escalation_conflict", "Only an open pause request can be changed to participation end");
+      }
+      return jsonResponse({
+        ok: true,
+        duplicate: Number(results[0]?.meta?.changes ?? 0) === 0,
+        escalated: true,
+        interruption: interruptionPayload(escalated),
+        server_now_ms: nowMs,
+      });
+    }
+    if (existing.mode !== mode) {
+      throw new ApiError(409, "interruption_idempotency_conflict", "The interruption request ID was already used differently");
+    }
+    return jsonResponse({
+      ok: true,
+      duplicate: true,
+      interruption: interruptionPayload(existing),
+      server_now_ms: Date.now(),
+    });
+  }
+
+  const open = await env.DB.prepare(`
+    SELECT * FROM participation_interruptions
+    WHERE visit_uuid = ? AND state IN ('requested', 'paused')
+    ORDER BY requested_at_ms DESC LIMIT 1
+  `).bind(session.visit_uuid).first();
+  if (open) {
+    throw new ApiError(409, "participation_interruption_open", "A pause or participation-end request is already open", {
+      mode: open.mode,
+      state: open.state,
+    });
+  }
+
+  const progress = await env.DB.prepare(`
+    SELECT
+      SUM(CASE WHEN canonical_attempt_uuid IS NOT NULL THEN 1 ELSE 0 END)
+        AS accepted_trial_count,
+      MIN(CASE WHEN canonical_attempt_uuid IS NULL THEN ordinal END) AS next_ordinal
+    FROM trial_manifest WHERE visit_uuid = ?
+  `).bind(session.visit_uuid).first();
+  const interruptionUuid = crypto.randomUUID();
+  const nowMs = Date.now();
+  try {
+    await env.DB.batch([
+      env.DB.prepare(`
+        INSERT INTO participation_interruptions (
+          interruption_uuid, request_uuid, participant_uuid, visit_uuid,
+          requested_session_uuid, mode, state, requested_at_ms,
+          accepted_trial_count, next_ordinal
+        ) VALUES (?, ?, ?, ?, ?, ?, 'requested', ?, ?, ?)
+      `).bind(
+        interruptionUuid,
+        requestUuid,
+        session.participant_uuid,
+        session.visit_uuid,
+        session.session_uuid,
+        mode,
+        nowMs,
+        Number(progress?.accepted_trial_count ?? 0),
+        progress?.next_ordinal ?? null,
+      ),
+      env.DB.prepare(`
+        INSERT INTO audit_log (
+          audit_uuid, actor_type, action, participant_uuid, visit_uuid,
+          server_at_ms, details_json
+        ) VALUES (?, 'participant', 'participation_interruption_requested', ?, ?, ?, ?)
+      `).bind(
+        crypto.randomUUID(),
+        session.participant_uuid,
+        session.visit_uuid,
+        nowMs,
+        stableJson({ interruption_uuid: interruptionUuid, mode }),
+      ),
+    ]);
+  } catch (error) {
+    const raced = await env.DB.prepare(`
+      SELECT * FROM participation_interruptions WHERE request_uuid = ? LIMIT 1
+    `).bind(requestUuid).first();
+    if (raced
+        && raced.participant_uuid === session.participant_uuid
+        && raced.visit_uuid === session.visit_uuid
+        && raced.mode === mode) {
+      return jsonResponse({
+        ok: true,
+        duplicate: true,
+        interruption: interruptionPayload(raced),
+        server_now_ms: Date.now(),
+      });
+    }
+    if (String(error?.message ?? error).includes(
+      "interruption_blocked_by_visit_or_session_state",
+    )) {
+      const current = await env.DB.prepare(`
+        SELECT s.status AS session_status, s.epoch AS session_epoch,
+               v.status AS visit_status, v.active_session_epoch
+        FROM sessions s
+        JOIN visits v ON v.visit_uuid = s.visit_uuid
+        WHERE s.session_uuid = ? AND v.visit_uuid = ? LIMIT 1
+      `).bind(session.session_uuid, session.visit_uuid).first();
+      if (["completed", "withdrawn"].includes(current?.visit_status)) {
+        throw new ApiError(409, "visit_closed", "The visit closed before the interruption request was accepted");
+      }
+      if (current?.session_status !== "active"
+          || Number(current?.session_epoch) !== Number(current?.active_session_epoch)) {
+        throw new ApiError(409, "session_superseded", "The session changed before the interruption request was accepted");
+      }
+      throw new ApiError(409, "participation_interruption_state_conflict", "The visit or session changed before the interruption request was accepted");
+    }
+    throw new ApiError(409, "participation_interruption_open", "A pause or participation-end request is already open");
+  }
+
+  const created = await env.DB.prepare(`
+    SELECT * FROM participation_interruptions WHERE interruption_uuid = ? LIMIT 1
+  `).bind(interruptionUuid).first();
+  return jsonResponse({
+    ok: true,
+    duplicate: false,
+    interruption: interruptionPayload(created),
+    server_now_ms: nowMs,
+  }, 202);
+}
+
+export async function finalizeParticipationInterruption(request, env, interruptionUuidInput) {
+  requireMethod(request, ["POST"]);
+  const session = await requireSession(request, env, { allowClosedRetry: true });
+  const interruptionUuid = requireUuid(interruptionUuidInput, "interruption_id");
+  const body = await readJson(request);
+  const requestUuid = requireUuid(body.request_id, "request_id");
+  const interruption = await env.DB.prepare(`
+    SELECT * FROM participation_interruptions WHERE interruption_uuid = ? LIMIT 1
+  `).bind(interruptionUuid).first();
+  if (!interruption
+      || interruption.participant_uuid !== session.participant_uuid
+      || interruption.visit_uuid !== session.visit_uuid) {
+    throw new ApiError(404, "participation_interruption_not_found", "Participation interruption was not found for this session");
+  }
+  if (interruption.request_uuid !== requestUuid) {
+    throw new ApiError(409, "interruption_idempotency_conflict", "The interruption request ID does not match");
+  }
+  const settledState = interruption.mode === "pause" ? "paused" : "terminated";
+  if (interruption.state === settledState) {
+    return jsonResponse({
+      ok: true,
+      duplicate: true,
+      interruption: interruptionPayload(interruption),
+      server_now_ms: Date.now(),
+    });
+  }
+  if (interruption.state !== "requested") {
+    throw new ApiError(409, "participation_interruption_not_open", "This interruption can no longer be finalized", {
+      state: interruption.state,
+    });
+  }
+
+  const nowMs = Date.now();
+  const statements = [];
+
+  if (interruption.mode === "pause") {
+    statements.push(
+      env.DB.prepare(`
+        UPDATE participation_interruptions
+        SET state = 'paused', finalized_at_ms = ?
+        WHERE interruption_uuid = ? AND request_uuid = ?
+          AND mode = 'pause' AND state = 'requested'
+          AND EXISTS (
+            SELECT 1 FROM sessions active_session
+            JOIN visits active_visit
+              ON active_visit.visit_uuid = active_session.visit_uuid
+            WHERE active_session.session_uuid = ?
+              AND active_session.visit_uuid = participation_interruptions.visit_uuid
+              AND active_session.status = 'active'
+              AND active_session.epoch = active_visit.active_session_epoch
+              AND active_visit.status NOT IN ('completed', 'withdrawn')
+          )
+          AND NOT EXISTS (
+            SELECT 1
+            FROM trial_manifest accepted_trial
+            LEFT JOIN recordings accepted_recording
+              ON accepted_recording.attempt_uuid = accepted_trial.canonical_attempt_uuid
+            WHERE accepted_trial.visit_uuid = participation_interruptions.visit_uuid
+              AND accepted_trial.expects_recording = 1
+              AND accepted_trial.canonical_attempt_uuid IS NOT NULL
+              AND COALESCE(accepted_recording.state, 'missing') != 'uploaded'
+          )
+      `).bind(nowMs, interruptionUuid, requestUuid, session.session_uuid),
+      env.DB.prepare(`
+        UPDATE sessions SET status = 'closed', closed_at_ms = ?
+        WHERE session_uuid = ? AND status = 'active'
+          AND EXISTS (
+            SELECT 1 FROM participation_interruptions pi
+            WHERE pi.interruption_uuid = ? AND pi.request_uuid = ?
+              AND pi.mode = 'pause' AND pi.state = 'paused'
+              AND pi.finalized_at_ms = ?
+          )
+      `).bind(nowMs, session.session_uuid, interruptionUuid, requestUuid, nowMs),
+    );
+  } else {
+    statements.push(
+      env.DB.prepare(`
+        UPDATE participation_interruptions
+        SET state = 'terminated', finalized_at_ms = ?
+        WHERE interruption_uuid = ? AND request_uuid = ?
+          AND mode = 'terminate' AND state = 'requested'
+          AND EXISTS (
+            SELECT 1 FROM sessions active_session
+            JOIN visits active_visit
+              ON active_visit.visit_uuid = active_session.visit_uuid
+            WHERE active_session.session_uuid = ?
+              AND active_session.visit_uuid = participation_interruptions.visit_uuid
+              AND active_session.status = 'active'
+              AND active_session.epoch = active_visit.active_session_epoch
+              AND active_visit.status NOT IN ('completed', 'withdrawn')
+          )
+      `).bind(nowMs, interruptionUuid, requestUuid, session.session_uuid),
+      env.DB.prepare(`
+        UPDATE trial_attempts
+        SET abandoned_at_ms = COALESCE(abandoned_at_ms, ?),
+            abandon_reason = COALESCE(abandon_reason, 'participant_terminated')
+        WHERE state = 'started' AND abandoned_at_ms IS NULL
+          AND EXISTS (
+            SELECT 1
+            FROM trial_manifest tm
+            JOIN visits v ON v.visit_uuid = tm.visit_uuid
+            WHERE tm.trial_uuid = trial_attempts.trial_uuid
+              AND v.participant_uuid = ?
+              AND tm.canonical_attempt_uuid IS NOT trial_attempts.attempt_uuid
+          )
+          AND EXISTS (
+            SELECT 1 FROM participation_interruptions pi
+            WHERE pi.interruption_uuid = ? AND pi.request_uuid = ?
+              AND pi.mode = 'terminate' AND pi.state = 'terminated'
+              AND pi.finalized_at_ms = ?
+          )
+      `).bind(
+        nowMs,
+        session.participant_uuid,
+        interruptionUuid,
+        requestUuid,
+        nowMs,
+      ),
+      env.DB.prepare(`
+        UPDATE recordings
+        SET abandoned_at_ms = COALESCE(abandoned_at_ms, ?),
+            abandon_reason = COALESCE(abandon_reason, 'participant_terminated'),
+            updated_at_ms = ?
+        WHERE state = 'pending' AND attempt_uuid IN (
+          SELECT ta.attempt_uuid
+          FROM trial_attempts ta
+          JOIN trial_manifest tm ON tm.trial_uuid = ta.trial_uuid
+          JOIN visits v ON v.visit_uuid = tm.visit_uuid
+          WHERE v.participant_uuid = ?
+        )
+          AND EXISTS (
+            SELECT 1 FROM participation_interruptions pi
+            WHERE pi.interruption_uuid = ? AND pi.request_uuid = ?
+              AND pi.mode = 'terminate' AND pi.state = 'terminated'
+              AND pi.finalized_at_ms = ?
+          )
+      `).bind(
+        nowMs,
+        nowMs,
+        session.participant_uuid,
+        interruptionUuid,
+        requestUuid,
+        nowMs,
+      ),
+      env.DB.prepare(`
+        UPDATE participants
+        SET status = 'withdrawn', withdrawn_at_ms = COALESCE(withdrawn_at_ms, ?),
+            updated_at_ms = ?
+        WHERE participant_uuid = ? AND status != 'completed'
+          AND EXISTS (
+            SELECT 1 FROM participation_interruptions pi
+            WHERE pi.interruption_uuid = ? AND pi.request_uuid = ?
+              AND pi.mode = 'terminate' AND pi.state = 'terminated'
+              AND pi.finalized_at_ms = ?
+          )
+      `).bind(
+        nowMs,
+        nowMs,
+        session.participant_uuid,
+        interruptionUuid,
+        requestUuid,
+        nowMs,
+      ),
+      env.DB.prepare(`
+        UPDATE visits
+        SET status = 'withdrawn', withdrawn_at_ms = COALESCE(withdrawn_at_ms, ?),
+            updated_at_ms = ?
+        WHERE participant_uuid = ? AND status != 'completed'
+          AND EXISTS (
+            SELECT 1 FROM participation_interruptions pi
+            WHERE pi.interruption_uuid = ? AND pi.request_uuid = ?
+              AND pi.mode = 'terminate' AND pi.state = 'terminated'
+              AND pi.finalized_at_ms = ?
+          )
+      `).bind(
+        nowMs,
+        nowMs,
+        session.participant_uuid,
+        interruptionUuid,
+        requestUuid,
+        nowMs,
+      ),
+      env.DB.prepare(`
+        UPDATE sessions SET status = 'closed', closed_at_ms = COALESCE(closed_at_ms, ?)
+        WHERE status = 'active' AND visit_uuid IN (
+          SELECT visit_uuid FROM visits WHERE participant_uuid = ?
+        )
+          AND EXISTS (
+            SELECT 1 FROM participation_interruptions pi
+            WHERE pi.interruption_uuid = ? AND pi.request_uuid = ?
+              AND pi.mode = 'terminate' AND pi.state = 'terminated'
+              AND pi.finalized_at_ms = ?
+          )
+      `).bind(
+        nowMs,
+        session.participant_uuid,
+        interruptionUuid,
+        requestUuid,
+        nowMs,
+      ),
+      env.DB.prepare(`
+        UPDATE invitations SET status = 'revoked', revoked_at_ms = COALESCE(revoked_at_ms, ?)
+        WHERE status = 'active' AND visit_uuid IN (
+          SELECT visit_uuid FROM visits WHERE participant_uuid = ?
+        )
+          AND EXISTS (
+            SELECT 1 FROM participation_interruptions pi
+            WHERE pi.interruption_uuid = ? AND pi.request_uuid = ?
+              AND pi.mode = 'terminate' AND pi.state = 'terminated'
+              AND pi.finalized_at_ms = ?
+          )
+      `).bind(
+        nowMs,
+        session.participant_uuid,
+        interruptionUuid,
+        requestUuid,
+        nowMs,
+      ),
+    );
+  }
+  statements.push(env.DB.prepare(`
+    INSERT INTO audit_log (
+      audit_uuid, actor_type, action, participant_uuid, visit_uuid,
+      server_at_ms, details_json
+    )
+    SELECT ?, 'participant', ?, ?, ?, ?, ?
+    WHERE EXISTS (
+      SELECT 1 FROM participation_interruptions
+      WHERE interruption_uuid = ? AND request_uuid = ?
+        AND mode = ? AND state = ? AND finalized_at_ms = ?
+    )
+  `).bind(
+    crypto.randomUUID(),
+    interruption.mode === "pause" ? "participation_paused" : "participation_terminated",
+    session.participant_uuid,
+    session.visit_uuid,
+    nowMs,
+    stableJson({ interruption_uuid: interruptionUuid, mode: interruption.mode }),
+    interruptionUuid,
+    requestUuid,
+    interruption.mode,
+    settledState,
+    nowMs,
+  ));
+  const results = await env.DB.batch(statements);
+  const transitioned = Number(results[0]?.meta?.changes ?? 0) === 1;
+
+  const finalized = await env.DB.prepare(`
+    SELECT * FROM participation_interruptions WHERE interruption_uuid = ? LIMIT 1
+  `).bind(interruptionUuid).first();
+  if (interruption.mode === "pause"
+      && finalized?.mode === "pause"
+      && finalized?.state === "requested") {
+    const pendingRecordings = await env.DB.prepare(`
+      SELECT COUNT(*) AS count
+      FROM trial_manifest tm
+      LEFT JOIN recordings r ON r.attempt_uuid = tm.canonical_attempt_uuid
+      WHERE tm.visit_uuid = ?
+        AND tm.expects_recording = 1
+        AND tm.canonical_attempt_uuid IS NOT NULL
+        AND COALESCE(r.state, 'missing') != 'uploaded'
+    `).bind(session.visit_uuid).first();
+    const pendingCount = Number(pendingRecordings?.count ?? 0);
+    if (pendingCount > 0) {
+      throw new ApiError(
+        409,
+        "participation_pause_recordings_pending",
+        "A pause cannot be finalized until every accepted recording is uploaded",
+        { pending_recordings: pendingCount },
+      );
+    }
+  }
+  if (finalized?.mode !== interruption.mode || finalized?.state !== settledState) {
+    throw new ApiError(409, "participation_interruption_finalize_conflict", "The interruption changed before it could be finalized");
+  }
+  return jsonResponse({
+    ok: true,
+    duplicate: !transitioned,
+    interruption: interruptionPayload(finalized),
+    partial_data_preserved: true,
+    server_now_ms: nowMs,
+  });
+}
+
 async function assertAssetReady(env, trial) {
   if (Number(trial.placeholder_asset) === 1) {
     const configuration = collectionConfiguration(env);
@@ -495,6 +1224,44 @@ export async function startTrial(request, env, trialUuidInput) {
   const resumeAfterStimulus = body.resume_after_stimulus === true;
   if (!Number.isFinite(clientStartedPerfMs) || clientStartedPerfMs < 0) {
     throw new ApiError(400, "invalid_timing", "client_started_perf_ms must be a non-negative finite number");
+  }
+  const existingByStartKey = await env.DB.prepare(`
+    SELECT ta.attempt_uuid, ta.attempt_no, ta.repeated_after_interruption
+    FROM trial_attempts ta
+    JOIN trial_manifest tm ON tm.trial_uuid = ta.trial_uuid
+    WHERE ta.trial_uuid = ? AND ta.start_key = ? AND tm.visit_uuid = ?
+      AND ta.abandoned_at_ms IS NULL
+    LIMIT 1
+  `).bind(trialUuid, startKey, session.visit_uuid).first();
+  if (existingByStartKey) {
+    if (resumeAfterStimulus) {
+      await env.DB.prepare(`
+        UPDATE trial_attempts
+        SET repeated_after_interruption = 1,
+            extra_exposure = CASE
+              WHEN (SELECT segment FROM trial_manifest WHERE trial_uuid = ?) = 'learning' THEN 1
+              ELSE extra_exposure END
+        WHERE attempt_uuid = ? AND abandoned_at_ms IS NULL
+      `).bind(trialUuid, existingByStartKey.attempt_uuid).run();
+    }
+    return jsonResponse({
+      ok: true,
+      duplicate: true,
+      attempt_id: existingByStartKey.attempt_uuid,
+      attempt_no: existingByStartKey.attempt_no,
+      repeated_after_interruption: resumeAfterStimulus || Boolean(existingByStartKey.repeated_after_interruption),
+    });
+  }
+  const interruption = await env.DB.prepare(`
+    SELECT mode, state FROM participation_interruptions
+    WHERE visit_uuid = ? AND state IN ('requested', 'paused')
+    ORDER BY requested_at_ms DESC LIMIT 1
+  `).bind(session.visit_uuid).first();
+  if (interruption) {
+    throw new ApiError(409, "trial_start_blocked_by_participation_interruption", "No new trial can start while a pause or participation-end request is open", {
+      mode: interruption.mode,
+      state: interruption.state,
+    });
   }
   const expected = await env.DB.prepare(`
     SELECT * FROM trial_manifest
@@ -527,32 +1294,10 @@ export async function startTrial(request, env, trialUuidInput) {
     );
   }
   await assertAssetReady(env, expected);
-  const existingByStartKey = await env.DB.prepare(`
-    SELECT attempt_uuid, attempt_no, repeated_after_interruption
-    FROM trial_attempts WHERE trial_uuid = ? AND start_key = ? LIMIT 1
-  `).bind(trialUuid, startKey).first();
-  if (existingByStartKey) {
-    if (resumeAfterStimulus) {
-      await env.DB.prepare(`
-        UPDATE trial_attempts
-        SET repeated_after_interruption = 1,
-            extra_exposure = CASE
-              WHEN (SELECT segment FROM trial_manifest WHERE trial_uuid = ?) = 'learning' THEN 1
-              ELSE extra_exposure END
-        WHERE attempt_uuid = ?
-      `).bind(trialUuid, existingByStartKey.attempt_uuid).run();
-    }
-    return jsonResponse({
-      ok: true,
-      duplicate: true,
-      attempt_id: existingByStartKey.attempt_uuid,
-      attempt_no: existingByStartKey.attempt_no,
-      repeated_after_interruption: resumeAfterStimulus || Boolean(existingByStartKey.repeated_after_interruption),
-    });
-  }
   const existingStart = await env.DB.prepare(`
     SELECT attempt_uuid, attempt_no, session_uuid, start_key, state, repeated_after_interruption
-    FROM trial_attempts WHERE trial_uuid = ? AND state = 'started'
+    FROM trial_attempts
+    WHERE trial_uuid = ? AND state = 'started' AND abandoned_at_ms IS NULL
     ORDER BY attempt_no DESC LIMIT 1
   `).bind(trialUuid).first();
   if (existingStart && existingStart.session_uuid === session.session_uuid) {
@@ -614,6 +1359,28 @@ export async function startTrial(request, env, trialUuidInput) {
       WHERE visit_uuid = ?
     `).bind(expected.segment, nowMs, expected.segment, nowMs, nowMs, nowMs, session.visit_uuid),
   ];
+  if (existingStart && existingStart.session_uuid !== session.session_uuid) {
+    statements.unshift(
+      env.DB.prepare(`
+        UPDATE trial_attempts
+        SET abandoned_at_ms = COALESCE(abandoned_at_ms, ?),
+            abandon_reason = COALESCE(abandon_reason, 'superseded_on_resume')
+        WHERE attempt_uuid = ? AND state = 'started'
+          AND abandoned_at_ms IS NULL
+          AND NOT EXISTS (
+            SELECT 1 FROM trial_manifest tm
+            WHERE tm.canonical_attempt_uuid = trial_attempts.attempt_uuid
+          )
+      `).bind(nowMs, existingStart.attempt_uuid),
+      env.DB.prepare(`
+        UPDATE recordings
+        SET abandoned_at_ms = COALESCE(abandoned_at_ms, ?),
+            abandon_reason = COALESCE(abandon_reason, 'superseded_on_resume'),
+            updated_at_ms = ?
+        WHERE attempt_uuid = ? AND state = 'pending'
+      `).bind(nowMs, nowMs, existingStart.attempt_uuid),
+    );
+  }
   if (recordingKey) {
     statements.push(env.DB.prepare(`
       INSERT INTO recordings (attempt_uuid, r2_key, state, updated_at_ms)
@@ -635,6 +1402,9 @@ export async function startTrial(request, env, trialUuidInput) {
         attempt_no: duplicate.attempt_no,
         repeated_after_interruption: Boolean(duplicate.repeated_after_interruption),
       });
+    }
+    if (String(error?.message ?? error).includes("trial_start_blocked_by_participation_interruption")) {
+      throw new ApiError(409, "trial_start_blocked_by_participation_interruption", "No new trial can start while a pause or participation-end request is open");
     }
     throw error;
   }
@@ -672,6 +1442,9 @@ export async function saveTrialResponse(request, env, trialUuidInput) {
   if (!attempt || attempt.visit_uuid !== session.visit_uuid) {
     throw new ApiError(404, "attempt_not_found", "Trial attempt was not found in this visit");
   }
+  if (attempt.abandoned_at_ms !== null) {
+    throw new ApiError(409, "attempt_abandoned", "This interrupted attempt is no longer eligible for acceptance");
+  }
   const payloadJson = stableJson(body.payload);
   const payloadHash = await sha256Hex(payloadJson);
   if (attempt.state === "response_saved") {
@@ -707,7 +1480,7 @@ export async function saveTrialResponse(request, env, trialUuidInput) {
       UPDATE trial_attempts
       SET response_key = ?, state = 'response_saved', server_received_at_ms = ?,
           client_received_perf_ms = ?, payload_hash = ?, payload_json = ?
-      WHERE attempt_uuid = ? AND state = 'started'
+      WHERE attempt_uuid = ? AND state = 'started' AND abandoned_at_ms IS NULL
         AND EXISTS (
           SELECT 1 FROM sessions active_session
           JOIN visits active_visit ON active_visit.visit_uuid = active_session.visit_uuid
@@ -1085,6 +1858,9 @@ export async function uploadRecording(request, env, attemptUuidInput) {
   if (!recording || recording.visit_uuid !== session.visit_uuid) {
     throw new ApiError(404, "recording_not_found", "Recording attempt was not found in this visit");
   }
+  if (recording.abandoned_at_ms !== null) {
+    throw new ApiError(409, "recording_abandoned", "This interrupted recording is no longer eligible for upload");
+  }
   if (!recording.expects_recording || recording.attempt_state !== "response_saved") {
     throw new ApiError(409, "recording_not_ready", "The behavioral response must be accepted before its recording");
   }
@@ -1178,6 +1954,42 @@ export async function uploadRecording(request, env, attemptUuidInput) {
   return finalizeRecordingObject(env, recording, headers, object, session, false);
 }
 
+function eventFiniteField(payload, key) {
+  const value = payload[key];
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    throw new ApiError(422, "invalid_event_payload", `${key} must be a non-negative finite number`);
+  }
+  return value;
+}
+
+function validateEventPayload(eventType, value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new ApiError(422, "invalid_event_payload", "Event payload must be an object");
+  }
+  assertAllowedKeys(
+    value,
+    EVENT_PAYLOAD_KEYS[eventType],
+    "invalid_event_payload",
+    "event payload",
+  );
+  if (eventType === "visibility_changed") {
+    if (typeof value.hidden !== "boolean") {
+      throw new ApiError(422, "invalid_event_payload", "hidden must be boolean");
+    }
+    return value;
+  }
+  if (eventType === "learning_visual_onset"
+      || eventType === "picture_naming_visual_onset") {
+    if (!new Set(["image", "placeholder"]).has(value.visual_mode)) {
+      throw new ApiError(422, "invalid_event_payload", "visual_mode has an invalid value");
+    }
+  }
+  for (const key of EVENT_PAYLOAD_KEYS[eventType]) {
+    if (key !== "visual_mode") eventFiniteField(value, key);
+  }
+  return value;
+}
+
 export async function saveEvents(request, env) {
   requireMethod(request, ["POST"]);
   const session = await requireSession(request, env);
@@ -1198,13 +2010,14 @@ export async function saveEvents(request, env) {
     const trialUuid = event.trial_id ? requireUuid(event.trial_id, "trial_id") : null;
     const attemptUuid = event.attempt_id ? requireUuid(event.attempt_id, "attempt_id") : null;
     const clientEventAtMs = Number(event.client_event_at_ms);
-    const payloadJson = stableJson(event.payload ?? {});
+    const eventPayload = validateEventPayload(eventType, event.payload ?? {});
+    const payloadJson = stableJson(eventPayload);
     const payloadHash = await sha256Hex(stableJson({
       event_type: eventType,
       trial_uuid: trialUuid,
       attempt_uuid: attemptUuid,
       client_event_at_ms: Number.isFinite(clientEventAtMs) ? clientEventAtMs : null,
-      payload: event.payload ?? {},
+      payload: eventPayload,
     }));
     return {
       eventUuid,
@@ -1286,6 +2099,16 @@ export async function saveEvents(request, env) {
 export async function completeVisit(request, env) {
   requireMethod(request, ["POST"]);
   const session = await requireSession(request, env, { allowCompleted: true });
+  const openInterruption = await env.DB.prepare(`
+    SELECT mode, state FROM participation_interruptions
+    WHERE visit_uuid = ? AND state IN ('requested', 'paused') LIMIT 1
+  `).bind(session.visit_uuid).first();
+  if (openInterruption) {
+    throw new ApiError(409, "participation_interruption_open", "A paused or ending visit cannot be marked complete", {
+      mode: openInterruption.mode,
+      state: openInterruption.state,
+    });
+  }
   const completionPayload = async (finalizedAtMs) => {
     const intervals = session.visit_type === "delayed"
       ? await env.DB.prepare(`
@@ -1325,6 +2148,11 @@ export async function completeVisit(request, env) {
     env.DB.prepare(`
       UPDATE visits SET status = 'completed', finalized_at_ms = COALESCE(finalized_at_ms, ?), updated_at_ms = ?
       WHERE visit_uuid = ? AND status != 'completed'
+        AND NOT EXISTS (
+          SELECT 1 FROM participation_interruptions pi
+          WHERE pi.visit_uuid = visits.visit_uuid
+            AND pi.state IN ('requested', 'paused')
+        )
         AND EXISTS (
           SELECT 1 FROM sessions active_session
           WHERE active_session.session_uuid = ?

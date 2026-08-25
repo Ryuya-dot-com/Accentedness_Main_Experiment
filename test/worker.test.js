@@ -24,7 +24,7 @@ async function createParticipant(id = 1, visitType = "immediate") {
   const result = await api("/api/admin/participants", {
     method: "POST",
     token: ADMIN_TOKEN,
-    body: { participant_id: id },
+    body: { participant_id: id, participant_name: "Test Participant" },
   });
   expect(result.response.status).toBe(201);
   const created = result.json;
@@ -203,7 +203,11 @@ describe("Worker API", () => {
     const existingParticipant = await api("/api/admin/participants", {
       method: "POST",
       token: ADMIN_TOKEN,
-      body: { participant_id: 1, issue_pre_invitation: false },
+      body: {
+        participant_id: 1,
+        participant_name: "Test Participant",
+        issue_pre_invitation: false,
+      },
     });
     expect(existingParticipant.response.status).toBe(200);
     expect(existingParticipant.json.participant).toMatchObject({
@@ -216,6 +220,8 @@ describe("Worker API", () => {
       method: "POST",
       body: {
         token: inviteToken,
+        participant_id: 1,
+        participant_name: "Test Participant",
         client_instance_id: "11111111-1111-4111-8111-111111111111",
         expected_visit_type: "pre",
       },
@@ -266,6 +272,8 @@ describe("Worker API", () => {
       method: "POST",
       body: {
         token: firstToken,
+        participant_id: 101,
+        participant_name: "Test Participant",
         client_instance_id: "10110110-1101-4101-8101-101101101101",
         expected_visit_type: "immediate",
       },
@@ -277,6 +285,8 @@ describe("Worker API", () => {
       method: "POST",
       body: {
         token: firstToken,
+        participant_id: 101,
+        participant_name: "Test Participant",
         client_instance_id: "10110110-1101-4101-8101-101101101102",
         expected_visit_type: "pre",
       },
@@ -320,6 +330,8 @@ describe("Worker API", () => {
       method: "POST",
       body: {
         token: inviteToken,
+        participant_id: 2,
+        participant_name: "Test Participant",
         client_instance_id: "22222222-2222-4222-8222-222222222222",
         expected_visit_type: "immediate",
       },
@@ -356,7 +368,12 @@ describe("Worker API", () => {
           trial_id: trial.trial_id,
           attempt_id: firstStart.json.attempt_id,
           client_event_at_ms: 20,
-          payload: { visible: true },
+          payload: {
+            visual_mode: "image",
+            visual_onset_perf_ms: 20,
+            visual_onset_context_s: 1,
+            audio_scheduled_context_s: 1.75,
+          },
         }],
       },
     });
@@ -371,7 +388,12 @@ describe("Worker API", () => {
           trial_id: trial.trial_id,
           attempt_id: firstStart.json.attempt_id,
           client_event_at_ms: 20,
-          payload: { visible: false },
+          payload: {
+            visual_mode: "placeholder",
+            visual_onset_perf_ms: 20,
+            visual_onset_context_s: 1,
+            audio_scheduled_context_s: 1.75,
+          },
         }],
       },
     });
@@ -394,6 +416,38 @@ describe("Worker API", () => {
     });
     expect(invalidPayload.response.status).toBe(422);
     expect(invalidPayload.json.error.code).toBe("invalid_response_payload");
+
+    const plaintextCanary = "DO-NOT-PERSIST-PARTICIPANT-NAME";
+    const leakingPayload = await api(`/api/trials/${trial.trial_id}/response`, {
+      method: "PUT",
+      token: sessionToken,
+      body: {
+        attempt_id: firstStart.json.attempt_id,
+        response_key: "88888888-8888-4888-8888-888888888888",
+        payload: { ...validLearningPayload(), participant_name: plaintextCanary },
+      },
+    });
+    expect(leakingPayload.response.status).toBe(422);
+    expect(leakingPayload.json.error.code).toBe("invalid_response_payload");
+    const leakingEvent = await api("/api/events", {
+      method: "POST",
+      token: sessionToken,
+      body: {
+        events: [{
+          event_id: "99999999-9999-4999-8999-999999999999",
+          type: "visibility_changed",
+          client_event_at_ms: 21,
+          payload: { hidden: false, participant_name: plaintextCanary },
+        }],
+      },
+    });
+    expect(leakingEvent.response.status).toBe(422);
+    expect(leakingEvent.json.error.code).toBe("invalid_event_payload");
+    expect(await env.DB.prepare(`
+      SELECT
+        (SELECT COUNT(*) FROM trial_attempts WHERE payload_json LIKE ?) +
+        (SELECT COUNT(*) FROM events WHERE payload_json LIKE ?) AS count
+    `).bind(`%${plaintextCanary}%`, `%${plaintextCanary}%`).first()).toEqual({ count: 0 });
 
     const responseKey = "44444444-4444-4444-8444-444444444444";
     const payload = validLearningPayload();
@@ -432,6 +486,8 @@ describe("Worker API", () => {
       method: "POST",
       body: {
         token: inviteToken,
+        participant_id: 3,
+        participant_name: "Test Participant",
         client_instance_id: "55555555-5555-4555-8555-555555555555",
         expected_visit_type: "immediate",
       },
@@ -440,6 +496,8 @@ describe("Worker API", () => {
       method: "POST",
       body: {
         token: inviteToken,
+        participant_id: 3,
+        participant_name: "Test Participant",
         client_instance_id: "66666666-6666-4666-8666-666666666666",
         expected_visit_type: "immediate",
       },
@@ -488,6 +546,8 @@ describe("Worker API", () => {
       method: "POST",
       body: {
         token: tokenFromInvitation(created.invitation.invitation_url),
+        participant_id: 40,
+        participant_name: "Test Participant",
         client_instance_id: "40404040-4040-4040-8040-404040404040",
         expected_visit_type: "immediate",
       },
@@ -558,6 +618,8 @@ describe("Worker API", () => {
       method: "POST",
       body: {
         token: tokenFromInvitation(issued.json.invitation.invitation_url),
+        participant_id: 5,
+        participant_name: "Test Participant",
         client_instance_id: "88888888-8888-4888-8888-888888888888",
         expected_visit_type: "delayed",
       },
@@ -738,6 +800,8 @@ describe("Worker API", () => {
       method: "POST",
       body: {
         token: tokenFromInvitation(issued.json.invitation.invitation_url),
+        participant_id: 7,
+        participant_name: "Test Participant",
         client_instance_id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
         expected_visit_type: "delayed",
       },
@@ -793,6 +857,8 @@ describe("Worker API", () => {
       method: "POST",
       body: {
         token: tokenFromInvitation(created.invitation.invitation_url),
+        participant_id: 6,
+        participant_name: "Test Participant",
         client_instance_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
         expected_visit_type: "immediate",
       },
@@ -821,7 +887,7 @@ describe("Worker API", () => {
     const result = await api("/api/admin/participants", {
       method: "POST",
       token: ADMIN_TOKEN,
-      body: { participant_id: "001" },
+      body: { participant_id: "001", participant_name: "Test Participant" },
     });
     expect(result.response.status).toBe(400);
   });
@@ -858,13 +924,24 @@ describe("Worker API", () => {
     expect(taskPage).toContain('aria-hidden="true" hidden>+</div>');
     expect(taskPage).toContain('id="response-timer"');
     expect(taskPage).toContain('role="timer" aria-live="off"');
+    expect(taskPage).toContain('id="welcome-interruption-button"');
     expect(taskPage).toContain("全試行・録音の保存完了");
 
     const uiResponse = await exports.default.fetch(new Request(`${ORIGIN}/js/ui.js`));
     expect(uiResponse.status).toBe(200);
     const ui = await uiResponse.text();
+    expect(ui).toContain('document.getElementById("interruption-button")');
+    expect(ui).toContain('document.getElementById("welcome-interruption-button")');
+    expect(ui).toContain("for (const button of this.interruptionButtons)");
     expect(ui).toContain('this.progressLabel.textContent = "セッション完了"');
     expect(ui).toContain('"セッションの全試行と録音の保存完了"');
+
+    for (const path of ["/js/learning.js", "/js/segment.js"]) {
+      const entryResponse = await exports.default.fetch(new Request(`${ORIGIN}${path}`));
+      expect(entryResponse.status, path).toBe(200);
+      expect(await entryResponse.text(), path)
+        .toContain("await waitForStartOrParticipantExit(ui, runner)");
+    }
 
     const stylesResponse = await exports.default.fetch(new Request(`${ORIGIN}/styles.css`));
     expect(stylesResponse.status).toBe(200);
@@ -890,6 +967,8 @@ describe("Worker API", () => {
       method: "POST",
       body: {
         token: tokenFromInvitation(issued.json.invitation.invitation_url),
+        participant_id: 9,
+        participant_name: "Test Participant",
         client_instance_id: "abcdefab-cdef-4abc-8def-abcdefabcdef",
         expected_visit_type: "delayed",
       },

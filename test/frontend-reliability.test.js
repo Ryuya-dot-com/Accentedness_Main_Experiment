@@ -8,14 +8,22 @@ import {
 import {
   microphoneCheckStorageKey,
   redirectToCanonical,
+  waitForStartOrParticipantExit,
 } from "../public/js/flow-guards.js";
 import {
   fullyAcknowledgedAttemptIds,
   isQueuedTrialFullyAcknowledged,
 } from "../public/js/outbox.js";
-import { ExperimentRunner } from "../public/js/runner.js";
+import {
+  ExperimentRunner,
+  isNonRetryableLocalRecordingError,
+  isTerminalInterruptionDrainError,
+} from "../public/js/runner.js";
 import {
   countdownState,
+  fatalErrorMessage,
+  PARTICIPANT_COPY_DELIVERY,
+  participantCopyCompletionMessage,
   participantErrorMessage,
   progressState,
 } from "../public/js/ui.js";
@@ -142,6 +150,9 @@ describe("frontend reliability guards", () => {
     expect(shouldClearInvitationFragment(
       new ApiClientError(409, "invitation_redeem_conflict", "retry redemption"),
     )).toBe(false);
+    expect(shouldClearInvitationFragment(
+      new ApiClientError(409, "participant_binding_mismatch", "retry identity"),
+    )).toBe(false);
     for (const status of [408, 425, 429]) {
       expect(shouldClearInvitationFragment(
         new ApiClientError(status, "temporarily_unavailable", "retry redemption"),
@@ -169,6 +180,57 @@ describe("frontend reliability guards", () => {
       code: "participant_copy_session_expired",
       message: "The session expired",
     })).toContain("研究担当者へ依頼");
+    expect(participantErrorMessage({
+      code: "invalid_response_payload",
+      message: "invalid response",
+    })).not.toContain("閉じない");
+    const missingRecording = participantErrorMessage({
+      code: "local_recording_missing",
+      message: "recording missing",
+    });
+    expect(missingRecording).toContain("完了しておらず");
+    expect(missingRecording).toContain("参加終了を選ばず停止");
+    expect(missingRecording).toContain("担当者");
+  });
+
+  it("does not imply completion or server receipt when a trial fails after interruption was requested", () => {
+    const message = fatalErrorMessage(
+      { code: "invalid_response_payload", message: "invalid response" },
+      { interruptionRequested: true },
+    );
+
+    expect(message).toContain("通常完了、一時中断、参加終了のいずれも確認できていません");
+    expect(message).toContain("どこまで受け付けたかも確認できていません");
+    expect(message).toContain("同じ有効な招待リンクを開き直し");
+    expect(message).toContain("参加者IDと氏名を再入力");
+    expect(message).toContain("新しい試行を始める前に「中断・終了」");
+    expect(message).toContain("担当者へ連絡");
+    expect(message).not.toContain("保存は完了");
+    expect(message).not.toContain("サーバー受付済み");
+    expect(fatalErrorMessage(
+      { code: "participant_copy_session_expired", message: "The session expired" },
+      { interruptionRequested: true },
+    )).not.toContain("研究用サーバーに保存済み");
+    expect(fatalErrorMessage(
+      { code: "invalid_response_payload", message: "invalid response" },
+    )).not.toContain("同じ有効な招待リンク");
+  });
+
+  it("returns to the welcome screen after cancelling an interruption without auto-starting", async () => {
+    const ui = {
+      waitForStart: vi.fn()
+        .mockResolvedValueOnce("interrupt")
+        .mockResolvedValueOnce("start"),
+      beginTask: vi.fn(),
+      returnToWelcome: vi.fn(),
+    };
+    const runner = { handleParticipantExit: vi.fn().mockResolvedValue(false) };
+
+    await expect(waitForStartOrParticipantExit(ui, runner)).resolves.toBeUndefined();
+    expect(ui.waitForStart).toHaveBeenCalledTimes(2);
+    expect(ui.beginTask).toHaveBeenCalledTimes(1);
+    expect(runner.handleParticipantExit).toHaveBeenCalledTimes(1);
+    expect(ui.returnToWelcome).toHaveBeenCalledTimes(1);
   });
 
   it("stops monitoring and closes audio before a post-start canonical redirect", () => {
@@ -263,6 +325,30 @@ describe("frontend reliability guards", () => {
       .toBe("accentedness_results.zip");
     expect(participantCopyFilename('attachment; filename="../../unsafe.zip"'))
       .toBe("accentedness_results.zip");
+  });
+
+  it("claims local ZIP completion only after a confirmed direct file write", () => {
+    const direct = participantCopyCompletionMessage(
+      PARTICIPANT_COPY_DELIVERY.DIRECT_WRITE_CONFIRMED,
+    );
+    expect(direct).toContain("研究用サーバー保存が完了");
+    expect(direct).toContain("選択した保存先へのZIP書き込みも完了");
+    expect(direct).not.toContain("ダウンロードを開始しました");
+
+    const fallback = participantCopyCompletionMessage(
+      PARTICIPANT_COPY_DELIVERY.DOWNLOAD_STARTED,
+      { alreadyCompleted: true, filename: "accentedness_results.zip" },
+    );
+    expect(fallback).toContain("研究用サーバーに保存済み");
+    expect(fallback).toContain("ZIPのダウンロードを開始しました");
+    expect(fallback).toContain("Chromeのダウンロード一覧");
+    expect(fallback).toContain("accentedness_results.zip");
+    expect(fallback).not.toContain("ZIP書き込みも完了");
+  });
+
+  it("refuses to render participant ZIP completion for an unknown delivery state", () => {
+    expect(() => participantCopyCompletionMessage("unknown"))
+      .toThrow("受け渡し状態を確認できません");
   });
 
   it("streams a ZIP response to a selected file without creating a Blob", async () => {
@@ -397,6 +483,124 @@ describe("frontend reliability guards", () => {
     expect(hasQueuedRecording).toHaveBeenCalledWith("visit-1", "attempt-recorded");
   });
 
+  it("offers canonical partial-data termination when a missing accepted WAV makes resume unsafe", async () => {
+    const state = stateWith({
+      manifest: [{ trial_id: "trial-recorded", expects_recording: true }],
+      accepted: [{
+        trial_id: "trial-recorded",
+        attempt_id: "attempt-recorded",
+        recording_state: "pending",
+      }],
+    });
+    const recordingError = Object.assign(new Error("recording missing"), {
+      code: "local_recording_missing",
+    });
+    const interruptionId = "77777777-7777-4777-8777-777777777777";
+    const requestParticipationInterruption = vi.fn(async (mode, requestId) => ({
+      interruption: {
+        interruption_id: interruptionId,
+        request_id: requestId,
+        mode,
+        state: "requested",
+      },
+    }));
+    const finalizeParticipationInterruption = vi.fn().mockResolvedValue({
+      interruption: { state: "terminated" },
+    });
+    const clearSession = vi.fn();
+    const { runner, ui } = runnerFor(state, {
+      requestParticipationInterruption,
+      finalizeParticipationInterruption,
+      clearSession,
+    });
+    Object.assign(ui, {
+      chooseTerminationAfterUnsafeResume: vi.fn().mockResolvedValue(true),
+      chooseInterruptionMode: vi.fn(),
+      setInterruptionPending: vi.fn(),
+      showInterruptionWorking: vi.fn(),
+      confirmTerminationWithPartialData: vi.fn().mockResolvedValue(undefined),
+      interrupted: vi.fn(),
+    });
+    runner.stopMonitoring = vi.fn();
+    runner.flushWithRetry = vi.fn().mockResolvedValue(undefined);
+    runner.unrecoverableAcceptedRecordingError = vi.fn().mockResolvedValue(recordingError);
+
+    await expect(runner.reconcileOutbox()).rejects.toMatchObject({
+      name: "ParticipantExitRequested",
+      mode: "terminate",
+      confirmed: true,
+    });
+    expect(ui.chooseTerminationAfterUnsafeResume)
+      .toHaveBeenCalledWith(recordingError);
+    expect(ui.chooseInterruptionMode).not.toHaveBeenCalled();
+    expect(requestParticipationInterruption).toHaveBeenCalledWith(
+      "terminate",
+      expect.any(String),
+    );
+    const requestId = requestParticipationInterruption.mock.calls[0][1];
+    expect(finalizeParticipationInterruption).toHaveBeenCalledWith(
+      interruptionId,
+      requestId,
+    );
+    expect(ui.confirmTerminationWithPartialData).toHaveBeenCalledTimes(1);
+    expect(ui.interrupted).toHaveBeenCalledWith("terminate", { partialData: true });
+    expect(clearSession).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["corrupt Blob", () => Object.assign(new Error("invalid local WAV"), {
+      code: "client_recording_preflight_failed",
+    })],
+    ["unreadable IndexedDB", () => new DOMException("record unreadable", "DataError")],
+  ])("offers the same termination-only recovery when outbox flush fails on %s", async (_, errorFactory) => {
+    const interruptionId = "88888888-8888-4888-8888-888888888888";
+    const requestParticipationInterruption = vi.fn(async (mode, requestId) => ({
+      interruption: {
+        interruption_id: interruptionId,
+        request_id: requestId,
+        mode,
+        state: "requested",
+      },
+    }));
+    const finalizeParticipationInterruption = vi.fn().mockResolvedValue({
+      interruption: { state: "terminated" },
+    });
+    const clearSession = vi.fn();
+    const { runner, ui, api } = runnerFor(stateWith(), {
+      requestParticipationInterruption,
+      finalizeParticipationInterruption,
+      clearSession,
+    });
+    const recordingError = errorFactory();
+    Object.assign(ui, {
+      chooseTerminationAfterUnsafeResume: vi.fn().mockResolvedValue(true),
+      chooseInterruptionMode: vi.fn(),
+      setInterruptionPending: vi.fn(),
+      showInterruptionWorking: vi.fn(),
+      confirmTerminationWithPartialData: vi.fn().mockResolvedValue(undefined),
+      interrupted: vi.fn(),
+    });
+    runner.stopMonitoring = vi.fn();
+    runner.flushWithRetry = vi.fn().mockRejectedValue(recordingError);
+
+    await expect(runner.reconcileOutbox()).rejects.toMatchObject({
+      name: "ParticipantExitRequested",
+      mode: "terminate",
+      confirmed: true,
+    });
+    expect(ui.chooseTerminationAfterUnsafeResume)
+      .toHaveBeenCalledWith(recordingError);
+    expect(ui.chooseInterruptionMode).not.toHaveBeenCalled();
+    expect(requestParticipationInterruption).toHaveBeenCalledWith(
+      "terminate",
+      expect.any(String),
+    );
+    expect(ui.confirmTerminationWithPartialData).toHaveBeenCalledTimes(1);
+    expect(finalizeParticipationInterruption).toHaveBeenCalledTimes(1);
+    expect(clearSession).toHaveBeenCalledTimes(1);
+    expect(api.state).not.toHaveBeenCalled();
+  });
+
   it("allows reconciliation when every accepted recording is uploaded", async () => {
     const state = stateWith({
       manifest: [{ trial_id: "trial-recorded", expects_recording: true }],
@@ -412,5 +616,254 @@ describe("frontend reliability guards", () => {
 
     await expect(runner.reconcileOutbox(hasQueuedRecording)).resolves.toBe(state);
     expect(hasQueuedRecording).not.toHaveBeenCalled();
+  });
+
+  it("warns on unload only while the running task has unsaved work", () => {
+    const { runner } = runnerFor(stateWith());
+    runner.running = true;
+    const cleanEvent = { preventDefault: vi.fn(), returnValue: null };
+
+    runner.onBeforeUnload(cleanEvent);
+    expect(cleanEvent.preventDefault).not.toHaveBeenCalled();
+
+    runner.trialInFlight = true;
+    const trialEvent = { preventDefault: vi.fn(), returnValue: null };
+    runner.onBeforeUnload(trialEvent);
+    expect(trialEvent.preventDefault).toHaveBeenCalledTimes(1);
+    expect(trialEvent.returnValue).toBe("");
+
+    runner.trialInFlight = false;
+    runner.backgroundUploadFailed = true;
+    const queuedEvent = { preventDefault: vi.fn(), returnValue: null };
+    runner.onBeforeUnload(queuedEvent);
+    expect(queuedEvent.preventDefault).toHaveBeenCalledTimes(1);
+  });
+
+  it("classifies non-retryable missing or corrupt recordings without treating network failures as local corruption", () => {
+    for (const code of [
+      "client_recording_preflight_failed",
+      "local_recording_missing",
+      "local_recording_unreadable",
+      "invalid_wav",
+      "recording_checksum_mismatch",
+      "recording_payload_mismatch",
+    ]) {
+      expect(isNonRetryableLocalRecordingError({ code })).toBe(true);
+    }
+    expect(isNonRetryableLocalRecordingError(
+      new DOMException("IndexedDB record is unreadable", "DataError"),
+    )).toBe(true);
+    expect(isNonRetryableLocalRecordingError(new TypeError("offline"))).toBe(false);
+    expect(isNonRetryableLocalRecordingError({ code: "invalid_response_payload" })).toBe(false);
+  });
+
+  it("allows terminal response or recording 4xx errors to end participation but not auth or retryable failures", () => {
+    for (const error of [
+      { status: 409, code: "recording_object_conflict" },
+      { status: 409, code: "idempotency_conflict" },
+      { status: 422, code: "invalid_response_payload" },
+      { status: 422, code: "recording_payload_mismatch" },
+    ]) {
+      expect(isTerminalInterruptionDrainError(error)).toBe(true);
+    }
+    for (const error of [
+      { status: 401, code: "session_expired" },
+      { status: 401, code: "authorization_required" },
+      { status: 409, code: "session_superseded" },
+      { status: 409, code: "visit_closed" },
+      { status: 429, code: "temporarily_unavailable" },
+      { status: 503, code: "temporarily_unavailable" },
+      new TypeError("offline"),
+    ]) {
+      expect(isTerminalInterruptionDrainError(error)).toBe(false);
+    }
+  });
+
+  it("canonically terminates with an explicit partial-data warning when a local recording cannot drain", async () => {
+    const interruptionId = "22222222-2222-4222-8222-222222222222";
+    const requestParticipationInterruption = vi.fn(async (mode, requestId) => ({
+      interruption: {
+        interruption_id: interruptionId,
+        request_id: requestId,
+        mode,
+        state: "requested",
+      },
+    }));
+    const finalizeParticipationInterruption = vi.fn().mockResolvedValue({
+      interruption: { state: "terminated" },
+    });
+    const clearSession = vi.fn();
+    const { runner, ui, api } = runnerFor(stateWith(), {
+      requestParticipationInterruption,
+      finalizeParticipationInterruption,
+      clearSession,
+    });
+    Object.assign(ui, {
+      chooseInterruptionMode: vi.fn().mockResolvedValue("terminate"),
+      showInterruptionWorking: vi.fn(),
+      confirmTerminationWithPartialData: vi.fn().mockResolvedValue(undefined),
+      interrupted: vi.fn(),
+    });
+    runner.stopMonitoring = vi.fn();
+    runner.participantExitRequested = true;
+    runner.flushWithRetry = vi.fn().mockRejectedValue(
+      Object.assign(new Error("recording missing"), { code: "local_recording_missing" }),
+    );
+
+    await expect(runner.handleParticipantExit()).rejects.toMatchObject({
+      name: "ParticipantExitRequested",
+      mode: "terminate",
+      confirmed: true,
+    });
+    expect(requestParticipationInterruption).toHaveBeenCalledWith(
+      "terminate",
+      expect.any(String),
+    );
+    const requestId = requestParticipationInterruption.mock.calls[0][1];
+    expect(ui.confirmTerminationWithPartialData).toHaveBeenCalledTimes(1);
+    expect(finalizeParticipationInterruption).toHaveBeenCalledWith(interruptionId, requestId);
+    expect(clearSession).toHaveBeenCalledTimes(1);
+    expect(ui.interrupted).toHaveBeenCalledWith("terminate", { partialData: true });
+    expect(api.completeVisit).not.toHaveBeenCalled();
+  });
+
+  it("does not finalize a pause when a local recording is missing", async () => {
+    const interruptionId = "44444444-4444-4444-8444-444444444444";
+    const finalizeParticipationInterruption = vi.fn();
+    const clearSession = vi.fn();
+    const requestParticipationInterruption = vi.fn(async (mode, requestId) => ({
+      interruption: {
+        interruption_id: interruptionId,
+        request_id: requestId,
+        mode,
+        state: "requested",
+      },
+    }));
+    const { runner, ui } = runnerFor(stateWith(), {
+      requestParticipationInterruption,
+      finalizeParticipationInterruption,
+      clearSession,
+    });
+    Object.assign(ui, {
+      chooseInterruptionMode: vi.fn().mockResolvedValue("pause"),
+      chooseTerminationAfterUnsafePause: vi.fn().mockResolvedValue(false),
+      showInterruptionWorking: vi.fn(),
+      interruptionUnconfirmed: vi.fn(),
+    });
+    runner.stopMonitoring = vi.fn();
+    runner.participantExitRequested = true;
+    runner.flushWithRetry = vi.fn().mockRejectedValue(
+      Object.assign(new Error("recording missing"), { code: "local_recording_missing" }),
+    );
+
+    await expect(runner.handleParticipantExit()).rejects.toMatchObject({
+      name: "ParticipantExitRequested",
+      mode: "pause",
+      confirmed: false,
+    });
+    expect(finalizeParticipationInterruption).not.toHaveBeenCalled();
+    expect(clearSession).not.toHaveBeenCalled();
+    const requestId = requestParticipationInterruption.mock.calls[0][1];
+    expect(ui.interruptionUnconfirmed).toHaveBeenCalledWith("pause", requestId);
+  });
+
+  it("changes an unsafe pause request to termination with the same durable request ID", async () => {
+    const interruptionId = "55555555-5555-4555-8555-555555555555";
+    const requestParticipationInterruption = vi.fn(async (mode, requestId) => ({
+      escalated: mode === "terminate",
+      interruption: {
+        interruption_id: interruptionId,
+        request_id: requestId,
+        mode,
+        state: "requested",
+      },
+    }));
+    const finalizeParticipationInterruption = vi.fn().mockResolvedValue({
+      interruption: { state: "terminated" },
+    });
+    const clearSession = vi.fn();
+    const { runner, ui } = runnerFor(stateWith(), {
+      requestParticipationInterruption,
+      finalizeParticipationInterruption,
+      clearSession,
+    });
+    Object.assign(ui, {
+      chooseInterruptionMode: vi.fn().mockResolvedValue("pause"),
+      chooseTerminationAfterUnsafePause: vi.fn().mockResolvedValue(true),
+      showInterruptionWorking: vi.fn(),
+      confirmTerminationWithPartialData: vi.fn().mockResolvedValue(undefined),
+      interrupted: vi.fn(),
+    });
+    runner.stopMonitoring = vi.fn();
+    runner.participantExitRequested = true;
+    runner.flushWithRetry = vi.fn().mockRejectedValue(
+      Object.assign(new Error("response cannot be accepted"), {
+        status: 422,
+        code: "invalid_response_payload",
+      }),
+    );
+
+    await expect(runner.handleParticipantExit()).rejects.toMatchObject({
+      name: "ParticipantExitRequested",
+      mode: "terminate",
+      confirmed: true,
+    });
+    expect(requestParticipationInterruption).toHaveBeenCalledTimes(2);
+    const requestId = requestParticipationInterruption.mock.calls[0][1];
+    expect(requestParticipationInterruption.mock.calls).toEqual([
+      ["pause", requestId],
+      ["terminate", requestId],
+    ]);
+    expect(ui.chooseTerminationAfterUnsafePause).toHaveBeenCalledTimes(1);
+    expect(ui.confirmTerminationWithPartialData).toHaveBeenCalledTimes(1);
+    expect(finalizeParticipationInterruption).toHaveBeenCalledWith(
+      interruptionId,
+      requestId,
+    );
+    expect(clearSession).toHaveBeenCalledTimes(1);
+    expect(ui.interrupted).toHaveBeenCalledWith("terminate", { partialData: true });
+  });
+
+  it("lets a participant stop retrying a transient finalize failure without claiming termination", async () => {
+    const interruptionId = "66666666-6666-4666-8666-666666666666";
+    const finalizeParticipationInterruption = vi.fn().mockRejectedValue(
+      new TypeError("offline"),
+    );
+    const clearSession = vi.fn();
+    const requestParticipationInterruption = vi.fn(async (mode, requestId) => ({
+      interruption: {
+        interruption_id: interruptionId,
+        request_id: requestId,
+        mode,
+        state: "requested",
+      },
+    }));
+    const { runner, ui } = runnerFor(stateWith(), {
+      requestParticipationInterruption,
+      finalizeParticipationInterruption,
+      clearSession,
+    });
+    Object.assign(ui, {
+      chooseInterruptionMode: vi.fn().mockResolvedValue("terminate"),
+      showInterruptionWorking: vi.fn(),
+      retryInterruptionOrShowCloseGuidance: vi.fn().mockResolvedValue(false),
+      interruptionUnconfirmed: vi.fn(),
+      interrupted: vi.fn(),
+    });
+    runner.stopMonitoring = vi.fn();
+    runner.participantExitRequested = true;
+    runner.flushWithRetry = vi.fn().mockResolvedValue(undefined);
+
+    await expect(runner.handleParticipantExit()).rejects.toMatchObject({
+      name: "ParticipantExitRequested",
+      mode: "terminate",
+      confirmed: false,
+    });
+    expect(finalizeParticipationInterruption).toHaveBeenCalledTimes(1);
+    expect(ui.retryInterruptionOrShowCloseGuidance).toHaveBeenCalledTimes(1);
+    const requestId = requestParticipationInterruption.mock.calls[0][1];
+    expect(ui.interruptionUnconfirmed).toHaveBeenCalledWith("terminate", requestId);
+    expect(ui.interrupted).not.toHaveBeenCalled();
+    expect(clearSession).not.toHaveBeenCalled();
   });
 });

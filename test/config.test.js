@@ -7,6 +7,9 @@ const REAL_ASSETS = Object.freeze({
   ASSIGNMENT_VERSION: "main-v4-real-assets",
   ASSET_VERSION: "main-assets-v1",
   ALLOW_PLACEHOLDER_ASSETS: "false",
+  ADMIN_TOKEN: "production-admin-token-for-test-only",
+  RANDOMIZATION_SECRET: "production-randomization-secret-for-test-only",
+  IDENTITY_SECRET: "production-identity-secret-for-test-only",
 });
 
 describe("production collection gates", () => {
@@ -33,6 +36,47 @@ describe("production collection gates", () => {
       tokenPolicyReady: true,
       collectionReady: true,
       blocked: false,
+    });
+  });
+
+  it("keeps production closed when recipient verification is unconfigured", () => {
+    const configuration = collectionConfiguration({
+      ...REAL_ASSETS,
+      TEST_TOKEN_POLICY: "same_token",
+      IDENTITY_SECRET: undefined,
+    });
+    expect(configuration).toMatchObject({
+      tokenPolicyReady: true,
+      identityVerificationReady: false,
+      collectionReady: false,
+      blocked: true,
+    });
+  });
+
+  it("fails closed when any production secrets are missing or reused", () => {
+    const missingRandomization = collectionConfiguration({
+      ...REAL_ASSETS,
+      TEST_TOKEN_POLICY: "same_token",
+      RANDOMIZATION_SECRET: undefined,
+    });
+    expect(missingRandomization).toMatchObject({
+      randomizationReady: false,
+      secretsIndependent: false,
+      collectionReady: false,
+      blocked: true,
+    });
+
+    const reusedIdentity = collectionConfiguration({
+      ...REAL_ASSETS,
+      TEST_TOKEN_POLICY: "same_token",
+      IDENTITY_SECRET: REAL_ASSETS.RANDOMIZATION_SECRET,
+    });
+    expect(reusedIdentity).toMatchObject({
+      identityVerificationReady: true,
+      randomizationReady: true,
+      secretsIndependent: false,
+      collectionReady: false,
+      blocked: true,
     });
   });
 

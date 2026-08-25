@@ -53,9 +53,15 @@ function trialInsertStatement(db, visitUuid, trial) {
 
 export async function findParticipantByNumericId(db, numericId) {
   return db.prepare(`
-    SELECT p.*, vp.visit_uuid AS pre_visit_uuid,
+    SELECT p.*,
+      pib.verifier_hex AS identity_verifier_hex,
+      pib.normalization_version AS identity_normalization_version,
+      pib.verifier_version AS identity_verifier_version,
+      vp.visit_uuid AS pre_visit_uuid,
       vi.visit_uuid AS immediate_visit_uuid, vd.visit_uuid AS delayed_visit_uuid
     FROM participants p
+    LEFT JOIN participant_identity_bindings pib
+      ON pib.participant_uuid = p.participant_uuid
     LEFT JOIN visits vp ON vp.participant_uuid = p.participant_uuid AND vp.visit_type = 'pre'
     LEFT JOIN visits vi ON vi.participant_uuid = p.participant_uuid AND vi.visit_type = 'immediate'
     LEFT JOIN visits vd ON vd.participant_uuid = p.participant_uuid AND vd.visit_type = 'delayed'
@@ -64,7 +70,7 @@ export async function findParticipantByNumericId(db, numericId) {
   `).bind(numericId).first();
 }
 
-export async function insertParticipantDesign(db, design, nowMs) {
+export async function insertParticipantDesign(db, design, identityBinding, nowMs) {
   const existing = await findParticipantByNumericId(db, design.assignment.numericId);
   if (existing) return { existing: true, participant: existing };
 
@@ -96,6 +102,18 @@ export async function insertParticipantDesign(db, design, nowMs) {
       assignment.assetVersion,
       stableJson(assignment),
       nowMs,
+      nowMs,
+    ),
+    db.prepare(`
+      INSERT INTO participant_identity_bindings (
+        participant_uuid, verifier_hex, normalization_version, verifier_version,
+        created_at_ms
+      ) VALUES (?, ?, ?, ?, ?)
+    `).bind(
+      assignment.participantUuid,
+      identityBinding.verifier_hex,
+      identityBinding.normalization_version,
+      identityBinding.verifier_version,
       nowMs,
     ),
     db.prepare(`
@@ -229,10 +247,15 @@ export async function getVisitForInvitation(db, tokenHash) {
       v.visit_type, v.status AS visit_status, v.target_at_ms, v.available_at_ms,
       v.first_started_at_ms, v.behavioral_completed_at_ms, v.finalized_at_ms,
       v.active_session_epoch, v.participant_uuid, v.manifest_hash,
-      p.numeric_id, p.assignment_version, p.asset_version
+      p.numeric_id, p.assignment_version, p.asset_version, p.status AS participant_status,
+      pib.verifier_hex AS identity_verifier_hex,
+      pib.normalization_version AS identity_normalization_version,
+      pib.verifier_version AS identity_verifier_version
     FROM invitations i
     JOIN visits v ON v.visit_uuid = i.visit_uuid
     JOIN participants p ON p.participant_uuid = v.participant_uuid
+    LEFT JOIN participant_identity_bindings pib
+      ON pib.participant_uuid = p.participant_uuid
     WHERE i.token_hash = ?
     LIMIT 1
   `).bind(tokenHash).first();
@@ -250,7 +273,8 @@ export async function getSessionByTokenHash(db, tokenHash) {
       v.picture_naming_started_at_ms, v.picture_naming_completed_at_ms,
       v.l2_to_l1_started_at_ms, v.behavioral_completed_at_ms, v.finalized_at_ms,
       v.target_at_ms, v.available_at_ms,
-      p.numeric_id, p.assignment_version, p.asset_version
+      p.numeric_id, p.assignment_version, p.asset_version,
+      p.status AS participant_status
     FROM sessions s
     JOIN visits v ON v.visit_uuid = s.visit_uuid
     JOIN participants p ON p.participant_uuid = v.participant_uuid
@@ -260,7 +284,7 @@ export async function getSessionByTokenHash(db, tokenHash) {
 }
 
 export async function getVisitState(db, session) {
-  const [manifestResult, acceptedResult, segmentResult] = await Promise.all([
+  const [manifestResult, acceptedResult, segmentResult, interruption] = await Promise.all([
     db.prepare(`
       SELECT
         trial_uuid, ordinal, segment, segment_ordinal, practice,
@@ -285,6 +309,13 @@ export async function getVisitState(db, session) {
       SELECT segment, segment_order, status, started_at_ms, completed_at_ms
       FROM segments WHERE visit_uuid = ? ORDER BY segment_order
     `).bind(session.visit_uuid).all(),
+    db.prepare(`
+      SELECT interruption_uuid, request_uuid, mode, state, requested_at_ms,
+        finalized_at_ms, resumed_at_ms, accepted_trial_count, next_ordinal
+      FROM participation_interruptions
+      WHERE visit_uuid = ? AND state IN ('requested', 'paused')
+      ORDER BY requested_at_ms DESC LIMIT 1
+    `).bind(session.visit_uuid).first(),
   ]);
 
   const accepted = acceptedResult.results.map((row) => ({
@@ -342,6 +373,19 @@ export async function getVisitState(db, session) {
     segments: segmentResult.results,
     manifest,
     accepted,
+    participation_control: {
+      trial_start_allowed: !interruption,
+      interruption: interruption ? {
+        interruption_id: interruption.interruption_uuid,
+        request_id: interruption.request_uuid,
+        mode: interruption.mode,
+        state: interruption.state,
+        requested_at_ms: interruption.requested_at_ms,
+        finalized_at_ms: interruption.finalized_at_ms,
+        accepted_trial_count: interruption.accepted_trial_count,
+        next_ordinal: interruption.next_ordinal,
+      } : null,
+    },
     next_trial_id: nextTrial?.trial_id ?? null,
     next_route: nextTrial
       ? (CANONICAL_ROUTES[session.visit_type]?.[nextTrial.segment] ?? null)

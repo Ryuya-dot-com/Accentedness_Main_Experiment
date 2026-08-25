@@ -1,4 +1,10 @@
-import { ACCENTS } from "./stimuli.js";
+import {
+  ACCENTS,
+  L2_TO_L1_PRACTICE_STIMULI,
+  MAIN_STIMULI,
+  PICTURE_NAMING_PRACTICE_STIMULI,
+  PRACTICE_TEST_TALKERS,
+} from "./stimuli.js";
 
 const VISIT_EXPECTATIONS = Object.freeze({
   pre: Object.freeze({ trials: 26, recordings: 26 }),
@@ -18,6 +24,127 @@ function countBy(values) {
   const counts = new Map();
   for (const value of values) counts.set(value, (counts.get(value) ?? 0) + 1);
   return counts;
+}
+
+function sameUniqueMembers(values, expected) {
+  const actualSet = new Set(values);
+  const expectedSet = new Set(expected);
+  return values.length === expected.length
+    && actualSet.size === values.length
+    && expectedSet.size === expected.length
+    && [...actualSet].every((value) => expectedSet.has(value));
+}
+
+function checkPracticeStimuli(design) {
+  const sourcePools = [
+    ["main", MAIN_STIMULI],
+    ["Picture Naming practice", PICTURE_NAMING_PRACTICE_STIMULI],
+    ["L2-to-L1 practice", L2_TO_L1_PRACTICE_STIMULI],
+  ];
+  for (const [label, items] of sourcePools) {
+    invariant(new Set(items.map((item) => item.id)).size === items.length, `${label} source item ID uniqueness`);
+    invariant(new Set(items.map((item) => item.word)).size === items.length, `${label} source word uniqueness`);
+  }
+  const mainSourceIds = new Set(MAIN_STIMULI.map((item) => item.id));
+  const mainSourceWords = new Set(MAIN_STIMULI.map((item) => item.word));
+  const pictureSourceIds = new Set(PICTURE_NAMING_PRACTICE_STIMULI.map((item) => item.id));
+  const pictureSourceWords = new Set(PICTURE_NAMING_PRACTICE_STIMULI.map((item) => item.word));
+  for (const item of [...PICTURE_NAMING_PRACTICE_STIMULI, ...L2_TO_L1_PRACTICE_STIMULI]) {
+    invariant(!mainSourceIds.has(item.id), "practice/main source item ID disjointness");
+    invariant(!mainSourceWords.has(item.word), "practice/main source word disjointness");
+  }
+  for (const item of L2_TO_L1_PRACTICE_STIMULI) {
+    invariant(!pictureSourceIds.has(item.id), "practice task source item ID disjointness");
+    invariant(!pictureSourceWords.has(item.word), "practice task source word disjointness");
+  }
+
+  const visitTypes = Object.keys(VISIT_EXPECTATIONS);
+  const allTrials = visitTypes.flatMap((visitType) => design[visitType].trials);
+  const main = allTrials.filter((trial) => !trial.practice);
+  const practice = allTrials.filter((trial) => trial.practice);
+  for (const [field, label] of [
+    ["itemId", "item ID"],
+    ["itemWord", "word"],
+    ["imageKey", "image key"],
+    ["audioKey", "audio key"],
+  ]) {
+    const mainValues = new Set(
+      main.map((trial) => trial[field]).filter((value) => value !== null && value !== undefined),
+    );
+    invariant(
+      practice.every((trial) => {
+        const value = trial[field];
+        return value === null || value === undefined || !mainValues.has(value);
+      }),
+      `practice/main ${label} disjointness`,
+    );
+  }
+
+  const pictureItemsById = new Map(
+    PICTURE_NAMING_PRACTICE_STIMULI.map((item) => [item.id, item]),
+  );
+  const l2ItemsById = new Map(L2_TO_L1_PRACTICE_STIMULI.map((item) => [item.id, item]));
+  for (const visitType of visitTypes) {
+    const visitPractice = design[visitType].trials.filter((trial) => trial.practice);
+    const picture = visitPractice.filter((trial) => trial.segment === "picture_naming");
+    const l2 = visitPractice.filter((trial) => trial.segment === "l2_to_l1");
+    invariant(
+      sameUniqueMembers(
+        picture.map((trial) => trial.itemId),
+        PICTURE_NAMING_PRACTICE_STIMULI.map((item) => item.id),
+      ),
+      `${visitType} Picture Naming practice item set`,
+    );
+    for (const trial of picture) {
+      const item = pictureItemsById.get(trial.itemId);
+      invariant(trial.excludeFromAnalysis === true, `${visitType} Picture Naming practice analysis exclusion`);
+      invariant(item?.word === trial.itemWord && item?.gloss === trial.itemGloss, `${visitType} Picture Naming practice item identity`);
+      invariant(
+        trial.listId === null && trial.listRank === null && trial.variability === null,
+        `${visitType} Picture Naming practice condition metadata`,
+      );
+      invariant(trial.testAccent === null && trial.talkerId === null, `${visitType} Picture Naming practice talker metadata`);
+      invariant(trial.audioKey === null, `${visitType} Picture Naming practice audio absence`);
+      invariant(
+        trial.imageKey === `stimuli/${trial.assetVersion}/images/${trial.itemWord}.webp`,
+        `${visitType} Picture Naming practice image key`,
+      );
+    }
+
+    const expectedL2Items = visitType === "pre" ? [] : L2_TO_L1_PRACTICE_STIMULI;
+    invariant(
+      sameUniqueMembers(
+        l2.map((trial) => trial.itemId),
+        expectedL2Items.map((item) => item.id),
+      ),
+      `${visitType} L2-to-L1 practice item set`,
+    );
+    const accentCounts = countBy(l2.map((trial) => trial.testAccent));
+    for (const accent of ACCENTS) {
+      invariant(
+        accentCounts.get(accent) === (visitType === "pre" ? undefined : 1),
+        `${visitType} L2-to-L1 practice ${accent} count`,
+      );
+    }
+    for (const trial of l2) {
+      const item = l2ItemsById.get(trial.itemId);
+      invariant(trial.excludeFromAnalysis === true, `${visitType} L2-to-L1 practice analysis exclusion`);
+      invariant(item?.word === trial.itemWord && item?.gloss === trial.itemGloss, `${visitType} L2-to-L1 practice item identity`);
+      invariant(
+        trial.listId === null && trial.listRank === null && trial.variability === null,
+        `${visitType} L2-to-L1 practice condition metadata`,
+      );
+      invariant(trial.imageKey === null, `${visitType} L2-to-L1 practice image absence`);
+      invariant(
+        trial.talkerId === PRACTICE_TEST_TALKERS[trial.testAccent],
+        `${visitType} L2-to-L1 practice fixed talker`,
+      );
+      invariant(
+        trial.audioKey === `stimuli/${trial.assetVersion}/practice/${trial.testAccent}/${trial.talkerId}/${trial.itemWord}.wav`,
+        `${visitType} L2-to-L1 practice audio key category`,
+      );
+    }
+  }
 }
 
 function mainTrials(design, visitType, segment) {
@@ -117,6 +244,7 @@ export function samePositionCount(first, second) {
 
 export function assertParticipantDesignInvariants(design) {
   checkVisitCounts(design);
+  checkPracticeStimuli(design);
   checkHighTalkersByCycle(design);
   for (const visitType of ["pre", "immediate", "delayed"]) checkPictureNamingPairs(design, visitType);
   for (const visitType of ["immediate", "delayed"]) checkL2Miniblocks(design, visitType);

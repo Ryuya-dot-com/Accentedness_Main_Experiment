@@ -32,6 +32,8 @@ async function redeem(invitationUrl, visitType) {
     method: "POST",
     body: {
       token: invitationToken(invitationUrl),
+      participant_id: 901,
+      participant_name: "Test Participant",
       client_instance_id: crypto.randomUUID(),
       expected_visit_type: visitType,
     },
@@ -251,7 +253,7 @@ describe("on-demand result ZIP", () => {
     const createdResult = await jsonRequest("/api/admin/participants", {
       method: "POST",
       token: ADMIN_TOKEN,
-      body: { participant_id: 901 },
+      body: { participant_id: 901, participant_name: "Test Participant" },
     });
     expect(createdResult.response.status).toBe(201);
     const created = createdResult.json;

@@ -12,7 +12,10 @@ async function createParticipant(participantId) {
       Authorization: `Bearer ${ADMIN_TOKEN}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ participant_id: participantId }),
+    body: JSON.stringify({
+      participant_id: participantId,
+      participant_name: "Test Participant",
+    }),
   }));
   expect(response.status).toBe(201);
   return (await response.json()).participant;

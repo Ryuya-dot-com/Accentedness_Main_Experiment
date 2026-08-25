@@ -24,7 +24,11 @@ async function createParticipant(participantId, issuePreInvitation = true) {
   const result = await api("/api/admin/participants", {
     method: "POST",
     token: ADMIN_TOKEN,
-    body: { participant_id: participantId, issue_pre_invitation: issuePreInvitation },
+    body: {
+      participant_id: participantId,
+      participant_name: "Test Participant",
+      issue_pre_invitation: issuePreInvitation,
+    },
   });
   expect(result.response.status).toBe(201);
   return result.json;
@@ -34,11 +38,13 @@ function invitationToken(url) {
   return new URLSearchParams(new URL(url).hash.slice(1)).get("t");
 }
 
-async function redeem(url, expectedVisitType, clientInstanceId = crypto.randomUUID()) {
+async function redeem(url, expectedVisitType, participantId, clientInstanceId = crypto.randomUUID()) {
   return api("/api/invitations/redeem", {
     method: "POST",
     body: {
       token: invitationToken(url),
+      participant_id: participantId,
+      participant_name: "Test Participant",
       client_instance_id: clientInstanceId,
       expected_visit_type: expectedVisitType,
     },
@@ -74,7 +80,7 @@ describe("no upper participation deadlines", () => {
       UPDATE invitations SET issued_at_ms = ? WHERE invite_uuid = ?
     `).bind(Date.now() - 365 * DAY_MS, created.invitation.invite_id).run();
 
-    const redeemed = await redeem(created.invitation.invitation_url, "pre");
+    const redeemed = await redeem(created.invitation.invitation_url, "pre", 820_002);
 
     expect(redeemed.response.status).toBe(200);
     expect(redeemed.json.visit.visit_type).toBe("pre");
@@ -106,7 +112,7 @@ describe("no upper participation deadlines", () => {
     );
     expect(issued.response.status).toBe(201);
 
-    const redeemed = await redeem(issued.json.invitation.invitation_url, "delayed");
+    const redeemed = await redeem(issued.json.invitation.invitation_url, "delayed", 820_003);
     expect(redeemed.response.status).toBe(200);
     expect(redeemed.json.visit.target_at_ms).toBe(delayedTargetAt);
   });
@@ -155,6 +161,7 @@ describe("no upper participation deadlines", () => {
     const firstRedemption = await redeem(
       created.invitation.invitation_url,
       "pre",
+      820_004,
       "82000004-0000-4000-8000-000000000001",
     );
     expect(firstRedemption.response.status).toBe(200);
@@ -181,6 +188,7 @@ describe("no upper participation deadlines", () => {
     const resumed = await redeem(
       created.invitation.invitation_url,
       "pre",
+      820_004,
       "82000004-0000-4000-8000-000000000003",
     );
     expect(resumed.response.status).toBe(200);

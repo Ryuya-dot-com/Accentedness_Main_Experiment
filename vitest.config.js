@@ -13,6 +13,7 @@ export default defineConfig({
         bindings: {
           ADMIN_TOKEN: "test-admin-token-that-is-long-and-private",
           RANDOMIZATION_SECRET: "test-randomization-secret-that-is-independent",
+          IDENTITY_SECRET: "test-identity-secret-that-is-independent",
           TEST_MIGRATIONS: await readD1Migrations(path.join(projectDirectory, "migrations")),
         },
       },

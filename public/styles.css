@@ -178,6 +178,42 @@ h2 {
   font-weight: 750;
 }
 
+.identity-form {
+  margin: 22px 0;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 20px;
+  background: #f8faf9;
+}
+
+.identity-form h2,
+.identity-form p {
+  margin: 0 0 14px;
+}
+
+.identity-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.identity-fields label {
+  display: grid;
+  gap: 7px;
+  color: var(--ink);
+  font-weight: 800;
+}
+
+.identity-fields input {
+  width: 100%;
+  min-height: 46px;
+  border: 1px solid #9eb4ab;
+  border-radius: 7px;
+  padding: 9px 11px;
+  background: #fff;
+  color: var(--ink);
+}
+
 .notice {
   border-left: 4px solid var(--warn);
   background: #fff8e9;
@@ -247,6 +283,26 @@ h2 {
   margin-bottom: 8px;
   color: var(--ink);
   font-size: 1rem;
+}
+
+.progress-controls {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 12px;
+}
+
+.interruption-button {
+  min-height: 38px;
+  border: 1px solid #9aa9a3;
+  padding: 7px 12px;
+  background: #fff;
+  color: var(--ink);
+  font-size: 0.86rem;
+}
+
+.interruption-button:hover:not(:disabled) {
+  background: #e8efec;
 }
 
 #progress-label {
@@ -450,6 +506,51 @@ h2 {
   text-align: center;
 }
 
+.interruption-choice {
+  width: min(88%, 680px);
+  border-radius: 12px;
+  padding: clamp(22px, 4vw, 34px);
+  background: #fff;
+  color: var(--ink);
+  text-align: left;
+}
+
+.interruption-choice h2 {
+  margin-bottom: 12px;
+}
+
+.interruption-choice p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.75;
+  white-space: pre-line;
+}
+
+.interruption-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 22px;
+}
+
+button.danger-button {
+  background: var(--danger);
+}
+
+button.danger-button:hover:not(:disabled) {
+  background: #842929;
+}
+
+button.secondary-button {
+  border: 1px solid #9aa9a3;
+  background: #fff;
+  color: var(--ink);
+}
+
+button.secondary-button:hover:not(:disabled) {
+  background: #e8efec;
+}
+
 .continue-button {
   position: absolute;
   bottom: 34px;
@@ -463,6 +564,10 @@ h2 {
 
 .error-card h2 {
   color: var(--danger);
+}
+
+.error-card #fatal-message {
+  white-space: pre-line;
 }
 
 [hidden] {
@@ -479,6 +584,21 @@ h2 {
     align-items: flex-start;
     flex-direction: column;
     gap: 12px;
+  }
+
+  .identity-fields {
+    grid-template-columns: 1fr;
+  }
+
+  .progress-row,
+  .progress-controls {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .interruption-button {
+    align-self: flex-start;
   }
 
   .stage {

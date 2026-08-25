@@ -41,6 +41,65 @@ function publicRecordingFields(recording) {
   };
 }
 
+export function isNonRetryableLocalRecordingError(error) {
+  const code = String(error?.code ?? "");
+  const knownCode = new Set([
+    "client_recording_preflight_failed",
+    "invalid_recording_type",
+    "invalid_wav",
+    "invalid_wav_duration",
+    "invalid_wav_format",
+    "local_recording_missing",
+    "local_recording_unreadable",
+    "recording_checksum_mismatch",
+    "recording_length_mismatch",
+    "recording_payload_mismatch",
+    "recording_quality_mismatch",
+  ]).has(code);
+  const localDomFailure = typeof DOMException !== "undefined"
+    && error instanceof DOMException
+    && new Set([
+      "ConstraintError",
+      "DataError",
+      "InvalidStateError",
+      "NotFoundError",
+      "QuotaExceededError",
+      "ReadOnlyError",
+      "TransactionInactiveError",
+      "UnknownError",
+      "VersionError",
+    ]).has(error.name);
+  return knownCode || localDomFailure;
+}
+
+export function isTerminalInterruptionDrainError(error) {
+  if (isNonRetryableLocalRecordingError(error)) return true;
+  const code = String(error?.code ?? "");
+  if (new Set([
+    "invalid_session",
+    "session_expired",
+    "session_superseded",
+    "visit_closed",
+    "participant_withdrawn",
+    "production_collection_blocked",
+  ]).has(code)) return false;
+  const status = Number(error?.status);
+  if (status === 401) return false;
+  return Number.isInteger(status) && status >= 400 && status < 500
+    && ![408, 425, 429].includes(status);
+}
+
+export class ParticipantExitRequested extends Error {
+  constructor(mode, { confirmed = true } = {}) {
+    super(confirmed
+      ? (mode === "pause" ? "Participant paused the session" : "Participant ended participation")
+      : "Participant left interruption confirmation pending");
+    this.name = "ParticipantExitRequested";
+    this.mode = mode;
+    this.confirmed = confirmed;
+  }
+}
+
 export class ExperimentRunner {
   constructor(api, ui, audio, state) {
     this.api = api;
@@ -49,6 +108,13 @@ export class ExperimentRunner {
     this.state = state;
     this.running = false;
     this.activeTrial = null;
+    this.trialInFlight = false;
+    const openInterruption = state.participation_control?.interruption;
+    this.pendingInterruption = openInterruption?.state === "requested"
+      ? openInterruption
+      : null;
+    this.participantExitRequested = Boolean(this.pendingInterruption);
+    this.interruptionFlowActive = false;
     this.visibilityInterrupted = false;
     this.heartbeatTimer = null;
     this.nextOnsetNotBeforePerfMs = null;
@@ -56,6 +122,7 @@ export class ExperimentRunner {
     this.backgroundUploadFailed = false;
     this.backgroundUploadError = null;
     this.backgroundUploadTail = Promise.resolve();
+    this.outboxFlushActive = false;
     this.preloadedTrials = new Map();
     this.onVisibility = () => {
       const hidden = document.visibilityState !== "visible";
@@ -63,10 +130,17 @@ export class ExperimentRunner {
       this.sendEvent("visibility_changed", { hidden }).catch(() => {});
     };
     this.onBeforeUnload = (event) => {
-      if (!this.running) return;
+      if (!this.running || !this.hasUnsavedWork()) return;
       event.preventDefault();
       event.returnValue = "";
     };
+    this.ui.bindInterruptionControl?.(() => {
+      if (this.interruptionFlowActive || this.participantExitRequested) return;
+      this.participantExitRequested = true;
+      this.ui.setInterruptionPending?.(this.trialInFlight);
+      if (!this.trialInFlight) this.ui.releaseActivePromptForInterruption?.();
+    });
+    if (this.pendingInterruption) this.ui.setInterruptionPending?.(false);
   }
 
   startMonitoring() {
@@ -78,7 +152,9 @@ export class ExperimentRunner {
         if (error.code === "session_superseded") {
           this.stopMonitoring();
           this.audio.close();
-          this.ui.fatal(error);
+          this.ui.fatal(error, {
+            interruptionRequested: this.participantExitRequested,
+          });
         }
       });
     }, 15_000);
@@ -92,6 +168,141 @@ export class ExperimentRunner {
     this.heartbeatTimer = null;
   }
 
+  hasUnsavedWork() {
+    return this.trialInFlight
+      || this.outboxFlushActive
+      || this.backgroundUploads.size > 0
+      || this.backgroundUploadFailed
+      || this.interruptionFlowActive;
+  }
+
+  leaveInterruptionUnconfirmed(mode, requestId) {
+    this.stopMonitoring();
+    this.ui.interruptionUnconfirmed(mode, requestId);
+    throw new ParticipantExitRequested(mode, { confirmed: false });
+  }
+
+  async retryInterruptionStep(mode, requestId, operation) {
+    while (true) {
+      try {
+        return await operation();
+      } catch {
+        const retry = await this.ui.retryInterruptionOrShowCloseGuidance(
+          mode === "pause"
+            ? "一時中断をまだ確定できていません。ネットワーク接続を確認して、再試行してください。"
+            : "参加終了をまだ確定できていません。ネットワーク接続を確認して、再試行してください。",
+          "再試行",
+        );
+        if (!retry) this.leaveInterruptionUnconfirmed(mode, requestId);
+        this.ui.showInterruptionWorking?.(mode);
+      }
+    }
+  }
+
+  async handleParticipantExit(preselectedMode = null) {
+    if (!this.participantExitRequested || this.trialInFlight) return false;
+    let mode = preselectedMode ?? this.pendingInterruption?.mode ?? null;
+    if (!mode) {
+      mode = await this.ui.chooseInterruptionMode();
+      if (!mode) {
+        this.participantExitRequested = false;
+        this.ui.clearInterruptionPending?.();
+        this.resetInterTrialClock();
+        return false;
+      }
+    }
+
+    this.interruptionFlowActive = true;
+    this.ui.showInterruptionWorking?.(mode);
+    const requestId = this.pendingInterruption?.request_id ?? crypto.randomUUID();
+    let interruption = this.pendingInterruption ?? (await this.retryInterruptionStep(
+      mode,
+      requestId,
+      async () => {
+        const requested = await this.api.requestParticipationInterruption(mode, requestId);
+        const candidate = requested?.interruption;
+        if (!candidate?.interruption_id
+            || candidate.request_id !== requestId
+            || candidate.mode !== mode) {
+          throw new Error("Interruption request acknowledgement did not match");
+        }
+        return candidate;
+      },
+    ));
+    if (!interruption?.interruption_id
+        || interruption.request_id !== requestId
+        || interruption.mode !== mode) {
+      throw new Error("中断・終了リクエストの確認情報が一致しません。担当者に知らせてください。");
+    }
+    this.pendingInterruption = interruption;
+
+    let partialData = false;
+    let terminalDrainError = null;
+    try {
+      await this.flushWithRetry({ interruptionMode: mode, requestId });
+    } catch (error) {
+      if (!isTerminalInterruptionDrainError(error)) throw error;
+      terminalDrainError = error;
+    }
+    if (!terminalDrainError) {
+      this.state = await this.retryInterruptionStep(
+        mode,
+        requestId,
+        () => this.api.state(),
+      );
+      terminalDrainError = await this.unrecoverableAcceptedRecordingError();
+    }
+    if (terminalDrainError) {
+      if (mode !== "terminate") {
+        const escalate = await this.ui.chooseTerminationAfterUnsafePause();
+        if (!escalate) this.leaveInterruptionUnconfirmed(mode, requestId);
+        const escalated = await this.retryInterruptionStep(
+          "terminate",
+          requestId,
+          () => this.api.requestParticipationInterruption("terminate", requestId),
+        );
+        const candidate = escalated?.interruption;
+        if (!candidate?.interruption_id
+            || candidate.interruption_id !== interruption.interruption_id
+            || candidate.request_id !== requestId
+            || candidate.mode !== "terminate"
+            || candidate.state !== "requested") {
+          throw new Error("参加終了への切替確認情報が一致しません。担当者に知らせてください。");
+        }
+        mode = "terminate";
+        interruption = candidate;
+        this.pendingInterruption = candidate;
+      }
+      partialData = true;
+      await this.ui.confirmTerminationWithPartialData();
+    }
+    this.ui.showInterruptionWorking?.(mode);
+    const finalized = await this.retryInterruptionStep(
+      mode,
+      requestId,
+      async () => {
+        const result = await this.api.finalizeParticipationInterruption(
+          interruption.interruption_id,
+          requestId,
+        );
+        const expectedState = mode === "pause" ? "paused" : "terminated";
+        if (result?.interruption?.state !== expectedState) {
+          throw new Error("Interruption finalization acknowledgement did not match");
+        }
+        return result;
+      },
+    );
+    const expectedState = mode === "pause" ? "paused" : "terminated";
+    if (finalized?.interruption?.state !== expectedState) {
+      throw new Error("中断・終了の確定状態を確認できません。担当者に知らせてください。");
+    }
+
+    this.stopMonitoring();
+    if (mode === "terminate") this.api.clearSession();
+    this.ui.interrupted(mode, { partialData });
+    throw new ParticipantExitRequested(mode);
+  }
+
   sendEvent(type, payload = {}, trial = this.activeTrial, attemptId = null) {
     return this.api.events([{
       event_id: crypto.randomUUID(),
@@ -103,9 +314,9 @@ export class ExperimentRunner {
     }]);
   }
 
-  async reconcileOutbox(hasQueuedRecordingForAttempt = hasQueuedRecording) {
-    await this.flushWithRetry();
-    this.state = await this.api.state();
+  async unrecoverableAcceptedRecordingError(
+    hasQueuedRecordingForAttempt = hasQueuedRecording,
+  ) {
     const manifestByTrialId = new Map(
       this.state.manifest.map((trial) => [trial.trial_id, trial]),
     );
@@ -114,50 +325,112 @@ export class ExperimentRunner {
         && accepted.recording_state !== "uploaded"
     ));
     for (const accepted of pendingRecordings) {
-      const recoverable = await hasQueuedRecordingForAttempt(
-        this.state.visit.visit_id,
-        accepted.attempt_id,
-      );
-      if (!recoverable) {
-        const error = new Error(
-          "送信前の録音がこのブラウザに残っていません。これ以上進めず、担当者に知らせてください。",
+      let recoverable;
+      try {
+        recoverable = await hasQueuedRecordingForAttempt(
+          this.state.visit.visit_id,
+          accepted.attempt_id,
         );
-        error.code = "local_recording_missing";
-        error.details = {
+      } catch (cause) {
+        const unreadable = new Error(
+          "送信前の録音をこのブラウザから読み出せません。担当者に知らせてください。",
+        );
+        unreadable.code = "local_recording_unreadable";
+        unreadable.cause = cause;
+        unreadable.details = {
           trial_id: accepted.trial_id,
           attempt_id: accepted.attempt_id,
           recording_state: accepted.recording_state,
         };
-        throw error;
+        return unreadable;
       }
+      if (!recoverable) {
+        const missing = new Error(
+          "送信前の録音がこのブラウザに残っていません。これ以上進めず、担当者に知らせてください。",
+        );
+        missing.code = "local_recording_missing";
+        missing.details = {
+          trial_id: accepted.trial_id,
+          attempt_id: accepted.attempt_id,
+          recording_state: accepted.recording_state,
+        };
+        return missing;
+      }
+    }
+    return null;
+  }
+
+  async resolveUnsafeDataForResume(dataError) {
+    const terminate = await this.ui.chooseTerminationAfterUnsafeResume?.(
+      dataError,
+    );
+    if (!terminate) throw dataError;
+    this.participantExitRequested = true;
+    this.ui.setInterruptionPending?.(false);
+    await this.handleParticipantExit("terminate");
+  }
+
+  async reconcileOutbox(hasQueuedRecordingForAttempt = hasQueuedRecording) {
+    try {
+      await this.flushWithRetry();
+    } catch (error) {
+      if (!isTerminalInterruptionDrainError(error)) throw error;
+      await this.resolveUnsafeDataForResume(error);
+      return this.state;
+    }
+    this.state = await this.api.state();
+    const recordingError = await this.unrecoverableAcceptedRecordingError(
+      hasQueuedRecordingForAttempt,
+    );
+    if (recordingError) {
+      await this.resolveUnsafeDataForResume(recordingError);
     }
     return this.state;
   }
 
-  async flushWithRetry() {
-    if (this.backgroundUploads.size) await Promise.allSettled([...this.backgroundUploads]);
-    while (true) {
-      try {
-        await flushOutbox(
-          this.api,
-          this.state.visit.visit_id,
-          ({ state }) => this.ui.setSaveState(state),
-        );
-        this.backgroundUploadFailed = false;
-        this.backgroundUploadError = null;
-        this.ui.setSaveState("saved");
-        return;
-      } catch (error) {
-        this.ui.setSaveState("queued");
-        if (["session_superseded", "visit_closed"].includes(error.code)) throw error;
-        const retryableStatus = [408, 425, 429].includes(Number(error.status))
-          || Number(error.status) >= 500;
-        if (!(error instanceof TypeError) && !retryableStatus) throw error;
-        await this.ui.prompt(
-          `データをまだ送信できていません。ネットワーク接続を確認してください。\n\n${error.message}`,
-          "再送する",
-        );
+  async flushWithRetry({ interruptionMode = null, requestId = null } = {}) {
+    this.outboxFlushActive = true;
+    try {
+      if (this.backgroundUploads.size) await Promise.allSettled([...this.backgroundUploads]);
+      while (true) {
+        if (this.participantExitRequested
+            && !this.interruptionFlowActive
+            && !this.trialInFlight) {
+          await this.handleParticipantExit();
+        }
+        try {
+          await flushOutbox(
+            this.api,
+            this.state.visit.visit_id,
+            ({ state }) => this.ui.setSaveState(state),
+          );
+          this.backgroundUploadFailed = false;
+          this.backgroundUploadError = null;
+          this.ui.setSaveState("saved");
+          return;
+        } catch (error) {
+          this.ui.setSaveState("queued");
+          if (["session_superseded", "visit_closed"].includes(error.code)) throw error;
+          const retryableStatus = [408, 425, 429].includes(Number(error.status))
+            || Number(error.status) >= 500;
+          if (!(error instanceof TypeError) && !retryableStatus) throw error;
+          if (interruptionMode) {
+            const retry = await this.ui.retryInterruptionOrShowCloseGuidance(
+              "送信待ちデータをまだ研究用サーバーへ送信できていません。ネットワーク接続を確認してください。",
+              "データ送信を再試行",
+            );
+            if (!retry) this.leaveInterruptionUnconfirmed(interruptionMode, requestId);
+            this.ui.showInterruptionWorking?.(interruptionMode);
+          } else {
+            await this.ui.prompt(
+              `データをまだ送信できていません。ネットワーク接続を確認してください。\n\n${error.message}`,
+              "再送する",
+            );
+          }
+        }
       }
+    } finally {
+      this.outboxFlushActive = false;
     }
   }
 
@@ -373,6 +646,7 @@ export class ExperimentRunner {
   }
 
   async runLearningTrial(trial, loaded, nextTrial = null) {
+    this.trialInFlight = true;
     if (!loaded.cueBuffer) throw new Error("学習音声を読み込めませんでした。");
     const protocol = trial.protocol.timing;
     this.ui.showFixation();
@@ -446,10 +720,12 @@ export class ExperimentRunner {
     };
     this.activeTrial = null;
     await this.persistTrial(trial, authorization, payload);
+    this.trialInFlight = false;
     this.stopIfVisibilityInterrupted(payload.visibility_interrupted);
   }
 
   async runPictureNamingTrial(trial, loaded, nextTrial = null) {
+    this.trialInFlight = true;
     const protocol = trial.protocol.timing;
     this.ui.showFixation();
     this.ui.setTaskStatus("中央の＋を見て、次の絵に備えてください。");
@@ -513,11 +789,13 @@ export class ExperimentRunner {
     };
     this.activeTrial = null;
     await this.persistTrial(trial, authorization, payload, recording.blob);
+    this.trialInFlight = false;
     this.stopIfVisibilityInterrupted(payload.visibility_interrupted);
     return recording;
   }
 
   async runL2Trial(trial, loaded, nextTrial = null) {
+    this.trialInFlight = true;
     if (!loaded.cueBuffer) throw new Error("テスト音声を読み込めませんでした。");
     const protocol = trial.protocol.timing;
     this.ui.showFixation();
@@ -600,6 +878,7 @@ export class ExperimentRunner {
     };
     this.activeTrial = null;
     await this.persistTrial(trial, authorization, payload, recording.blob);
+    this.trialInFlight = false;
     this.stopIfVisibilityInterrupted(payload.visibility_interrupted);
     return recording;
   }
@@ -612,7 +891,10 @@ export class ExperimentRunner {
         ? "録音音量が大きすぎる可能性があります。マイクから少し離れてください。"
         : "録音音量を確認できました。";
     await this.ui.prompt(`練習録音を再生して確認します。\n${warning}`, "録音を再生");
+    await this.handleParticipantExit();
     await this.audio.playBlob(recording.blob);
+    await this.handleParticipantExit();
     await this.ui.prompt("自分の声が聞こえたら続けてください。聞こえない場合は担当者に知らせてください。");
+    await this.handleParticipantExit();
   }
 }

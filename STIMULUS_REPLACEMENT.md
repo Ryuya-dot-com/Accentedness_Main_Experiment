@@ -4,6 +4,8 @@
 
 `src/lib/stimuli.js` の24語、練習5語、話者IDはすべて仮です。`public/placeholder-audio/` の音声とサーバー生成の仮画像は、導線・タイミング・保存の検査用であり、実験データ収集には使えません。
 
+練習は本番24語とは別の専用stimulus poolです。Picture Namingは2語（現在の仮ID 901–902）、L2-to-L1はさらに別の3語（現在の仮ID 903–905）を使います。ID、英単語、画像key、音声keyは本番と重複させません。L2練習は本番と同じaccent別固定女性話者を使いますが、練習専用語の別WAV tokenです。
+
 本番では、語、L1訳、画像、全話者録音を一度に凍結し、`ASSIGNMENT_VERSION` と `ASSET_VERSION` を新しくします。既存参加者のmanifestを後から上書きしません。
 
 ## 2. 必要な話者構成
@@ -13,7 +15,7 @@
 | 学習 | 6名 | Noでは参加者ごとに1名、Highでは6名全員 |
 | L2練習・本番 | ちょうど1名 | 女性、学習話者とは別。同じ固定話者を練習・本番、直後・遅延で使用 |
 
-テストはEnglish、Chinese、Japaneseごとに固定された1名、計3名を使います。そのため、アクセントと個人話者が完全に交絡し、accent母集団への一般化はできません。この制約を事前登録・論文・分析解釈に明記し、推論対象を選定した3名の音声に限定します。将来、話者一般化を目的として複数名へ増やす場合は、割当アルゴリズム、解析上の話者効果、`ASSIGNMENT_VERSION`を同時に更新してください。
+テストはEnglish、Chinese、Japaneseごとに固定された1名、計3名を使います。そのため、アクセントと個人話者が完全に交絡し、accent母集団への一般化はできません。この制約を研究報告・分析解釈に明記し、推論対象を選定した3名の音声に限定します。将来、話者一般化を目的として複数名へ増やす場合は、割当アルゴリズム、解析上の話者効果、`ASSIGNMENT_VERSION`を同時に更新してください。
 
 American English、Mandarin-accented English、Japanese-accented Englishの操作確認は、自己申告だけでなく独立評定、居住歴・言語背景、録音条件の統一を含めて記録します。
 
@@ -47,6 +49,8 @@ L2練習音声:
 stimuli/{ASSET_VERSION}/practice/{accent}/{talker_id}/{word}.wav
 ```
 
+L2練習3語は参加者ごとに3accentを1回ずつ提示します。accent順と練習語の対応はseedで変わるため、本番asset inventoryには3練習語 × 3 accents = 9個の専用WAVが必要です。
+
 内部accent値は `english`、`chinese`、`japanese` です。話者IDには氏名を含めず、研究用コードを使います。
 
 ## 4. 音声形式
@@ -66,7 +70,7 @@ stimuli/{ASSET_VERSION}/practice/{accent}/{talker_id}/{word}.wav
 
 ## 5. 画像形式
 
-- 24語とPicture Naming練習2語について1枚ずつ。
+- 本番24語とPicture Naming専用練習2語について1枚ずつ（合計26枚）。
 - `webp`、同じcanvasサイズ、同じ背景、同程度の視覚的複雑性。
 - 文字、綴り、文化依存の手掛かりを含めない。
 - 画像の命名一致度と概念同定率を対象母集団に近い別サンプルで確認。
@@ -74,11 +78,11 @@ stimuli/{ASSET_VERSION}/practice/{accent}/{talker_id}/{word}.wav
 
 ## 6. 差し替え手順
 
-1. `src/lib/stimuli.js` の24語、訳、話者rosterを確定する。
+1. `src/lib/stimuli.js` の本番24語、Picture Naming練習2語、L2-to-L1練習3語、訳、話者rosterを確定し、本番と練習のID・英単語が交わらないことを機械検査する。
 2. 全ファイルをkey規約どおりに準備する。
 3. ファイル名の大文字小文字、拡張子、話者IDを機械検査する。
-4. SHA-256、duration、sample rate、channel、bit depth、RMS、peak、leading/trailing silenceを一覧化する。
-5. 別担当者が一覧と音声内容を照合する。
+4. SHA-256、duration、sample rate、channel、bit depth、RMS、peak、leading/trailing silenceを一覧化し、practice/main間の同一SHA-256を拒否する。
+5. 別担当者が画像・音声を実際に見聞きして一覧と内容を照合し、別encode・別crop等でSHAが異なる実質同一刺激も拒否する。
 6. R2 `STIMULI`へuploadする。
 7. `ASSET_VERSION` と `ASSIGNMENT_VERSION` を更新する。
 8. `env.production.vars` で `ALLOW_PLACEHOLDER_ASSETS=false`、`ENVIRONMENT=production`、現行方針なら `TEST_TOKEN_POLICY=same_token` にする。

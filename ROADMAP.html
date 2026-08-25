@@ -9,20 +9,20 @@
   <h1>Main Experiment 内部ロードマップ</h1>
 
   <h2>0. 判断軸</h2>
-  <p><strong>North Star:</strong> 担当者が3 visitのリンクを手動配布し、参加者が6つのcanonical URLを所定順に完了し、Immediate最終L2-to-L1行動応答＋5日以上かつ上限なしでDelayedを実施し、行動データと時刻がD1、WAVがR2へ完全に保存され、Delayed完了後に参加者端末へ完全なZIPを保存でき、研究者が保存内容と復旧可能性を検証できる状態を作る。</p>
+  <p><strong>North Star:</strong> 担当者が3 visitのリンクを手動配布し、参加者が6つのcanonical URLを所定順に進められる状態を作る。成功は一つではない。(A) 全課題を完了した場合は、行動データと時刻をD1、WAVをR2へ完全に保存し、Immediate最終L2-to-L1行動応答＋5日以上かつ上限なしでDelayedを実施し、Delayed完了後に参加者端末へ完全なZIPを保存できる。(B) 途中で中断または永久終了した場合は、server受理済みデータを保持しつつ未完了を完了と偽らず、再開位置または終了状態を研究者が検証できる。</p>
   <p><strong>固定方針:</strong> 24語のslot内容は現在プレースホルダーのままにする。これは意図した開発状態であり、プログラム完成、Cloudflare配備、技術pilotのblockerではない。収集用bundleでも現在の24語をそのまま承認してよく、語の置換を必須にしない。一方、仮画像・仮音声・仮話者IDとproductionの<code>placeholder_asset</code> flagは別概念として管理する。</p>
   <p><strong>判定規則:</strong> チェック数、文書数、unit test、health表示のどれか一つだけでは完了としない。G1はcommitと自動検証、G2は実Cloudflareと最小D1/R2保存、G3はclean-path・fault-injection E2EとZIP・運用rehearsal、G4は収集用bundle・production・soft launchの証拠で判定する。外部入力待ちの項目は、trigger前には未完了として数えない。</p>
 
   <h3>現在の到達状態</h3>
   <ul>
     <li><label><input type="checkbox" checked> G1 Program-ready: 実験契約、割付、参加者導線、保存処理を実装し、自動検証した</label></li>
-    <li><label><input type="checkbox" checked> G2 Live-pilot-ready: Cloudflare非本番環境へ配備し、実URLでD1/R2保存を確認した</label></li>
+    <li><label><input type="checkbox"> G2 Live-pilot-ready: 本人確認・中断対応を含む現行buildをCloudflare非本番へ配備し、実URLでD1/R2保存を確認した</label></li>
     <li><label><input type="checkbox"> G3 Operationally-ready: 敵対的E2E pilotと手動運用rehearsalを完了した</label></li>
     <li><label><input type="checkbox"> G4 Main-data-ready: 収集用bundleとproduction環境を固定し、soft launchを通過した</label></li>
   </ul>
   <p><strong>Gate依存:</strong> G2 = G1＋第5節、G3 = G2＋第6–7節、G4 = G3＋trigger済み第8節＋第9–10節。下位gateを飛ばして上位だけをcheckedにしない。</p>
-  <p><strong>現在の単一next action:</strong> 非本番active version <code>28104a37-b46d-492b-90eb-10ddc9c9d4e7</code>を固定し、発行済みの未使用ID 3で実Chrome・実microphoneのPre clean-path pilotを行う。ID 1はsynthetic API smoke、ID 2はUX discovery専用として再利用しない。</p>
-  <p><strong>G1 evidence（2026-08-26）:</strong> code baseline <code>f433bb1</code>に対し<code>npm run verify</code>を実行し、types check、71 tests、2 secrets × ID 1–2160の4,320 design監査、development/production deploy dry-runが成功した。</p>
+  <p><strong>現在の単一next action:</strong> repository外の正本へ専用かつ固定の<code>IDENTITY_SECRET</code>を追加し、非本番secret登録 → D1 migration <code>0006</code> → 現行build deployの順で反映する。その後、旧本人確認契約で発行したID 3を使わず、次の未使用連番ID 4を新規作成して実Chrome・実microphoneのPre pilotを行う。ID 1はsynthetic API smoke、ID 2はUX discovery、ID 3は旧契約確認用として、いずれもclean-pathへ再利用しない。</p>
+  <p><strong>G1 evidence（2026-08-26）:</strong> code baseline <code>f433bb1</code>に対し<code>npm run verify</code>を実行し、types check、71 tests、2 secrets × ID 1–2160の4,320 design監査、development/production deploy dry-runが成功した。本人確認・中断対応を含む現行commitの証拠は、この変更の最終検証後に追記する。</p>
 
   <h2>1. 固定済みの実験契約</h2>
   <ul>
@@ -36,6 +36,7 @@
     <li><label><input type="checkbox" checked> pre完了からLearning開始までは順序だけを強制し、時間の上限・下限を設けない</label></li>
     <li><label><input type="checkbox" checked> DelayedはImmediate最終L2-to-L1行動応答のserver受理時刻＋5日以上かつImmediate保存確定後に開始可能とし、以後の上限を設けない</label></li>
     <li><label><input type="checkbox" checked> Prolificは使わず、pre・Immediate・Delayedのvisit linkを担当者が手動配布する</label></li>
+    <li><label><input type="checkbox" checked> 全員の完遂を前提にせず、明示的な一時中断・再開・永久終了をvisit完了とは別の研究データ状態として扱う</label></li>
   </ul>
 
   <h2>2. 割付・ランダマイズ・24-slot契約</h2>
@@ -56,6 +57,8 @@
     <li><label><input type="checkbox" checked> participant作成時のmanifestをD1へ固定し、同じIDの再登録・再開時に再抽選しない</label></li>
     <li><label><input type="checkbox" checked> ID 1–2160を2つのsecretで生成する4,320 design監査で不変条件を検証する</label></li>
     <li><label><input type="checkbox" checked> accentごと固定女性1名のためaccentと話者identityは分離不能であり、結果の対象は選定された3名の音声に限られる固定設計として扱う</label></li>
+    <li><label><input type="checkbox" checked> Picture Naming練習2語・2画像とL2-to-L1練習3語・9 WAV（3語×3 accents）は、本番24語・画像・音声および相互の練習poolから完全に分離する</label></li>
+    <li><label><input type="checkbox" checked> 練習刺激ID 901–905を明示し、practice・exclude-from-analysisとしてmanifest不変条件と自動testで固定する</label></li>
   </ul>
 
   <h2>3. 参加者journey</h2>
@@ -74,6 +77,15 @@
     <li><label><input type="checkbox" checked> Picture Namingは画像onset、L2-to-L1は音声offsetを起点とする既存10秒deadlineから、表示専用countdownを算出する</label></li>
     <li><label><input type="checkbox" checked> countdownは録音停止を制御せず、background throttlingや描画遅延でも回答窓を延長しない</label></li>
     <li><label><input type="checkbox" checked> 部分保存を「この時点まで保存」、visit完了を「全試行・録音の保存完了」と表示し、同一表現を使わない</label></li>
+    <li><label><input type="checkbox" checked> 担当者がparticipant IDと氏名を一組として登録し、参加者はfresh invitationの初回利用時に両方を入力して宛先を確認する。氏名から条件を割り付けない</label></li>
+    <li><label><input type="checkbox" checked> 氏名は正規化後のversion付きHMAC照合値だけを保存し、平文をD1・R2・API応答・log・browser storage・ZIPへ残さない</label></li>
+    <li><label><input type="checkbox" checked> ID・氏名不一致時はsession・visit・invitation・auditを一切変更せず、同じ画面で再入力できる</label></li>
+    <li><label><input type="checkbox" checked> 常時利用できる「中断・終了」導線を設け、刺激提示中の選択は現在の試行をserverへ送った後に処理する</label></li>
+    <li><label><input type="checkbox" checked> 一時中断はvisitを未完了のまま保持し、同じactive invitationから正確なcanonical位置へ再開する</label></li>
+    <li><label><input type="checkbox" checked> 永久終了は受理済みD1/R2を保持し、未完了visitをwithdrawn、未完了attempt・録音をabandonedとして、completion時刻を設定しない</label></li>
+    <li><label><input type="checkbox" checked> 明示操作なしのtab・browser終了や通信断を完了・永久終了とは推定せず、未完了状態とserver受理済み位置を保持して管理summaryに残す</label></li>
+    <li><label><input type="checkbox" checked> 通信失敗時に「保存済み」や「終了済み」と断定せず、再試行・未確認のまま閉じる・担当者連絡を区別する</label></li>
+    <li><label><input type="checkbox" checked> pause request後にtabを失っても未確定requestを自動resumeせず、回復不能な未送信時は同一UUIDのまま永久終了へ一方向に切替できる</label></li>
   </ul>
 
   <h2>4. データ完全性とローカル保存</h2>
@@ -89,13 +101,15 @@
     <li><label><input type="checkbox" checked> 対応ChromeではZIPを全量Blob化せず選択済みfileへstreamし、再保存も可能にする</label></li>
     <li><label><input type="checkbox" checked> 管理者は参加者IDから採点・照合用metadataを含むcanonical結果ZIPをオンデマンド取得できる</label></li>
     <li><label><input type="checkbox" checked> production placeholder、未確定token policy、欠損刺激ではfail closedにする</label></li>
+    <li><label><input type="checkbox" checked> 中断requestを冪等化し、新規trial開始・visit完了・招待変更との競合をAPIとD1制約の両方で拒否する</label></li>
+    <li><label><input type="checkbox" checked> 永久終了後もserver受理済み回答・WAVを削除せず、canonical pendingとabandoned/noncanonicalを分析・運用上区別する</label></li>
   </ul>
 
-  <h2>5. Cloudflare非本番配備 — G2完了</h2>
+  <h2>5. Cloudflare非本番配備 — 旧baseline完了・現行rollout未完了</h2>
   <ul>
     <li><label><input type="checkbox" checked> 2026-08-26の作成前read-only inventoryで対象Worker 2件、D1 2件、R2 4件のexact-name collisionが0件であることを確認した</label></li>
     <li><label><input type="checkbox" checked> 続行指示を受け、現在の単一OAuth accountを非本番targetとして確定した。production account/resourceは対象外</label></li>
-    <li><label><input type="checkbox" checked> 311-query処理を実URLで成功させ、現行実装に必要なPaid相当capacityを実測した。plan名のDashboard確認は運用handoffまでに別途行う</label></li>
+    <li><label><input type="checkbox" checked> 旧311-statement batchを実URLで成功させた。現行Cloudflare文書ではD1等の内部service subrequestはFree 1,000/回、Paidは既定10,000/回であり、この件数だけからPaid必須とは判定しない</label></li>
     <li><label><input type="checkbox" checked> 非本番用Worker、D1、RECORDINGS R2、STIMULI R2を明示作成した</label></li>
     <li><label><input type="checkbox" checked> D1 migration 0001–0005を適用し、productionとは分離したrandomization secretとadmin tokenを登録した</label></li>
     <li><label><input type="checkbox" checked> <code>--env="" --strict --no-x-provision</code>で、プレースホルダーを許可したdevelopment設定の非本番Workerをdeployした</label></li>
@@ -109,10 +123,21 @@
   </ul>
   <p><strong>G2 evidence（2026-08-26）:</strong> URL <code>https://accentedness-main-experiment.komuro-4121.workers.dev</code>、runtime source commit <code>f433bb1</code>、code deployment version <code>10135571-999e-4d23-8d04-36540ef9384f</code>、非本番ADMIN_TOKEN再設定後のactive version <code>28104a37-b46d-492b-90eb-10ddc9c9d4e7</code>。bindingsはD1 <code>main-experiment</code>、R2 <code>main-experiment-recordings</code> / <code>main-experiment-stimuli</code>。versionは<code>main-v3-placeholder-assets</code> / <code>hmac-sha256+xoshiro128ss-v1</code> / <code>placeholder-v1</code>。top・admin・6 participant HTML routesは200、配信assetのUX marker、health・認証・secret名・private R2を確認した。productionは変更していない。ID 1は<code>synthetic-api-smoke</code>専用で、今後のclean-path件数照合へ再利用しない。</p>
 
+  <h3>本人確認・中断対応buildの非本番rollout</h3>
+  <ul>
+    <li><label><input type="checkbox"> repository外の正本へ、RANDOMIZATION_SECRETやADMIN_TOKENと共用しない固定<code>IDENTITY_SECRET</code>を記録する</label></li>
+    <li><label><input type="checkbox"> 非本番Workerへ<code>IDENTITY_SECRET</code>をsecretとして登録する</label></li>
+    <li><label><input type="checkbox"> 非本番D1へmigration <code>0006_identity_and_participation_interruptions.sql</code>を適用する</label></li>
+    <li><label><input type="checkbox"> 現行commitを非本番へdeployし、healthの<code>admin_authentication_ready=true</code>、<code>randomization_ready=true</code>、<code>identity_verification_ready=true</code>、<code>secrets_independent=true</code>を確認する</label></li>
+    <li><label><input type="checkbox"> 新規participant作成の312-statement atomic batch、identity HMAC 1件、平文氏名0件、部分状態0件を実URLで確認する</label></li>
+  </ul>
+  <p>上記が終わるまで、既存G2 evidenceは旧baselineの履歴であり、本人確認・中断対応buildがlive-pilot-readyである証拠には使わない。productionは対象外とする。</p>
+
   <h2>6. 敵対的E2E pilot — プレースホルダーで実施</h2>
-  <p>UIの完了表示ではなく、D1/R2/ZIPの実体で成功を判定する。ID 2はUX discovery pilotへ再分類し、修正版のclean-pathは次の未使用連番ID 3から開始して障害注入用IDと分ける。Delayedの実時計pilotは5日以上を要するが、その待機中に他の項目を並行する。</p>
+  <p>UIの完了表示ではなく、D1/R2/ZIPの実体で成功を判定する。ID 2はUX discovery pilot、ID 3は旧本人確認契約の準備用へ再分類する。本人確認・中断対応buildのclean-pathは次の未使用連番ID 4から開始し、障害注入用IDと分ける。Delayedの実時計pilotは5日以上を要するが、その待機中に他の項目を並行する。</p>
   <p><strong>UX discovery evidence（2026-08-26、ID 2）:</strong> 参加者はPre完了と認識したが、D1正本はvisit <code>started</code>、canonical response / uploaded WAV各1/26、第2練習試行はstimulus onset後・response未保存・recording <code>pending</code>だった。第1WAVは48 kHz、10.037秒、RMS 0.0234、clipping 0で正常であり、内部参照矛盾は0件だった。Immediate招待はserver gateにより未発行のまま維持した。この乖離を、注視点の知覚性、progressの意味、10秒窓、部分保存とvisit完了の区別が不十分なUX defectとして扱う。ID 2を修正前後混在のclean-path証拠へ転用しない。</p>
   <p><strong>UX修正版pilot準備（2026-08-26、ID 3）:</strong> 未使用連番ID 3を非本番に作成し、training accent <code>japanese</code>、counterbalance cell 1、3 visits、24 item assignments、6 segments、276 manifest trialsを確認した。Pre invitationは1件だけ発行し、未redeemのためsession / attempt / recordingは各0件である。raw tokenは文書・chatへ記録せず、mode <code>0600</code>の一時local handoffだけに保持する。</p>
+  <p><strong>ID 3の扱い:</strong> ID 3は平文氏名を保存しないidentity binding導入前に作成・招待発行されたため、新契約のclean-pathには使わない。参加者による先着claimは許可せず、ID 1–3を再利用もしない。</p>
   <ul>
     <li><label><input type="checkbox"> clean-path専用IDで、実Chrome・実マイクからpre → Immediate → Delayedの6 URLを中断なしで所定順に完遂する</label></li>
     <li><label><input type="checkbox"> pre完了前のImmediate、Immediate保存前のDelayed、5日未満のDelayedが拒否されることを確認する</label></li>
@@ -127,17 +152,24 @@
     <li><label><input type="checkbox"> Delayed完了前に参加者ZIPを取得できず、完了後には取得できることを確認する</label></li>
     <li><label><input type="checkbox"> clean-pathの3 visit分ZIPを参加者端末へ保存し、再保存・展開・134 entries・hashを確認する</label></li>
     <li><label><input type="checkbox"> 管理者ZIPを取得し、D1/R2とresponses metadataの対応を確認する</label></li>
+    <li><label><input type="checkbox"> ID・氏名一致でredeemでき、不一致・表記揺れ・legacy binding欠損時の結果とD1 mutation数が契約どおりであることを実URLで確認する</label></li>
+    <li><label><input type="checkbox"> 練習画面で本番24語とは異なる画像・語・音声だけが提示され、練習→本番でprogressがresetされることを確認する</label></li>
+    <li><label><input type="checkbox"> 試行間・試行中・WAV送信中の一時中断を試し、現在試行の扱い、paused状態、同じlinkからの正確な再開位置、重複0件を照合する</label></li>
+    <li><label><input type="checkbox"> 部分データがある状態で永久終了し、受理済みD1/R2が保持され、未完了がabandoned/withdrawn、completed時刻なし、後続link発行不可となることを確認する</label></li>
+    <li><label><input type="checkbox"> 中断request/finalize時に通信を切り、同じrequest IDによる再試行と「未確認」の案内が、偽の保存・終了表示や無限retry拘束を起こさないことを確認する</label></li>
+    <li><label><input type="checkbox"> pause/requested状態でtabを閉じて再認証し、新trialが始まらずpause確定へ戻ることと、欠損WAV・確定的4xx時のterminate切替が同じUUIDで冪等なことを確認する</label></li>
+    <li><label><input type="checkbox"> identity確認後・開始前と試行途中でtabを予告なく閉じ、completed/terminatedへ変わらず、funnelと再開位置へ未完了として残ることを確認する</label></li>
   </ul>
 
   <h2>7. 手動運用rehearsal</h2>
   <ul>
     <li><label><input type="checkbox" checked> 非本番ADMIN_TOKENの暫定正本をrepository外の親directory <code>.env</code>へ置き、mode <code>0600</code>、<code>source</code>後の実効tokenでHTTP 200を確認した。Dropbox同期対象のためproduction恒久正本には流用しない</label></li>
     <li><label><input type="checkbox"> <code>.env</code>内で重複している3件の<code>ADMIN_TOKEN</code>定義を、値をchat・logへ出さず実効値1件へ整理し、次回rotation時の取り違えを防ぐ</label></li>
-    <li><label><input type="checkbox"> Cloudflare DashboardでWorkers plan名とbilling担当を確認し、311-query実測結果と併記する</label></li>
+    <li><label><input type="checkbox"> Cloudflare DashboardでWorkers plan名とbilling担当を確認し、旧311-statement実測と現行312-statement実測を区別して併記する。plan選定はCPU・traffic・supportも含めて判断する</label></li>
     <li><label><input type="checkbox"> participant ID台帳の主担当と代替担当を定め、共有台帳から次の未使用正整数を発行する</label></li>
     <li><label><input type="checkbox"> IDを再利用せず、accentやcellを見て都合のよいIDを選ばない手順を確認する</label></li>
     <li><label><input type="checkbox"> pre完了後にImmediate link、Immediate最終応答＋5日以降にDelayed linkを手動発行する手順を通す</label></li>
-    <li><label><input type="checkbox"> 管理summaryでID欠番、accent×cellのassigned/issued/redeemed/started/completedを照合する</label></li>
+    <li><label><input type="checkbox"> 管理summaryでID欠番、accent×cellのassigned/issued/redeemed/started/paused/terminated/completedを別々に照合する</label></li>
     <li><label><input type="checkbox"> pending録音、hash不一致、想定外の5xx、刺激404を発見した場合の収集停止条件と担当者を決める</label></li>
     <li><label><input type="checkbox"> linkの誤送信・再発行・revokeと、参加者への再開案内をrehearsalする</label></li>
     <li><label><input type="checkbox"> pilot用IDと本収集IDを混同しない台帳・D1環境分離を確認する</label></li>
@@ -151,7 +183,8 @@
     <li><label><input type="checkbox" disabled> [外部trigger] Immediate/Delayedで同一WAV tokenか、同一話者の別takeかの決定を受領する</label></li>
     <li><label><input type="checkbox" disabled> [trigger後] 24個のslot数と既存key契約を維持できるか確認する</label></li>
     <li><label><input type="checkbox" disabled> [trigger後] 同一WAVならasset差し替えだけを行い、別takeならtimepoint key・manifest・testだけを限定変更する</label></li>
-    <li><label><input type="checkbox" disabled> [trigger後] 全期待key、SHA-256、WAV形式・duration・level、画像形式を機械検査する</label></li>
+    <li><label><input type="checkbox" disabled> [trigger後] 全期待key、SHA-256、WAV形式・duration・level、画像形式を機械検査し、practice/main間の同一SHA-256を0件にする</label></li>
+    <li><label><input type="checkbox" disabled> [trigger後] 別担当者がpractice/mainの画像・音声内容を実際に見聞きし、別encode・別crop等でSHAが異なる実質同一刺激も0件であることを確認する</label></li>
     <li><label><input type="checkbox" disabled> [trigger後] 指定されたbundleを新しいASSET_VERSIONへ配置し、既存versionのobjectを上書きしない</label></li>
     <li><label><input type="checkbox" disabled> [trigger後] 割付・話者roster・key契約が変わる場合だけASSIGNMENT_VERSIONを更新する</label></li>
     <li><label><input type="checkbox" disabled> [trigger後] 全manifestを生成し、placeholder fallbackと欠損R2 keyが0件であることを確認する</label></li>
@@ -179,6 +212,7 @@
     <li><label><input type="checkbox"> 条件別の割付数と完了数を分けて監視する項目・頻度・記録先を定める</label></li>
     <li><label><input type="checkbox"> 欠損WAV、D1/R2不一致、広範な5xx時のlink発行停止・調査・再開権限を定める</label></li>
     <li><label><input type="checkbox"> runtime・割付・保存形式の変更時にscope、version、再pilot範囲を記録する手順を定める</label></li>
+    <li><label><input type="checkbox"> assigned・redeemed・started・paused・terminated・completedを分母とともに別集計し、離脱を完遂者だけの集計から消さない手順を定める</label></li>
   </ul>
 
   <h2>11. Scope driftを防ぐ「やらないこと」</h2>

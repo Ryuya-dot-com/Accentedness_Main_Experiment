@@ -3,6 +3,7 @@ import { participantCopyFilename, writeResponseToFile } from "./api.js";
 const tokenInput = document.getElementById("admin-token");
 const participantForm = document.getElementById("participant-form");
 const participantInput = document.getElementById("participant-id");
+const participantNameInput = document.getElementById("participant-name");
 const participantActions = document.getElementById("participant-actions");
 const participantState = document.getElementById("participant-state");
 const invitationUrl = document.getElementById("invitation-url");
@@ -12,6 +13,41 @@ const status = document.getElementById("status");
 const downloadResults = document.getElementById("download-results");
 
 let participant = null;
+
+const ADMIN_ERROR_MESSAGES = Object.freeze({
+  participant_identity_not_registered: "この参加者IDの配布先確認情報は登録されていません。発番台帳と担当者の手順を確認してください。",
+  participant_binding_mismatch: "入力した参加者IDと配布先確認情報の組み合わせを確認できません。発番台帳を確認してください。",
+});
+
+function safeParticipant(apiParticipant) {
+  return {
+    participant_id: apiParticipant.participant_id,
+    training_accent: apiParticipant.training_accent,
+    counterbalance_cell: apiParticipant.counterbalance_cell,
+    pre_visit_id: apiParticipant.pre_visit_id,
+    immediate_visit_id: apiParticipant.immediate_visit_id,
+    delayed_visit_id: apiParticipant.delayed_visit_id,
+  };
+}
+
+function identityRegistrationFlag(payload) {
+  const value = payload?.identity_registered ?? payload?.participant?.identity_registered;
+  return typeof value === "boolean" ? value : null;
+}
+
+function safeSummaryValue(value) {
+  if (Array.isArray(value)) return value.map(safeSummaryValue);
+  if (!value || typeof value !== "object") return value;
+  const safe = {};
+  for (const [key, nested] of Object.entries(value)) {
+    if (key === "identity_registered" && typeof nested === "boolean") {
+      safe[key] = nested;
+    } else if (!/name|identity/iu.test(key)) {
+      safe[key] = safeSummaryValue(nested);
+    }
+  }
+  return safe;
+}
 
 async function authorizedJson(path, { method = "GET", body } = {}) {
   const headers = new Headers({ Authorization: `Bearer ${tokenInput.value}` });
@@ -25,7 +61,15 @@ async function authorizedJson(path, { method = "GET", body } = {}) {
   const payload = (response.headers.get("Content-Type") ?? "").includes("application/json")
     ? await response.json()
     : null;
-  if (!response.ok) throw new Error(payload?.error?.message ?? `Request failed (${response.status})`);
+  if (!response.ok) {
+    const code = String(payload?.error?.code ?? "");
+    const error = new Error(
+      ADMIN_ERROR_MESSAGES[code] ?? payload?.error?.message ?? `Request failed (${response.status})`,
+    );
+    error.code = code;
+    error.status = response.status;
+    throw error;
+  }
   return payload;
 }
 
@@ -37,16 +81,32 @@ function showInvitation(invitation) {
 }
 
 async function loadParticipant() {
+  let participantName = participantNameInput.value.trim();
+  if (!participantName) {
+    participantNameInput.setCustomValidity("配布先を確認する参加者名を入力してください。");
+    participantNameInput.reportValidity();
+    throw new Error("参加者名が入力されていません。");
+  }
+  participantNameInput.setCustomValidity("");
   const payload = await authorizedJson("/api/admin/participants", {
     method: "POST",
     body: {
       participant_id: participantInput.value,
+      participant_name: participantName,
       issue_pre_invitation: false,
     },
   });
-  participant = payload.participant;
+  participantNameInput.value = "";
+  participantName = "";
+  participant = safeParticipant(payload.participant);
+  const identityRegistered = identityRegistrationFlag(payload);
+  const identityStatus = identityRegistered === true
+    ? "配布先確認: 登録済み"
+    : identityRegistered === false
+      ? "配布先確認: 未登録"
+      : "配布先確認: 状態未確認";
   participantActions.hidden = false;
-  participantState.textContent = `参加者ID ${participant.participant_id}（${payload.created ? "新規登録" : "登録済み"}、学習時accent: ${participant.training_accent}、cell: ${participant.counterbalance_cell}）`;
+  participantState.textContent = `参加者ID ${participant.participant_id}（${payload.created ? "新規登録" : "登録済み"}、${identityStatus}、学習時accent: ${participant.training_accent}、cell: ${participant.counterbalance_cell}）`;
   invitationUrl.value = "";
   status.textContent = "visit情報を取得しました。必要な時点のリンクだけを発行してください。";
 }
@@ -165,7 +225,7 @@ async function loadDueVisits() {
 
 async function loadSummary() {
   const payload = await authorizedJson("/api/admin/summary");
-  summary.textContent = JSON.stringify(payload, null, 2);
+  summary.textContent = JSON.stringify(safeSummaryValue(payload), null, 2);
   const gaps = Number(payload.participant_id_span?.missing_ids_through_maximum ?? 0);
   status.textContent = gaps > 0
     ? `全体状態を更新しました。ID 1から最大IDまでに${gaps}件の欠番があります。発番台帳と照合してください。`
@@ -180,6 +240,7 @@ participantForm.addEventListener("submit", (event) => {
   event.preventDefault();
   loadParticipant().catch(showError);
 });
+participantNameInput.addEventListener("input", () => participantNameInput.setCustomValidity(""));
 participantActions.addEventListener("click", (event) => {
   const visitType = event.target?.dataset?.visit;
   if (visitType) issueVisit(visitType).catch(showError);
@@ -189,5 +250,6 @@ document.getElementById("load-summary").addEventListener("click", () => loadSumm
 downloadResults.addEventListener("click", () => downloadParticipantResults().catch(showError));
 window.addEventListener("pagehide", () => {
   tokenInput.value = "";
+  participantNameInput.value = "";
   invitationUrl.value = "";
 }, { once: true });

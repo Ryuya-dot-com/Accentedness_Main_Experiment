@@ -1,8 +1,18 @@
 import { ExperimentApi } from "./api.js";
 import { ExperimentAudio } from "./audio-engine.js";
-import { microphoneCheckStorageKey, redirectToCanonical } from "./flow-guards.js";
-import { ExperimentRunner } from "./runner.js";
-import { ExperimentUi, validateBrowserEnvironment } from "./ui.js";
+import {
+  bootstrapWithParticipantIdentity,
+  microphoneCheckStorageKey,
+  redirectToCanonical,
+  waitForStartOrParticipantExit,
+} from "./flow-guards.js";
+import { ExperimentRunner, ParticipantExitRequested } from "./runner.js";
+import {
+  ExperimentUi,
+  PARTICIPANT_COPY_DELIVERY,
+  participantCopyCompletionMessage,
+  validateBrowserEnvironment,
+} from "./ui.js";
 
 const expectedVisit = document.body.dataset.visitType;
 const expectedSegment = document.body.dataset.segment;
@@ -39,17 +49,26 @@ async function saveParticipantCopy() {
     } catch (error) {
       if (error?.code !== "participant_copy_picker_failed") throw error;
       await ui.prompt(
-        "保存先を直接選択できませんでした。通常のダウンロードでZIPを保存します。",
+        "保存先を直接選択できませんでした。通常のダウンロードでZIPの取得を試します。開始後にChromeのダウンロード一覧を確認してください。",
         "通常ダウンロードを試す",
       );
       const archive = await runner.prepareParticipantCopyWithRetry(null);
-      await ui.downloadParticipantCopy(archive);
-      return archive;
+      const download = await ui.downloadParticipantCopy(archive);
+      return { ...archive, ...download };
     }
     try {
       const archive = await runner.prepareParticipantCopyWithRetry(fileHandle);
-      if (archive.blob) await ui.downloadParticipantCopy(archive);
-      return archive;
+      if (archive.savedToDisk === true) {
+        return {
+          ...archive,
+          delivery: PARTICIPANT_COPY_DELIVERY.DIRECT_WRITE_CONFIRMED,
+        };
+      }
+      if (archive.blob) {
+        const download = await ui.downloadParticipantCopy(archive);
+        return { ...archive, ...download };
+      }
+      throw new TypeError("参加者向けZIPの保存方法を確認できませんでした。");
     } catch (error) {
       if (error?.code !== "participant_copy_file_write_failed") throw error;
       await ui.prompt(
@@ -65,11 +84,13 @@ async function runMicrophoneCheck(state) {
   if (sessionStorage.getItem(checkKey) === "yes") return;
   for (let attempt = 1; attempt <= 2; attempt += 1) {
     await ui.prompt("マイク確認を行います。次の画面で「テスト」と普段の声で話してください。", "録音を開始");
+    await runner.handleParticipantExit();
     ui.showAudioCue();
     ui.setRecording(true);
     ui.setTaskStatus("「テスト」と話してください。");
     const recording = await audio.microphoneCheck(2500);
     ui.setRecording(false);
+    await runner.handleParticipantExit();
     const tooQuiet = recording.quality.rms_amplitude < 0.008;
     const clipped = recording.quality.clipping_ratio > 0.01;
     const warning = tooQuiet
@@ -78,30 +99,40 @@ async function runMicrophoneCheck(state) {
         ? "音量が大きすぎる可能性があります。マイクから少し離れてください。"
         : "音量を確認できました。";
     await ui.prompt(`${warning}\n録音を再生して確認します。`, "再生");
+    await runner.handleParticipantExit();
     await audio.playBlob(recording.blob);
+    await runner.handleParticipantExit();
     if (!tooQuiet && !clipped) {
       await ui.prompt("自分の声が聞こえたら続けてください。聞こえない場合は担当者に知らせてください。");
+      await runner.handleParticipantExit();
       sessionStorage.setItem(checkKey, "yes");
       return;
     }
-    if (attempt === 1) await ui.prompt("マイク位置を調整して、もう一度確認してください。", "再確認");
+    if (attempt === 1) {
+      await ui.prompt("マイク位置を調整して、もう一度確認してください。", "再確認");
+      await runner.handleParticipantExit();
+    }
   }
   throw new Error("マイク音量を確認できませんでした。担当者に知らせてください。");
 }
 
 async function finalizeAlreadyCompleted(state) {
+  ui.setInterruptionControlEnabled(false);
   runner.stopMonitoring();
   audio.close();
   await runner.completeVisitWithRetry();
-  if (state.visit.visit_type === "delayed") {
-    await saveParticipantCopy();
-  }
+  const participantCopy = state.visit.visit_type === "delayed"
+    ? await saveParticipantCopy()
+    : null;
   if (state.visit.visit_type !== "delayed") api.clearSession();
   ui.completed(state.visit.visit_type === "pre"
     ? "Pre Picture Namingは保存済みです。Main Experimentのリンクは担当者から別途お送りします。"
     : state.visit.visit_type === "immediate"
       ? "直後テストは保存済みです。遅延テストの案内をお待ちください。"
-      : "遅延テストは保存済みです。ZIPをもう一度保存する場合は、下のボタンを押してください。ご協力ありがとうございました。", {
+      : participantCopyCompletionMessage(participantCopy.delivery, {
+        alreadyCompleted: true,
+        filename: participantCopy.filename,
+      }), {
     preserveDownload: state.visit.visit_type === "delayed",
   });
 }
@@ -111,19 +142,27 @@ async function main() {
   audio = new ExperimentAudio(api);
   const failures = validateBrowserEnvironment({ microphone: true });
   if (failures.length) throw new Error(failures.join(" "));
-  let state = await api.bootstrap();
+  let state = await bootstrapWithParticipantIdentity(api, ui);
   if (redirectToCanonical(state)) return;
   ui.setConnected(true);
   ui.setParticipant(state.participant.id, state.visit.visit_type);
   ui.welcomeStatus.textContent = state.accepted.length
     ? "保存済みの位置から再開できます。"
     : "招待情報を確認しました。";
-  ui.enableStartWhenReady();
-  await ui.waitForStart();
-  ui.beginTask();
   runner = new ExperimentRunner(api, ui, audio, state);
+  if (state.participation_control?.interruption?.state === "requested") {
+    ui.beginTask();
+    runner.startMonitoring();
+    await runner.handleParticipantExit();
+    return;
+  }
+  ui.enableStartWhenReady();
   runner.startMonitoring();
+  await waitForStartOrParticipantExit(ui, runner);
+  ui.beginTask();
+  ui.setInterruptionControlEnabled(true);
   state = await runner.reconcileOutbox();
+  await runner.handleParticipantExit();
   if (redirectToCanonical(state, { runner, audio })) return;
   const nextTrial = state.manifest.find((trial) => trial.trial_id === state.next_trial_id);
   if (!nextTrial) {
@@ -135,7 +174,9 @@ async function main() {
   }
 
   await audio.initialize({ microphone: true });
+  await runner.handleParticipantExit();
   await runMicrophoneCheck(state);
+  await runner.handleParticipantExit();
   const accepted = runner.acceptedTrialIds();
   const segmentTrials = state.manifest.filter((trial) => trial.segment === expectedSegment);
   const remaining = segmentTrials.filter((trial) => !accepted.has(trial.trial_id));
@@ -153,6 +194,7 @@ async function main() {
       announcedPractice = true;
       runner.resetInterTrialClock();
       await ui.prompt(`${copy.title}\n\n${copy.instruction}`, "練習を開始");
+      await runner.handleParticipantExit();
     }
     if (!trial.practice && !announcedMain) {
       announcedMain = true;
@@ -163,10 +205,13 @@ async function main() {
           : `${copy.title}\n\n${copy.instruction}\n\n保存済みの位置から本番を再開します。`,
         announcedPractice ? "本番を開始" : "本番を再開",
       );
+      await runner.handleParticipantExit();
     }
     ui.showFixation();
     ui.setTaskStatus(copy.fixationStatus);
+    await runner.handleParticipantExit();
     const loaded = await runner.preloadTrial(trial);
+    await runner.handleParticipantExit();
     const recording = expectedSegment === "picture_naming"
       ? await runner.runPictureNamingTrial(trial, loaded, nextWithinSegment)
       : await runner.runL2Trial(trial, loaded, nextWithinSegment);
@@ -176,6 +221,7 @@ async function main() {
       phaseTrials.filter((candidate) => accepted.has(candidate.trial_id)).length,
       phaseTrials.length,
     );
+    await runner.handleParticipantExit();
     if (trial.practice) {
       await runner.reviewPracticeRecording(recording);
       runner.resetInterTrialClock();
@@ -183,32 +229,45 @@ async function main() {
   }
 
   await runner.flushWithRetry();
+  await runner.handleParticipantExit();
   state = await api.state();
-  runner.stopMonitoring();
-  audio.close();
+  await runner.handleParticipantExit();
   if (state.next_route) {
     await ui.prompt("この課題は保存されました。続けて次の課題へ進みます。", "次の課題を開く");
+    await runner.handleParticipantExit();
+    ui.setInterruptionControlEnabled(false);
+    runner.stopMonitoring();
+    audio.close();
     window.location.assign(state.next_route);
     return;
   }
+  ui.setInterruptionControlEnabled(false);
+  runner.stopMonitoring();
+  audio.close();
   await runner.completeVisitWithRetry();
-  if (expectedVisit === "delayed") {
-    await saveParticipantCopy();
-  }
+  const participantCopy = expectedVisit === "delayed"
+    ? await saveParticipantCopy()
+    : null;
   if (expectedVisit !== "delayed") api.clearSession();
   ui.completed(expectedVisit === "pre"
     ? "Pre Picture Namingは終了しました。Main Experimentのリンクは担当者から別途お送りします。"
     : expectedVisit === "immediate"
       ? "直後テストは終了しました。すべての回答と録音が研究用サーバーに保存されました。遅延テストの案内をお待ちください。"
-      : "遅延テストは終了しました。研究用サーバーと、このパソコンへのZIP保存が完了しました。必要なら下のボタンから再度保存できます。ご協力ありがとうございました。", {
+      : participantCopyCompletionMessage(participantCopy.delivery, {
+        filename: participantCopy.filename,
+      }), {
     preserveDownload: expectedVisit === "delayed",
   });
 }
 
 main().catch((error) => {
   runner?.stopMonitoring();
+  if (error instanceof ParticipantExitRequested) {
+    audio?.close();
+    return;
+  }
   ui.setConnected(false);
-  ui.fatal(error);
+  ui.fatal(error, { interruptionRequested: Boolean(runner?.participantExitRequested) });
   audio?.close();
 });
 

@@ -1,7 +1,8 @@
 import {
   ACCENTS,
+  L2_TO_L1_PRACTICE_STIMULI,
   MAIN_STIMULI,
-  PRACTICE_STIMULI,
+  PICTURE_NAMING_PRACTICE_STIMULI,
   PRACTICE_TEST_TALKERS,
   TEST_TALKERS,
   TRAINING_TALKERS,
@@ -346,7 +347,7 @@ async function buildL2Order(itemAssignments, rootSeedHex, timepoint, alternate =
 
 async function practiceTrials(segment, timepoint, assetVersion, rootSeedHex, firstMainTestAccent = null) {
   if (segment === "picture_naming") {
-    return PRACTICE_STIMULI.slice(0, 2).map((item) => ({
+    return PICTURE_NAMING_PRACTICE_STIMULI.map((item) => ({
       segment,
       practice: true,
       excludeFromAnalysis: true,
@@ -375,7 +376,7 @@ async function practiceTrials(segment, timepoint, assetVersion, rootSeedHex, fir
     `l2_to_l1/${timepoint}/practice/accent_order`,
     (candidate) => !firstMainTestAccent || candidate.at(-1) !== firstMainTestAccent,
   );
-  return PRACTICE_STIMULI.slice(2, 5).map((item, index) => {
+  return L2_TO_L1_PRACTICE_STIMULI.map((item, index) => {
     const accent = practiceAccents[index];
     const talkerId = PRACTICE_TEST_TALKERS[accent];
     return {

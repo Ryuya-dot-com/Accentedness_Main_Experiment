@@ -25,9 +25,12 @@ export const MAIN_STIMULI = Object.freeze([
   { id: 24, word: "treadmill", gloss: "ランニングマシン", list: 2, listRank: 11 },
 ]);
 
-export const PRACTICE_STIMULI = Object.freeze([
+export const PICTURE_NAMING_PRACTICE_STIMULI = Object.freeze([
   { id: 901, word: "abacus", gloss: "そろばん" },
   { id: 902, word: "binoculars", gloss: "双眼鏡" },
+]);
+
+export const L2_TO_L1_PRACTICE_STIMULI = Object.freeze([
   { id: 903, word: "thermometer", gloss: "温度計" },
   { id: 904, word: "xylophone", gloss: "木琴" },
   { id: 905, word: "detergent", gloss: "洗剤" },

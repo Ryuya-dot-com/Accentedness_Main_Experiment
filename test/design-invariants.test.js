@@ -46,6 +46,41 @@ describe("participant design invariant checker", () => {
       .toThrow("pre declared recording count");
   });
 
+  it.each([
+    ["itemId", "itemId", "item ID"],
+    ["itemWord", "itemWord", "word"],
+    ["imageKey", "imageKey", "image key"],
+  ])("rejects a Picture Naming practice/main %s collision", async (_, field, label) => {
+    const design = await validDesign();
+    const practice = design.pre.trials.find(
+      (trial) => trial.segment === "picture_naming" && trial.practice,
+    );
+    const main = mainTrials(design, "pre", "picture_naming")[0];
+    practice[field] = main[field];
+    expect(() => assertParticipantDesignInvariants(design))
+      .toThrow(`practice/main ${label} disjointness`);
+  });
+
+  it("rejects an L2-to-L1 practice/main audio-key collision", async () => {
+    const design = await validDesign();
+    const practice = design.immediate.trials.find(
+      (trial) => trial.segment === "l2_to_l1" && trial.practice,
+    );
+    practice.audioKey = mainTrials(design, "immediate", "l2_to_l1")[0].audioKey;
+    expect(() => assertParticipantDesignInvariants(design))
+      .toThrow("practice/main audio key disjointness");
+  });
+
+  it("rejects an L2-to-L1 practice audio key outside the practice category", async () => {
+    const design = await validDesign();
+    const practice = design.immediate.trials.find(
+      (trial) => trial.segment === "l2_to_l1" && trial.practice,
+    );
+    practice.audioKey = practice.audioKey.replace("/practice/", "/test/");
+    expect(() => assertParticipantDesignInvariants(design))
+      .toThrow("immediate L2-to-L1 practice audio key category");
+  });
+
   it("rejects an L2 miniblock that does not contain all six strata once", async () => {
     const design = await validDesign();
     const block = mainTrials(design, "immediate", "l2_to_l1").filter((trial) => trial.miniblock === 1);

@@ -34,11 +34,18 @@ function clearInvitationFragment() {
   history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
 }
 
+export function isCorrectableParticipantIdentityError(error) {
+  return error instanceof ApiClientError
+    && error.status === 409
+    && error.code === "participant_binding_mismatch";
+}
+
 export function shouldClearInvitationFragment(error) {
   return error instanceof ApiClientError
     && error.status >= 400
     && error.status < 500
     && !new Set([408, 425, 429]).has(error.status)
+    && !isCorrectableParticipantIdentityError(error)
     && !new Set(["invitation_redeem_conflict", "visit_not_available"]).has(error.code);
 }
 
@@ -183,9 +190,22 @@ export class ExperimentApi {
     );
   }
 
-  async bootstrap() {
+  hasInvitationToken() {
+    return Boolean(invitationTokenFromFragment());
+  }
+
+  async bootstrap(participantIdentity = null) {
     const invitationToken = invitationTokenFromFragment();
     if (invitationToken) {
+      const participantId = String(participantIdentity?.participant_id ?? "").trim();
+      const participantName = String(participantIdentity?.participant_name ?? "").trim();
+      if (!participantId || !participantName) {
+        throw new ApiClientError(
+          400,
+          "participant_identity_required",
+          "参加者IDと氏名を入力してください。",
+        );
+      }
       let state;
       try {
         state = await fetchWithDeadline(
@@ -197,6 +217,8 @@ export class ExperimentApi {
               token: invitationToken,
               client_instance_id: this.clientInstanceId,
               expected_visit_type: this.expectedVisitType,
+              participant_id: participantId,
+              participant_name: participantName,
             }),
             cache: "no-store",
           },
@@ -268,6 +290,23 @@ export class ExperimentApi {
 
   completeVisit() {
     return this.request("/api/visit/complete", { method: "POST", json: {} });
+  }
+
+  requestParticipationInterruption(mode, requestId) {
+    return this.request("/api/participation/interruptions", {
+      method: "POST",
+      json: { request_id: requestId, mode },
+    });
+  }
+
+  finalizeParticipationInterruption(interruptionId, requestId) {
+    return this.request(
+      `/api/participation/interruptions/${encodeURIComponent(interruptionId)}/finalize`,
+      {
+        method: "POST",
+        json: { request_id: requestId },
+      },
+    );
   }
 
   async fetchParticipantCopy(fileHandle = null) {

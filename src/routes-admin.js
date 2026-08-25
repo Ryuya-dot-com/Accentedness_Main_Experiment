@@ -5,6 +5,11 @@ import { ApiError, jsonResponse, readJson, requireMethod, requireUuid } from "./
 import { requireAdmin } from "./lib/auth.js";
 import { collectionConfiguration } from "./lib/config.js";
 import { DELAY_MINIMUM_DAYS } from "./lib/protocol.js";
+import {
+  ParticipantIdentityError,
+  createParticipantIdentityBinding,
+  participantIdentityVerifierEqual,
+} from "./lib/participant-identity.js";
 
 function assertProductionCollectionSafe(env) {
   const configuration = collectionConfiguration(env);
@@ -12,7 +17,7 @@ function assertProductionCollectionSafe(env) {
     throw new ApiError(
       503,
       "production_collection_blocked",
-      "Production participant creation and invitation issuance require real assets and an explicit supported test-token policy",
+      "Production participant creation and invitation issuance require real assets, an explicit supported test-token policy, and recipient verification",
       {
         asset_version: env.ASSET_VERSION,
         assignment_version: env.ASSIGNMENT_VERSION,
@@ -20,6 +25,10 @@ function assertProductionCollectionSafe(env) {
         placeholder_assets: configuration.placeholder,
         test_token_policy: configuration.testTokenPolicy,
         test_token_policy_ready: configuration.tokenPolicyReady,
+        admin_authentication_ready: configuration.adminAuthenticationReady,
+        randomization_ready: configuration.randomizationReady,
+        identity_verification_ready: configuration.identityVerificationReady,
+        secrets_independent: configuration.secretsIndependent,
       },
     );
   }
@@ -27,18 +36,114 @@ function assertProductionCollectionSafe(env) {
 
 async function visitForIssue(db, visitUuid) {
   return db.prepare(`
-    SELECT v.*, p.numeric_id
+    SELECT v.*, p.numeric_id, p.status AS participant_status,
+      pib.verifier_hex AS identity_verifier_hex
     FROM visits v JOIN participants p ON p.participant_uuid = v.participant_uuid
+    LEFT JOIN participant_identity_bindings pib
+      ON pib.participant_uuid = p.participant_uuid
     WHERE v.visit_uuid = ? LIMIT 1
   `).bind(visitUuid).first();
+}
+
+function mapIdentityError(error) {
+  if (!(error instanceof ParticipantIdentityError)) throw error;
+  if (error.code === "identity_secret_unconfigured") {
+    throw new ApiError(503, "identity_verification_unconfigured", "Participant identity verification is not configured");
+  }
+  throw new ApiError(400, error.code, error.message);
+}
+
+async function identityBindingFor(env, participantUuid, numericId, participantName) {
+  try {
+    return await createParticipantIdentityBinding({
+      identitySecret: env.IDENTITY_SECRET,
+      participantUuid,
+      participantId: numericId,
+      participantName,
+    });
+  } catch (error) {
+    return mapIdentityError(error);
+  }
+}
+
+async function bindOrVerifyExistingIdentity(env, participant, numericId, participantName, nowMs) {
+  const proposed = await identityBindingFor(
+    env,
+    participant.participant_uuid,
+    numericId,
+    participantName,
+  );
+  if (participant.identity_verifier_hex) {
+    const matches = participant.identity_normalization_version === proposed.normalization_version
+      && participant.identity_verifier_version === proposed.verifier_version
+      && await participantIdentityVerifierEqual(
+        participant.identity_verifier_hex,
+        proposed.verifier_hex,
+      );
+    if (!matches) {
+      throw new ApiError(409, "participant_binding_mismatch", "Participant ID and name do not match the registered recipient");
+    }
+    return participant;
+  }
+
+  try {
+    await env.DB.batch([
+      env.DB.prepare(`
+        INSERT INTO participant_identity_bindings (
+          participant_uuid, verifier_hex, normalization_version, verifier_version,
+          created_at_ms
+        ) VALUES (?, ?, ?, ?, ?)
+      `).bind(
+        participant.participant_uuid,
+        proposed.verifier_hex,
+        proposed.normalization_version,
+        proposed.verifier_version,
+        nowMs,
+      ),
+      env.DB.prepare(`
+        INSERT INTO audit_log (
+          audit_uuid, actor_type, action, participant_uuid, server_at_ms, details_json
+        ) VALUES (?, 'admin', 'participant_identity_registered', ?, ?, ?)
+      `).bind(
+        crypto.randomUUID(),
+        participant.participant_uuid,
+        nowMs,
+        stableJson({ normalization_version: proposed.normalization_version }),
+      ),
+    ]);
+  } catch {
+    const raced = await findParticipantByNumericId(env.DB, numericId);
+    if (!raced?.identity_verifier_hex
+        || raced.identity_normalization_version !== proposed.normalization_version
+        || raced.identity_verifier_version !== proposed.verifier_version
+        || !(await participantIdentityVerifierEqual(raced.identity_verifier_hex, proposed.verifier_hex))) {
+      throw new ApiError(409, "participant_binding_mismatch", "Participant ID and name do not match the registered recipient");
+    }
+    return raced;
+  }
+  return findParticipantByNumericId(env.DB, numericId);
 }
 
 async function issueInvitation(env, requestUrl, visitUuid, nowMs) {
   assertProductionCollectionSafe(env);
   const visit = await visitForIssue(env.DB, visitUuid);
   if (!visit) throw new ApiError(404, "visit_not_found", "Visit was not found");
+  if (!visit.identity_verifier_hex) {
+    throw new ApiError(409, "participant_identity_not_registered", "Register the participant recipient before issuing an invitation");
+  }
+  if (visit.participant_status === "withdrawn") {
+    throw new ApiError(409, "participant_withdrawn", "Cannot issue an invitation after participation has ended");
+  }
   if (["completed", "withdrawn"].includes(visit.status)) {
     throw new ApiError(409, "visit_closed", "Cannot issue an invitation for a closed visit");
+  }
+  const openInterruption = await env.DB.prepare(`
+    SELECT mode, state FROM participation_interruptions
+    WHERE participant_uuid = ? AND state IN ('requested', 'paused')
+    ORDER BY requested_at_ms DESC LIMIT 1
+  `).bind(visit.participant_uuid).first();
+  if (openInterruption) {
+    throw new ApiError(409, "participation_interruption_open", "Resolve the participant's pause or termination request before issuing another invitation");
   }
   if (visit.visit_type === "immediate") {
     const preVisit = await env.DB.prepare(`
@@ -162,9 +267,33 @@ export async function createParticipant(request, env) {
       assetVersion: env.ASSET_VERSION,
       randomizationSecret: env.RANDOMIZATION_SECRET,
     });
-    const inserted = await insertParticipantDesign(env.DB, design, Date.now());
-    participant = inserted.participant;
+    const nowMs = Date.now();
+    const identityBinding = await identityBindingFor(
+      env,
+      design.assignment.participantUuid,
+      numericId,
+      body.participant_name,
+    );
+    const inserted = await insertParticipantDesign(env.DB, design, identityBinding, nowMs);
+    participant = await findParticipantByNumericId(env.DB, numericId);
     created = !inserted.existing;
+    if (inserted.existing) {
+      participant = await bindOrVerifyExistingIdentity(
+        env,
+        participant,
+        numericId,
+        body.participant_name,
+        nowMs,
+      );
+    }
+  } else {
+    participant = await bindOrVerifyExistingIdentity(
+      env,
+      participant,
+      numericId,
+      body.participant_name,
+      Date.now(),
+    );
   }
   let invitation = null;
   if (body.issue_pre_invitation !== false) {
@@ -181,6 +310,7 @@ export async function createParticipant(request, env) {
       pre_visit_id: participant.pre_visit_uuid,
       immediate_visit_id: participant.immediate_visit_uuid,
       delayed_visit_id: participant.delayed_visit_uuid,
+      identity_registered: true,
     },
     invitation,
   }, created ? 201 : 200);
@@ -199,6 +329,17 @@ export async function revokeInvitation(request, env, inviteUuidInput) {
   await requireAdmin(request, env);
   const inviteUuid = requireUuid(inviteUuidInput, "invite_id");
   const nowMs = Date.now();
+  const openInterruption = await env.DB.prepare(`
+    SELECT pi.mode, pi.state
+    FROM invitations i
+    JOIN visits v ON v.visit_uuid = i.visit_uuid
+    JOIN participation_interruptions pi ON pi.participant_uuid = v.participant_uuid
+    WHERE i.invite_uuid = ? AND pi.state IN ('requested', 'paused')
+    LIMIT 1
+  `).bind(inviteUuid).first();
+  if (openInterruption) {
+    throw new ApiError(409, "participation_interruption_open", "Do not revoke an invitation while participant data are draining or paused");
+  }
   const results = await env.DB.batch([
     env.DB.prepare(`
       UPDATE visits
@@ -245,9 +386,15 @@ export async function listDueDelayed(request, env) {
       AND immediate_visit.status = 'completed'
     LEFT JOIN invitations i ON i.visit_uuid = v.visit_uuid
     WHERE v.visit_type = 'delayed'
+      AND p.status = 'active'
       AND v.status IN ('scheduled', 'invited', 'started')
       AND v.available_at_ms IS NOT NULL
       AND v.available_at_ms <= ?
+      AND NOT EXISTS (
+        SELECT 1 FROM participation_interruptions pi
+        WHERE pi.participant_uuid = p.participant_uuid
+          AND pi.state IN ('requested', 'paused')
+      )
     GROUP BY v.visit_uuid, p.numeric_id, v.target_at_ms, v.available_at_ms, v.status
     ORDER BY v.target_at_ms, p.numeric_id
   `).bind(nowMs).all();
@@ -257,7 +404,15 @@ export async function listDueDelayed(request, env) {
 export async function adminSummary(request, env) {
   requireMethod(request, ["GET"]);
   await requireAdmin(request, env);
-  const [participants, visits, recordings, participantIdSpan, assignmentFlow] = await Promise.all([
+  const [
+    participants,
+    visits,
+    recordings,
+    participantIdSpan,
+    assignmentFlow,
+    interruptions,
+    recordingIntegrity,
+  ] = await Promise.all([
     env.DB.prepare(`SELECT status, COUNT(*) AS count FROM participants GROUP BY status`).all(),
     env.DB.prepare(`SELECT visit_type, status, COUNT(*) AS count FROM visits GROUP BY visit_type, status`).all(),
     env.DB.prepare(`SELECT state, COUNT(*) AS count FROM recordings GROUP BY state`).all(),
@@ -289,11 +444,25 @@ export async function adminSummary(request, env) {
         FROM trial_attempts ta
         JOIN trial_manifest tm ON tm.trial_uuid = ta.trial_uuid
         GROUP BY tm.visit_uuid
+      ), participant_interruption_progress AS (
+        SELECT
+          participant_uuid,
+          MAX(CASE WHEN mode = 'pause' THEN 1 ELSE 0 END) AS ever_paused,
+          MAX(CASE WHEN mode = 'pause' AND state = 'paused' THEN 1 ELSE 0 END)
+            AS currently_paused,
+          MAX(CASE WHEN mode = 'terminate' AND state = 'terminated' THEN 1 ELSE 0 END)
+            AS terminated
+        FROM participation_interruptions
+        GROUP BY participant_uuid
       )
       SELECT
         p.training_accent,
         p.counterbalance_cell,
         COUNT(*) AS assigned_count,
+        SUM(COALESCE(participant_interruption.ever_paused, 0)) AS ever_paused_count,
+        SUM(COALESCE(participant_interruption.currently_paused, 0))
+          AS currently_paused_count,
+        SUM(COALESCE(participant_interruption.terminated, 0)) AS terminated_count,
         SUM(COALESCE(pre_invitation.issued, 0)) AS pre_issued_count,
         SUM(COALESCE(pre_invitation.redeemed, 0)) AS pre_redeemed_count,
         SUM(COALESCE(pre_trial.first_trial, 0)) AS pre_first_trial_count,
@@ -327,9 +496,36 @@ export async function adminSummary(request, env) {
       LEFT JOIN trial_progress pre_trial ON pre_trial.visit_uuid = pre.visit_uuid
       LEFT JOIN trial_progress immediate_trial ON immediate_trial.visit_uuid = immediate.visit_uuid
       LEFT JOIN trial_progress delayed_trial ON delayed_trial.visit_uuid = delayed.visit_uuid
+      LEFT JOIN participant_interruption_progress participant_interruption
+        ON participant_interruption.participant_uuid = p.participant_uuid
       GROUP BY p.training_accent, p.counterbalance_cell
       ORDER BY p.training_accent, p.counterbalance_cell
     `).all(),
+    env.DB.prepare(`
+      SELECT mode, state, COUNT(*) AS count
+      FROM participation_interruptions
+      GROUP BY mode, state
+      ORDER BY mode, state
+    `).all(),
+    env.DB.prepare(`
+      SELECT
+        SUM(CASE
+          WHEN r.state = 'pending'
+            AND tm.canonical_attempt_uuid = r.attempt_uuid
+            AND r.abandoned_at_ms IS NULL
+          THEN 1 ELSE 0 END) AS canonical_pending_uploads,
+        SUM(CASE
+          WHEN r.abandoned_at_ms IS NOT NULL
+            AND tm.canonical_attempt_uuid IS NOT r.attempt_uuid
+          THEN 1 ELSE 0 END) AS noncanonical_abandoned_slots,
+        SUM(CASE
+          WHEN r.abandoned_at_ms IS NOT NULL
+            AND tm.canonical_attempt_uuid = r.attempt_uuid
+          THEN 1 ELSE 0 END) AS canonical_recordings_abandoned_after_termination
+      FROM recordings r
+      JOIN trial_attempts ta ON ta.attempt_uuid = r.attempt_uuid
+      JOIN trial_manifest tm ON tm.trial_uuid = ta.trial_uuid
+    `).first(),
   ]);
   return jsonResponse({
     ok: true,
@@ -337,6 +533,8 @@ export async function adminSummary(request, env) {
     participants: participants.results,
     visits: visits.results,
     recordings: recordings.results,
+    recording_integrity: recordingIntegrity,
+    participation_interruptions: interruptions.results,
     participant_id_span: participantIdSpan,
     assignment_flow: assignmentFlow.results,
   });

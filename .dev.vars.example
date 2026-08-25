@@ -1,3 +1,4 @@
 # Copy to .dev.vars for local development. Never commit the real values.
 ADMIN_TOKEN=replace-with-a-long-random-local-token
 RANDOMIZATION_SECRET=replace-with-an-independent-long-random-secret
+IDENTITY_SECRET=replace-with-a-third-independent-long-random-secret
