@@ -18,11 +18,10 @@
 
       <section>
         <h2>参加者</h2>
-        <p>参加者名は、招待リンクの配布先と参加者IDの組み合わせを確認するために入力します。実験条件の割付には使用しません。平文を実験データベースへ保存しません。</p>
+        <p>管理者が登録するのは参加者IDだけです。氏名は参加者がPreリンクを初めて開いたときに入力し、以後の時点との照合に使います。平文氏名は実験データベースへ保存しません。</p>
         <form id="participant-form">
           <p><label>参加者ID <input id="participant-id" inputmode="numeric" pattern="[1-9][0-9]*" required /></label></p>
-          <p><label>参加者名（配布先確認用） <input id="participant-name" type="text" maxlength="80" required autocomplete="off" /></label></p>
-          <button type="submit">登録／IDと配布先を確認</button>
+          <button type="submit">登録／参照</button>
         </form>
         <div id="participant-actions" hidden>
           <p id="participant-state"></p>

@@ -14,7 +14,6 @@ async function createParticipant(participantId) {
     },
     body: JSON.stringify({
       participant_id: participantId,
-      participant_name: "Test Participant",
     }),
   }));
   expect(response.status).toBe(201);

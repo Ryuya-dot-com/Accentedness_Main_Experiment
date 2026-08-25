@@ -16,7 +16,7 @@
 
 24語slotはプレースホルダーのまま進めます。top-level設定を非本番pilotとして使い、新しい`env.pilot`は追加しません。`ENVIRONMENT=development`、`ALLOW_PLACEHOLDER_ASSETS=true`、`TEST_TOKEN_POLICY=undecided`の組合せは意図したpilot設定です。
 
-現行実装は、参加者・本人確認HMAC・3 visit・24 item割当・6 segment・276 trial・監査記録を312文のD1 batchで原子的に保存します。2026-08-26時点のWorkers上限では、D1など内部serviceへのsubrequestはFreeで1 Worker invocationあたり1,000、Paidの既定値は10,000であり、312文はどちらにも収まります。batch文数だけを理由にPaidを必須とせず、planは本番相当pilotのCPU時間、traffic、support要件を含めて決めます。Cloudflare公式の [D1 limits](https://developers.cloudflare.com/d1/platform/limits/) と [Workers limits](https://developers.cloudflare.com/workers/platform/limits/) は配備直前にも確認します。
+現行実装は、参加者ID・3 visit・24 item割当・6 segment・276 trial・監査記録を311文のD1 batchで原子的に保存します。氏名HMACは参加者の最初の正常な招待redeem時に、visit・session・redeem回数・auditと同じ別batchで保存します。2026-08-26時点のWorkers上限では、D1など内部serviceへのsubrequestはFreeで1 Worker invocationあたり1,000、Paidの既定値は10,000であり、311文だけを理由にPaidを必須としません。planは本番相当pilotのCPU時間、traffic、support要件を含めて決めます。Cloudflare公式の [D1 limits](https://developers.cloudflare.com/d1/platform/limits/) と [Workers limits](https://developers.cloudflare.com/workers/platform/limits/) は配備直前にも確認します。
 
 resourceを変更する前に、Wranglerの認証先、採用plan、主担当・代替担当を確認し、exact nameの衝突をread-onlyで再点検します。
 
@@ -48,7 +48,7 @@ D1作成時の`database_id`を`wrangler.jsonc`のtop-level `DB` bindingだけへ
 2. `0006` migrationをD1へ適用する。
 3. `0006`を前提にするWorkerをdeployする。
 
-新コードを先にdeployするとidentity table不在で失敗し、migrationを先に適用しても`IDENTITY_SECRET`不在なら参加者作成・redeemがfail closedになります。旧コードは`IDENTITY_SECRET`を参照しないため、secretを先に設定する順序が最小riskです。値は出力せず、`secret list`ではkey名だけを確認します。
+新コードを先にdeployするとidentity table不在で失敗します。migrationを先に適用しても、`IDENTITY_SECRET`不在なら参加者のredeemはfail closedになり、productionではcollection safety gateによりparticipant作成・招待発行も拒否されます。developmentではID-only participant作成自体は可能ですが、redeemできないため収集開始状態ではありません。旧コードは`IDENTITY_SECRET`を参照しないため、secretを先に設定する順序が最小riskです。値は出力せず、`secret list`ではkey名だけを確認します。
 
 ```bash
 npx wrangler secret put IDENTITY_SECRET --env=""
@@ -74,7 +74,7 @@ npx wrangler secret list --env=""
 
 2026-08-26以降、非本番`ADMIN_TOKEN`の暫定正本はrepository外の親directoryにある`.env`です。file modeは`0600`とし、この単一keyだけを標準入力経由でWranglerへ渡します。`.env`全体またはtoken値を表示・記録しません。rotation後に新tokenでHTTP 200、旧tokenでHTTP 403を確認し、bootstrap用の一時handoff directoryは削除済みです。この`.env`はDropbox同期対象なので、現時点の非本番運用にだけ用い、production secretの恒久正本とはみなしません。`RANDOMIZATION_SECRET`、production resource、production secretはこのrotationで変更していません。
 
-`0006`適用後の非本番`GET /api/health`の期待値は、`environment=development`、`placeholder_assets=true`、`test_token_policy=undecided`、`test_token_policy_ready=false`、`admin_authentication_ready=true`、`randomization_ready=true`、`identity_verification_ready=true`、`secrets_independent=true`、`collection_ready=false`です。これは3 secretを分離して本人確認を有効にした正常なplaceholder pilot状態です。未使用IDでparticipantを1名作成し、現行312文batchの完全性とduration、本人確認の成功・不一致時無変更、D1/R2 binding、管理token拒否、R2非公開を確認します。2026-08-26に旧実装で確認した311文batchは`participant_identity_bindings`追加前の履歴証拠として保持しますが、現行312文batchの証拠には流用しません。現在の非本番URLは`https://accentedness-main-experiment.komuro-4121.workers.dev`です。
+`0006`適用後の非本番`GET /api/health`の期待値は、`environment=development`、`placeholder_assets=true`、`test_token_policy=undecided`、`test_token_policy_ready=false`、`admin_authentication_ready=true`、`randomization_ready=true`、`identity_verification_ready=true`、`secrets_independent=true`、`collection_ready=false`です。これは3 secretを分離して氏名HMAC照合を有効にした正常なplaceholder pilot状態です。未使用IDでparticipantを1名作成し、311文batch、作成直後のidentity binding 0件、Pre初回redeem後のbinding 1件、氏名不一致時無変更、D1/R2 binding、管理token拒否、R2非公開を確認します。2026-08-26に旧実装で確認した311文batchは旧契約の履歴証拠であり、現行ID-only作成batchの証拠には流用しません。現在の非本番URLは`https://accentedness-main-experiment.komuro-4121.workers.dev`です。
 
 ## 3. productionの初回セットアップ
 
@@ -103,7 +103,7 @@ npx wrangler deploy --env production --strict --no-x-provision
 
 `0005_remove_recording_exports.sql` が削除するのは、旧Queue方式で作った派生ZIPの状態表だけです。canonical応答・録音metadata・監査logは削除しません。旧版を一度でも配置した環境では、bindingを設定から消しても既存のQueue、DLQ、旧`EXPORTS` bucketは自動削除されません。未作成ならこの確認はN/Aです。存在する場合は、正本DB・`RECORDINGS`・`STIMULI`と取り違えていないこと、必要な派生ZIPがないことを二名で確認してから、Cloudflare側で旧資源だけを廃止します。旧5分cronは設定省略では残るため、`wrangler.jsonc` のroot・production双方で`"triggers": { "crons": [] }`を明示し、次回deploy後にDashboardで消滅を確認します。確認までは空配列を削除しません。
 
-`0006_identity_and_participation_interruptions.sql`は、平文氏名を持たない`participant_identity_bindings`、一時中断・参加終了の`participation_interruptions`、withdraw/abandon列、race防止index・triggerを追加します。既存のcanonical responseやR2 objectは削除しません。migration後に旧参加者へ招待を発行するときは、先に募集台帳のID・氏名で明示的なidentity bindingを登録します。
+`0006_identity_and_participation_interruptions.sql`は、平文氏名を持たない`participant_identity_bindings`、一時中断・参加終了の`participation_interruptions`、withdraw/abandon列、race防止index・triggerを追加します。既存のcanonical responseやR2 objectは削除しません。bindingのない既存参加者にも招待を発行でき、参加者が次に有効なlinkを正常redeemした時点で氏名HMACを初回登録します。
 
 ## 4. ローカル開発
 
@@ -149,7 +149,7 @@ participant-facing UIを変更した後は、変更前のvisitを同じclean-pat
 
 ## 6. preリンクとMain Experimentリンクの手動発行
 
-通常運用では `https://EXPERIMENT.example/admin/` を開き、ADMIN_TOKEN、募集台帳の数値参加者ID、氏名を入力して参加者を登録または照合し、各visitのリンク発行、遅延対象、全体状態を確認します。ADMIN_TOKENと氏名はページ保存領域へ永続化しません。ページと管理APIの両方をCloudflare Accessで研究チームだけに制限してください。
+通常運用では `https://EXPERIMENT.example/admin/` を開き、ADMIN_TOKENと募集台帳の数値参加者IDだけを入力して参加者を登録または参照し、各visitのリンク発行、遅延対象、全体状態を確認します。管理画面へ氏名を入力しません。ページと管理APIの両方をCloudflare Accessで研究チームだけに制限してください。
 
 参加者IDは募集順の連番で付与し、pre後の離脱、一時中断、永続的な参加終了があっても再利用しません。IDの余りが学習時accentを決めるため、担当者が条件を見てIDを選ぶ、または恣意的な欠番を作る行為は割付バイアスになります。現行画面は欠番をsummaryで検出しますが、原子的な自動連番発番は未実装です。本番開始前に外部台帳を含む発番責任者・手順・監査証跡を確定するか、サーバー発番へ切り替えてください。氏名はこの募集台帳以外の作業表、ticket、chat、D1 memoへ記録しません。
 
@@ -159,14 +159,14 @@ CLIで行う場合は、以下のURLとtokenを実環境値に置き換えます
 curl -sS -X POST "https://EXPERIMENT.example/api/admin/participants" \
   -H "Authorization: Bearer ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
-  --data '{"participant_id": 1, "participant_name": "募集台帳と同じ氏名"}'
+  --data '{"participant_id": 1}'
 ```
 
-`participant_name`はこのrequestの処理中だけ使われます。serverはNFKC・空白・大小文字を正規化し、participant UUIDと数値IDを含むversion付きHMAC verifierだけをD1へ保存します。平文氏名はD1、R2、API応答、Worker log、browser storage、ZIPへ出ません。割付は数値IDだけで行います。氏名をshell historyへ残したくない実運用では上記literal例をそのまま使わず、`/admin/`の`autocomplete=off`入力を使ってください。
+管理APIは`participant_name`を受け付けません。管理者はIDだけを登録・参照し、氏名を募集台帳から管理画面へ転記しません。割付も数値IDだけで行います。
 
-同じIDを再入力する場合も募集台帳と正規化後に同じ氏名が必要です。異なる氏名ならHTTP 409となり、既存bindingやvisitを変更しません。`0006`適用時点ですでに存在するlegacy participantは、管理者が同じendpointへ既存IDと募集台帳の氏名を入力して明示的にbindingを追加するまで、招待を発行できません。IDを新規参加者へ付け直して解決してはいけません。
+同じIDを管理画面で再入力すると、氏名入力なしで既存の不変manifestを参照します。参加者が初回redeem済みかは`identity_registered`で確認できますが、管理者が氏名を閲覧・修正する機能はありません。IDを新規参加者へ付け直して解決してはいけません。
 
-返される最初の`invitation_url`は`/pre-picture-naming/`です。このURLだけを該当参加者へ手動で送ります。参加者は新しい招待linkを開いたとき、案内されたIDと募集時の氏名を両方入力します。不足・不一致なら汎用HTTP 409となり、visit、session、招待redeem回数、本人確認回数、audit logは変わりません。URL fragmentのraw tokenはD1やサーバーログへ保存されず、D1にはhashだけが保存されます。同じvisitに対して再発行すると古い招待はrevokeされます。
+返される最初の`invitation_url`は`/pre-picture-naming/`です。このURLだけを該当参加者へ手動で送ります。参加者は新しい招待linkを開いたとき、案内されたIDと自身の氏名を入力します。Pre初回は招待token＋一致するIDをアクセス資格として氏名HMACを登録し、以後のlinkでは同じ正規化済み氏名かを照合します。ID不足・不一致、氏名不足、binding後の氏名不一致なら汎用HTTP 409となり、binding、visit、session、招待redeem回数、確認回数、audit logは変わりません。URL fragmentのraw tokenはD1やサーバーログへ保存されず、D1にはhashだけが保存されます。同じvisitに対して再発行すると古い招待はrevokeされます。
 
 pre完了後、作成応答に含まれていた`immediate_visit_id`へMain Experiment招待を発行します。pre未完了ならAPIがHTTP 409で拒否します。
 
@@ -287,7 +287,7 @@ curl -fL "https://EXPERIMENT.example/api/admin/participants/1/results.zip" \
 - D1/R2/Workerへの権限を最小限にする。
 - `/admin/*` と `/api/admin/*` をCloudflare Accessで研究チームだけに制限する。
 - `ADMIN_TOKEN`、`RANDOMIZATION_SECRET`、`IDENTITY_SECRET`をログ、文書、チャットへ貼らない。3つを相互流用しない。
-- 氏名は募集台帳以外へ転記しない。admin/participant画面の一時input以外に、D1、R2、API応答、Worker log、browser storage、ZIPへ平文氏名がないことをpilotで確認する。trial/event payloadへ氏名canaryを混ぜたrequestがHTTP 422で拒否され、D1・ZIPへ0件である自動testも維持する。
+- 氏名は募集台帳から管理画面へ転記しない。participant画面の一時input以外に、D1、R2、API応答、Worker log、browser storage、ZIPへ平文氏名がないことをpilotで確認する。trial/event payloadへ氏名canaryを混ぜたrequestがHTTP 422で拒否され、D1・ZIPへ0件である自動testも維持する。
 - raw録音は個人識別性のある研究データとして扱う。
 
 Cloudflare Accessはリポジトリ外のアカウント設定です。コードが存在するだけでは有効にならないため、本番チェックリストで別項目として確認します。

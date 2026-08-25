@@ -86,7 +86,6 @@ const PARTICIPANT_ERROR_MESSAGES = Object.freeze({
   participant_copy_visits_incomplete: "3回分の結果コピーを準備できません。研究用サーバーのvisit状態を担当者に確認してもらってください。",
   participant_copy_not_ready: "3回分の回答または録音が研究用サーバーで不足しています。担当者に知らせてください。",
   participant_copy_session_expired: "実験データは研究用サーバーに保存済みです。このパソコン向けZIPの再取得は、研究担当者へ依頼してください。",
-  participant_identity_not_registered: "この参加者IDの本人確認情報が登録されていません。入力を繰り返さず、担当者に知らせてください。",
   participation_termination_pending: "参加終了の処理中です。同じ招待リンクを開き直して、終了確認を続けてください。新しい試行は開始されません。",
   local_recording_missing: "前回の回答に対応する送信前録音を確認できないため、このセッションは完了しておらず、安全に再開もできません。参加終了を選ばず停止しました。このまま課題を再開せず、表示されたコードを担当者へ知らせてください。",
   local_recording_unreadable: "前回の回答に対応する送信前録音を読み出せないため、このセッションは完了しておらず、安全に再開もできません。参加終了を選ばず停止しました。このまま課題を再開せず、表示されたコードを担当者へ知らせてください。",
@@ -198,7 +197,7 @@ export class ExperimentUi {
     this.identityForm.hidden = false;
     this.identitySubmit.disabled = false;
     this.identityStatus.textContent = message || "参加者IDと氏名を入力してください。";
-    this.welcomeStatus.textContent = "入力内容は本人確認にのみ使用し、このブラウザには保存しません。";
+    this.welcomeStatus.textContent = "氏名はPre初回と後続セッションの入力照合にのみ使用し、このブラウザには保存しません。";
     this.identityParticipantName.value = "";
     this.identityParticipantId.focus();
     return new Promise((resolve) => {

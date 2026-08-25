@@ -16,12 +16,12 @@
   <h3>現在の到達状態</h3>
   <ul>
     <li><label><input type="checkbox" checked> G1 Program-ready: 実験契約、割付、参加者導線、保存処理を実装し、自動検証した</label></li>
-    <li><label><input type="checkbox"> G2 Live-pilot-ready: 本人確認・中断対応を含む現行buildをCloudflare非本番へ配備し、実URLでD1/R2保存を確認した</label></li>
+    <li><label><input type="checkbox"> G2 Live-pilot-ready: 参加者による氏名継続照合・中断対応を含む現行buildをCloudflare非本番へ配備し、実URLでD1/R2保存を確認した</label></li>
     <li><label><input type="checkbox"> G3 Operationally-ready: 敵対的E2E pilotと手動運用rehearsalを完了した</label></li>
     <li><label><input type="checkbox"> G4 Main-data-ready: 収集用bundleとproduction環境を固定し、soft launchを通過した</label></li>
   </ul>
   <p><strong>Gate依存:</strong> G2 = G1＋第5節、G3 = G2＋第6–7節、G4 = G3＋trigger済み第8節＋第9–10節。下位gateを飛ばして上位だけをcheckedにしない。</p>
-  <p><strong>現在の単一next action:</strong> repository外の正本へ専用かつ固定の<code>IDENTITY_SECRET</code>を追加し、非本番secret登録 → D1 migration <code>0006</code> → 現行build deployの順で反映する。その後、旧本人確認契約で発行したID 3を使わず、次の未使用連番ID 4を新規作成して実Chrome・実microphoneのPre pilotを行う。ID 1はsynthetic API smoke、ID 2はUX discovery、ID 3は旧契約確認用として、いずれもclean-pathへ再利用しない。</p>
+  <p><strong>現在の単一next action:</strong> repository外の正本へ専用かつ固定の<code>IDENTITY_SECRET</code>を追加し、非本番secret登録 → D1 migration <code>0006</code> → 現行build deployの順で反映する。その後、旧氏名登録契約で発行したID 3を使わず、次の未使用連番ID 4を新規作成して実Chrome・実microphoneのPre pilotを行う。ID 1はsynthetic API smoke、ID 2はUX discovery、ID 3は旧契約確認用として、いずれもclean-pathへ再利用しない。</p>
   <p><strong>G1 evidence（2026-08-26）:</strong> 本人確認、専用練習刺激、中断・参加終了を含むimplementation commit <code>f208c53</code>に対し<code>npm run verify</code>を実行し、types check、16 files / 112 tests、2 randomization secrets × ID 1–2160の4,320 design監査（failure 0）、development/production deploy dry-runが成功した。migration <code>0001</code>–<code>0006</code>も空の使い捨てlocal D1へ順番に適用できた。これはrepositoryのG1証拠であり、現行buildの非本番deployと実Chrome/R2/D1 pilotを示すG2証拠ではない。</p>
 
   <h2>1. 固定済みの実験契約</h2>
@@ -77,7 +77,8 @@
     <li><label><input type="checkbox" checked> Picture Namingは画像onset、L2-to-L1は音声offsetを起点とする既存10秒deadlineから、表示専用countdownを算出する</label></li>
     <li><label><input type="checkbox" checked> countdownは録音停止を制御せず、background throttlingや描画遅延でも回答窓を延長しない</label></li>
     <li><label><input type="checkbox" checked> 部分保存を「この時点まで保存」、visit完了を「全試行・録音の保存完了」と表示し、同一表現を使わない</label></li>
-    <li><label><input type="checkbox" checked> 担当者がparticipant IDと氏名を一組として登録し、参加者はfresh invitationの初回利用時に両方を入力して宛先を確認する。氏名から条件を割り付けない</label></li>
+    <li><label><input type="checkbox" checked> 担当者はparticipant IDだけを登録し、氏名を管理画面へ転記しない。参加者がPreのfresh invitation初回利用時にID・氏名を入力し、氏名から条件を割り付けない</label></li>
+    <li><label><input type="checkbox" checked> 初回アクセス資格は手動配布した招待token＋一致するIDとし、初回氏名は事前本人確認ではなくImmediate・Delayedとの入力継続照合に用いる</label></li>
     <li><label><input type="checkbox" checked> 氏名は正規化後のversion付きHMAC照合値だけを保存し、平文をD1・R2・API応答・log・browser storage・ZIPへ残さない</label></li>
     <li><label><input type="checkbox" checked> ID・氏名不一致時はsession・visit・invitation・auditを一切変更せず、同じ画面で再入力できる</label></li>
     <li><label><input type="checkbox" checked> 常時利用できる「中断・終了」導線を設け、刺激提示中の選択は現在の試行をserverへ送った後に処理する</label></li>
@@ -123,21 +124,21 @@
   </ul>
   <p><strong>G2 evidence（2026-08-26）:</strong> URL <code>https://accentedness-main-experiment.komuro-4121.workers.dev</code>、runtime source commit <code>f433bb1</code>、code deployment version <code>10135571-999e-4d23-8d04-36540ef9384f</code>、非本番ADMIN_TOKEN再設定後のactive version <code>28104a37-b46d-492b-90eb-10ddc9c9d4e7</code>。bindingsはD1 <code>main-experiment</code>、R2 <code>main-experiment-recordings</code> / <code>main-experiment-stimuli</code>。versionは<code>main-v3-placeholder-assets</code> / <code>hmac-sha256+xoshiro128ss-v1</code> / <code>placeholder-v1</code>。top・admin・6 participant HTML routesは200、配信assetのUX marker、health・認証・secret名・private R2を確認した。productionは変更していない。ID 1は<code>synthetic-api-smoke</code>専用で、今後のclean-path件数照合へ再利用しない。</p>
 
-  <h3>本人確認・中断対応buildの非本番rollout</h3>
+  <h3>氏名継続照合・中断対応buildの非本番rollout</h3>
   <ul>
     <li><label><input type="checkbox"> repository外の正本へ、RANDOMIZATION_SECRETやADMIN_TOKENと共用しない固定<code>IDENTITY_SECRET</code>を記録する</label></li>
     <li><label><input type="checkbox"> 非本番Workerへ<code>IDENTITY_SECRET</code>をsecretとして登録する</label></li>
     <li><label><input type="checkbox"> 非本番D1へmigration <code>0006_identity_and_participation_interruptions.sql</code>を適用する</label></li>
     <li><label><input type="checkbox"> 現行commitを非本番へdeployし、healthの<code>admin_authentication_ready=true</code>、<code>randomization_ready=true</code>、<code>identity_verification_ready=true</code>、<code>secrets_independent=true</code>を確認する</label></li>
-    <li><label><input type="checkbox"> 新規participant作成の312-statement atomic batch、identity HMAC 1件、平文氏名0件、部分状態0件を実URLで確認する</label></li>
+    <li><label><input type="checkbox"> 新規participantのID-only 311-statement atomic batchとidentity HMAC 0件、Pre初回redeem後のHMAC 1件、平文氏名0件、競合時の部分状態0件を実URLで確認する</label></li>
   </ul>
-  <p>上記が終わるまで、既存G2 evidenceは旧baselineの履歴であり、本人確認・中断対応buildがlive-pilot-readyである証拠には使わない。productionは対象外とする。</p>
+  <p>上記が終わるまで、既存G2 evidenceは旧baselineの履歴であり、氏名継続照合・中断対応buildがlive-pilot-readyである証拠には使わない。productionは対象外とする。</p>
 
   <h2>6. 敵対的E2E pilot — プレースホルダーで実施</h2>
-  <p>UIの完了表示ではなく、D1/R2/ZIPの実体で成功を判定する。ID 2はUX discovery pilot、ID 3は旧本人確認契約の準備用へ再分類する。本人確認・中断対応buildのclean-pathは次の未使用連番ID 4から開始し、障害注入用IDと分ける。Delayedの実時計pilotは5日以上を要するが、その待機中に他の項目を並行する。</p>
+  <p>UIの完了表示ではなく、D1/R2/ZIPの実体で成功を判定する。ID 2はUX discovery pilot、ID 3は旧氏名登録契約の準備用へ再分類する。氏名継続照合・中断対応buildのclean-pathは次の未使用連番ID 4から開始し、障害注入用IDと分ける。Delayedの実時計pilotは5日以上を要するが、その待機中に他の項目を並行する。</p>
   <p><strong>UX discovery evidence（2026-08-26、ID 2）:</strong> 参加者はPre完了と認識したが、D1正本はvisit <code>started</code>、canonical response / uploaded WAV各1/26、第2練習試行はstimulus onset後・response未保存・recording <code>pending</code>だった。第1WAVは48 kHz、10.037秒、RMS 0.0234、clipping 0で正常であり、内部参照矛盾は0件だった。Immediate招待はserver gateにより未発行のまま維持した。この乖離を、注視点の知覚性、progressの意味、10秒窓、部分保存とvisit完了の区別が不十分なUX defectとして扱う。ID 2を修正前後混在のclean-path証拠へ転用しない。</p>
   <p><strong>UX修正版pilot準備（2026-08-26、ID 3）:</strong> 未使用連番ID 3を非本番に作成し、training accent <code>japanese</code>、counterbalance cell 1、3 visits、24 item assignments、6 segments、276 manifest trialsを確認した。Pre invitationは1件だけ発行し、未redeemのためsession / attempt / recordingは各0件である。raw tokenは文書・chatへ記録せず、mode <code>0600</code>の一時local handoffだけに保持する。</p>
-  <p><strong>ID 3の扱い:</strong> ID 3は平文氏名を保存しないidentity binding導入前に作成・招待発行されたため、新契約のclean-pathには使わない。参加者による先着claimは許可せず、ID 1–3を再利用もしない。</p>
+  <p><strong>ID 3の扱い:</strong> ID 3は管理者が氏名を事前登録する旧契約で準備されたため、新契約のclean-pathには使わず、ID 1–3を再利用もしない。現行契約では、未binding参加者の最初の正常redeemが氏名HMACを確定する。</p>
   <ul>
     <li><label><input type="checkbox"> clean-path専用IDで、実Chrome・実マイクからpre → Immediate → Delayedの6 URLを中断なしで所定順に完遂する</label></li>
     <li><label><input type="checkbox"> pre完了前のImmediate、Immediate保存前のDelayed、5日未満のDelayedが拒否されることを確認する</label></li>
@@ -152,7 +153,7 @@
     <li><label><input type="checkbox"> Delayed完了前に参加者ZIPを取得できず、完了後には取得できることを確認する</label></li>
     <li><label><input type="checkbox"> clean-pathの3 visit分ZIPを参加者端末へ保存し、再保存・展開・134 entries・hashを確認する</label></li>
     <li><label><input type="checkbox"> 管理者ZIPを取得し、D1/R2とresponses metadataの対応を確認する</label></li>
-    <li><label><input type="checkbox"> ID・氏名一致でredeemでき、不一致・表記揺れ・legacy binding欠損時の結果とD1 mutation数が契約どおりであることを実URLで確認する</label></li>
+    <li><label><input type="checkbox"> 管理者がIDだけでparticipantを作成し、Pre初回redeemで氏名HMACが0→1件、正規化同値の後続redeemが成功、binding後の別氏名と同時初回claim敗者が無変更409になることを実URLで確認する</label></li>
     <li><label><input type="checkbox"> 練習画面で本番24語とは異なる画像・語・音声だけが提示され、練習→本番でprogressがresetされることを確認する</label></li>
     <li><label><input type="checkbox"> 試行間・試行中・WAV送信中の一時中断を試し、現在試行の扱い、paused状態、同じlinkからの正確な再開位置、重複0件を照合する</label></li>
     <li><label><input type="checkbox"> 部分データがある状態で永久終了し、受理済みD1/R2が保持され、未完了がabandoned/withdrawn、completed時刻なし、後続link発行不可となることを確認する</label></li>
@@ -165,7 +166,7 @@
   <ul>
     <li><label><input type="checkbox" checked> 非本番ADMIN_TOKENの暫定正本をrepository外の親directory <code>.env</code>へ置き、mode <code>0600</code>、<code>source</code>後の実効tokenでHTTP 200を確認した。Dropbox同期対象のためproduction恒久正本には流用しない</label></li>
     <li><label><input type="checkbox"> <code>.env</code>内で重複している3件の<code>ADMIN_TOKEN</code>定義を、値をchat・logへ出さず実効値1件へ整理し、次回rotation時の取り違えを防ぐ</label></li>
-    <li><label><input type="checkbox"> Cloudflare DashboardでWorkers plan名とbilling担当を確認し、旧311-statement実測と現行312-statement実測を区別して併記する。plan選定はCPU・traffic・supportも含めて判断する</label></li>
+    <li><label><input type="checkbox"> Cloudflare DashboardでWorkers plan名とbilling担当を確認し、旧契約と現行ID-only契約の311-statement実測を区別して併記する。氏名HMACは初回redeemの別batchであることを明記し、plan選定はCPU・traffic・supportも含めて判断する</label></li>
     <li><label><input type="checkbox"> participant ID台帳の主担当と代替担当を定め、共有台帳から次の未使用正整数を発行する</label></li>
     <li><label><input type="checkbox"> IDを再利用せず、accentやcellを見て都合のよいIDを選ばない手順を確認する</label></li>
     <li><label><input type="checkbox"> pre完了後にImmediate link、Immediate最終応答＋5日以降にDelayed linkを手動発行する手順を通す</label></li>

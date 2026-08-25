@@ -24,7 +24,7 @@ async function createParticipant(id = 1, visitType = "immediate") {
   const result = await api("/api/admin/participants", {
     method: "POST",
     token: ADMIN_TOKEN,
-    body: { participant_id: id, participant_name: "Test Participant" },
+    body: { participant_id: id },
   });
   expect(result.response.status).toBe(201);
   const created = result.json;
@@ -205,7 +205,6 @@ describe("Worker API", () => {
       token: ADMIN_TOKEN,
       body: {
         participant_id: 1,
-        participant_name: "Test Participant",
         issue_pre_invitation: false,
       },
     });
@@ -887,7 +886,7 @@ describe("Worker API", () => {
     const result = await api("/api/admin/participants", {
       method: "POST",
       token: ADMIN_TOKEN,
-      body: { participant_id: "001", participant_name: "Test Participant" },
+      body: { participant_id: "001" },
     });
     expect(result.response.status).toBe(400);
   });

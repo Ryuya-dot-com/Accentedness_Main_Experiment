@@ -253,7 +253,7 @@ describe("on-demand result ZIP", () => {
     const createdResult = await jsonRequest("/api/admin/participants", {
       method: "POST",
       token: ADMIN_TOKEN,
-      body: { participant_id: 901, participant_name: "Test Participant" },
+      body: { participant_id: 901 },
     });
     expect(createdResult.response.status).toBe(201);
     const created = createdResult.json;

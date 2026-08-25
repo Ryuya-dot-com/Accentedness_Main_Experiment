@@ -8,7 +8,7 @@
 
 上記remote storageを収集時の正本とします。参加者browserのIndexedDBは、D1応答とR2録音の受理確認までBlobを保持する一時outboxで、両方の確認後にrecordを削除します。最終Delayed完了後の明示操作でだけ、D1/R2のcanonical dataから3 visit分の参加者向けZIPをオンデマンド生成します。このZIPは正本でもbackupでもありません。
 
-募集台帳の氏名は招待配布先の確認にだけ使う一時入力です。平文氏名はD1、R2、API応答、Worker log、browser storage、参加者版・研究者版ZIPへ保存・出力しません。browserは送信直後に氏名inputを消去し、serverは正規化済み氏名から専用`IDENTITY_SECRET`によるHMAC verifierだけを生成します。氏名を保持する必要があるのはリポジトリ外の募集台帳だけです。
+管理者は氏名を実験システムへ入力しません。参加者が招待redeem時に入力した平文氏名は、D1、R2、API応答、Worker log、browser storage、参加者版・研究者版ZIPへ保存・出力しません。browserは送信直後に氏名inputを消去し、serverは正規化済み氏名から専用`IDENTITY_SECRET`によるHMAC verifierだけを生成します。募集上必要な氏名を保持する場合、その正本はリポジトリ外の募集台帳だけです。
 
 クライアントへは全試行の骨格manifestだけを渡し、語、訳、条件、話者、R2 keyは渡しません。刺激は現在の未回答試行を認可します。現在試行にserver-sideの開始記録ができた後だけ、通信待ちを試行間隔から分離するため同じsegment内の次の1試行も先読みできます。segment境界と2試行以上先は拒否します。
 
@@ -28,7 +28,7 @@
 | `recordings` | attemptの録音slot | R2 key、SHA-256、CRC-32、bytes、WAV状態、abandoned状態、実測sample rate/count/duration、server算出QC |
 | `events` | telemetry event | onset、visibility、audio、network等の時刻とpayload。氏名は含めない |
 | `participation_interruptions` | 明示的中断request | pause/terminate、requested/paused/resumed/terminated、受理済み件数、canonical次ordinal |
-| `audit_log` | 管理・participant・system操作 | 招待、本人確認binding、中断、再開、参加終了、完了などの監査証跡。氏名は含めない |
+| `audit_log` | 管理・participant・system操作 | 招待、氏名継続照合binding、中断、再開、参加終了、完了などの監査証跡。氏名は含めない |
 | `analysis_intervals` | 参加者（view） | 行動endpointに基づくpre→学習、課題間、保持、遅延目標偏差の各間隔 |
 
 ### `GET /api/admin/summary` の `assignment_flow`
@@ -76,11 +76,11 @@ accent×counterbalance cellごとに、`assigned_count`と各visit prefix（`pre
 
 `test_talker_id`はaccentごとに1名へ固定され、参加者間・語間・時点間でrandomizeしません。このため、テストaccentと話者identityは完全に交絡します。この列を共変量としてモデルに足しても交絡は解消できず、推論対象は選定した3名の音声に限られます。
 
-### 本人確認binding
+### 氏名入力の継続照合binding
 
-`participant_identity_bindings`の`verifier_hex`は、NFKC・空白collapse・trim・Roman小文字化後の氏名を、participant UUIDと`numeric_id`へdomain-separated HMAC-SHA-256で結合した64桁hexです。`normalization_version`と`verifier_version`を必ず併記します。`IDENTITY_SECRET`自体も正規化済み氏名も保存しません。`confirmation_count`と`last_confirmed_at_ms`は招待redeem成功時だけ更新し、不足・不一致時は変化しません。
+`participant_identity_bindings`は管理者によるparticipant作成時には存在せず、参加者が有効な招待をID・氏名で最初に正常redeemした同じD1 batch内で作成します。`verifier_hex`は、NFKC・空白collapse・trim・Roman小文字化後の氏名を、participant UUIDと`numeric_id`へdomain-separated HMAC-SHA-256で結合した64桁hexです。`normalization_version`と`verifier_version`を必ず併記します。`IDENTITY_SECRET`自体も正規化済み氏名も保存しません。初回成功時は`confirmation_count=1`とし、以後の招待redeem成功時だけ増やします。不足・ID不一致・binding後の氏名不一致・競合時は変化しません。
 
-同じ数値IDと正規化同値の氏名は同じbindingとして扱い、異なる氏名で既存verifierを上書きしません。氏名は割当表、manifest、trial/event payload、session、R2 metadata、ZIP manifestのどれにも加えません。学習時accentとseedは`numeric_id`だけから決まります。
+同じ数値IDと正規化同値の氏名は同じbindingとして扱い、異なる氏名で既存verifierを上書きしません。初回アクセス資格は招待tokenと一致する数値IDであり、氏名は時点間の入力一貫性を確認する情報です。氏名は割当表、manifest、trial/event payload、session、R2 metadata、ZIP manifestのどれにも加えません。学習時accentとseedは`numeric_id`だけから決まります。
 
 ### 練習trial
 
@@ -128,7 +128,7 @@ raw録音は声紋・発話内容を含み得るため、匿名化済みの表�
 
 ZIPは保存済みのcanonical responseをD1から、対応するWAVをR2から読み、圧縮なしでresponseへ直接streamします。派生ZIPをR2やD1へ保存しません。entry名は `recordings/{visit_type}/{segment}/recording_NNN.wav` とし、刺激語、訳語、accent、話者、内部UUIDを含めません。参加者版`responses.json`にも内部UUIDや条件labelを含めず、試行順、応答payload、WAVのSHA-256等だけを記録します。研究者版は採点・正本照合のため、同じopaque WAV entryへ刺激、条件、trial/attempt ID、再提示flag、R2 key、server算出QCを対応づけます。
 
-どちらのZIPにも氏名または本人確認verifierを含めません。研究者版filenameに入るのは研究用数値IDだけです。
+どちらのZIPにも氏名または氏名継続照合verifierを含めません。研究者版filenameに入るのは研究用数値IDだけです。
 
 参加者APIはDelayed visitの完了後だけ利用でき、pre・immediate・delayedの3 visitがすべてcompletedで、全canonical応答と録音が揃うことを再検査します。研究者API `GET /api/admin/participants/{numeric_id}/results.zip` はADMIN_TOKENを要求し、その時点の収集済みcanonical応答と利用可能なWAVを返します。対応Chromeでは選択済みfileへresponse bodyを直接streamし、書込closeと`Content-Length`一致を成功条件にします。未対応browserのBlob fallbackでは検知できるのはZIP受信とdownload開始までで、disk保存完了とはみなしません。
 

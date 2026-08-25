@@ -16,11 +16,13 @@ import {
   requireUuid,
 } from "./lib/http.js";
 import { collectionConfiguration, placeholderAssetsAllowed } from "./lib/config.js";
+import { canonicalParticipantId } from "./lib/manifest.js";
 import { DELAY_MINIMUM_MS } from "./lib/protocol.js";
 import { crc32 } from "./lib/stored-zip.js";
 import {
   ParticipantIdentityError,
-  verifyParticipantIdentityBinding,
+  createParticipantIdentityBinding,
+  participantIdentityVerifierEqual,
 } from "./lib/participant-identity.js";
 
 const VALID_VISITS = new Set(["pre", "immediate", "delayed"]);
@@ -532,31 +534,43 @@ export async function redeemInvitation(request, env) {
       expected: invitation.visit_type,
     });
   }
-  if (!invitation.identity_verifier_hex) {
-    throw new ApiError(409, "participant_identity_not_registered", "This invitation is not yet registered for recipient confirmation");
-  }
-  let identityMatches = false;
+  let proposedIdentity = null;
   try {
-    identityMatches = await verifyParticipantIdentityBinding({
+    const submittedParticipantId = canonicalParticipantId(body.participant_id);
+    if (submittedParticipantId !== Number(invitation.numeric_id)) {
+      throw new ParticipantIdentityError(
+        "participant_binding_mismatch",
+        "Participant ID does not match the invitation",
+      );
+    }
+    proposedIdentity = await createParticipantIdentityBinding({
       identitySecret: env.IDENTITY_SECRET,
       participantUuid: invitation.participant_uuid,
-      participantId: body.participant_id,
+      participantId: submittedParticipantId,
       participantName: body.participant_name,
-      binding: {
-        verifier_hex: invitation.identity_verifier_hex,
-        normalization_version: invitation.identity_normalization_version,
-        verifier_version: invitation.identity_verifier_version,
-      },
     });
   } catch (error) {
     if (error instanceof ParticipantIdentityError
         && error.code === "identity_secret_unconfigured") {
       throw new ApiError(503, "identity_verification_unconfigured", "Participant identity verification is not configured");
     }
-    identityMatches = false;
+    proposedIdentity = null;
   }
-  if (!identityMatches) {
-    throw new ApiError(409, "participant_binding_mismatch", "Participant ID and name do not match the registered recipient");
+  if (!proposedIdentity) {
+    throw new ApiError(409, "participant_binding_mismatch", "Participant ID or name could not be confirmed");
+  }
+  const identityAlreadyRegistered = Boolean(invitation.identity_verifier_hex);
+  if (identityAlreadyRegistered) {
+    const identityMatches = invitation.identity_normalization_version
+        === proposedIdentity.normalization_version
+      && invitation.identity_verifier_version === proposedIdentity.verifier_version
+      && await participantIdentityVerifierEqual(
+        invitation.identity_verifier_hex,
+        proposedIdentity.verifier_hex,
+      );
+    if (!identityMatches) {
+      throw new ApiError(409, "participant_binding_mismatch", "Participant ID or name could not be confirmed");
+    }
   }
   if (["completed", "withdrawn"].includes(invitation.visit_status)) {
     throw new ApiError(409, "visit_closed", "This visit is already closed", { status: invitation.visit_status });
@@ -576,7 +590,40 @@ export async function redeemInvitation(request, env) {
   const sessionTokenHash = await sha256Hex(rawSessionToken);
   const expiresAtMs = nowMs + numericEnv(env, "SESSION_TTL_SECONDS", 43_200) * 1000;
   try {
-    const statements = [
+    const statements = [];
+    if (!identityAlreadyRegistered) {
+      statements.push(
+        env.DB.prepare(`
+          INSERT INTO participant_identity_bindings (
+            participant_uuid, verifier_hex, normalization_version, verifier_version,
+            created_at_ms, last_confirmed_at_ms, confirmation_count
+          ) VALUES (?, ?, ?, ?, ?, ?, 1)
+        `).bind(
+          invitation.participant_uuid,
+          proposedIdentity.verifier_hex,
+          proposedIdentity.normalization_version,
+          proposedIdentity.verifier_version,
+          nowMs,
+          nowMs,
+        ),
+        env.DB.prepare(`
+          INSERT INTO audit_log (
+            audit_uuid, actor_type, action, participant_uuid, visit_uuid,
+            server_at_ms, details_json
+          ) VALUES (?, 'participant', 'participant_identity_registered', ?, ?, ?, ?)
+        `).bind(
+          crypto.randomUUID(),
+          invitation.participant_uuid,
+          invitation.visit_uuid,
+          nowMs,
+          stableJson({
+            normalization_version: proposedIdentity.normalization_version,
+            source: "first_invitation_redeem",
+          }),
+        ),
+      );
+    }
+    statements.push(
       env.DB.prepare(`
         UPDATE visits
         SET active_session_epoch = ?,
@@ -614,11 +661,6 @@ export async function redeemInvitation(request, env) {
         WHERE invite_uuid = ? AND status = 'active'
       `).bind(nowMs, nowMs, invitation.invite_uuid),
       env.DB.prepare(`
-        UPDATE participant_identity_bindings
-        SET last_confirmed_at_ms = ?, confirmation_count = confirmation_count + 1
-        WHERE participant_uuid = ? AND verifier_hex = ?
-      `).bind(nowMs, invitation.participant_uuid, invitation.identity_verifier_hex),
-      env.DB.prepare(`
         INSERT INTO audit_log (
           audit_uuid, actor_type, action, participant_uuid, visit_uuid, server_at_ms, details_json
         ) VALUES (?, 'participant', 'invitation_redeemed', ?, ?, ?, ?)
@@ -629,7 +671,14 @@ export async function redeemInvitation(request, env) {
         nowMs,
         stableJson({ epoch, client_instance_id: clientInstanceId }),
       ),
-    ];
+    );
+    if (identityAlreadyRegistered) {
+      statements.push(env.DB.prepare(`
+        UPDATE participant_identity_bindings
+        SET last_confirmed_at_ms = ?, confirmation_count = confirmation_count + 1
+        WHERE participant_uuid = ? AND verifier_hex = ?
+      `).bind(nowMs, invitation.participant_uuid, proposedIdentity.verifier_hex));
+    }
     statements.push(
       env.DB.prepare(`
         UPDATE participation_interruptions

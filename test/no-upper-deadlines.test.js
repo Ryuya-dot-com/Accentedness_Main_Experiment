@@ -26,7 +26,6 @@ async function createParticipant(participantId, issuePreInvitation = true) {
     token: ADMIN_TOKEN,
     body: {
       participant_id: participantId,
-      participant_name: "Test Participant",
       issue_pre_invitation: issuePreInvitation,
     },
   });

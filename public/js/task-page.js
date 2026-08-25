@@ -18,7 +18,7 @@ document.getElementById("app").innerHTML = `
     <p id="page-description" class="lead"></p>
     <form id="participant-identity-form" class="identity-form" autocomplete="off" hidden>
       <h2>参加者情報の確認</h2>
-      <p>担当者から案内された参加者IDと、登録した氏名を入力してください。</p>
+      <p>担当者から案内された参加者IDと、ご自身の氏名を入力してください。Preの初回入力を、直後・遅延セッションで同じ入力か照合するために使います。</p>
       <div class="identity-fields">
         <label>
           <span>参加者ID</span>

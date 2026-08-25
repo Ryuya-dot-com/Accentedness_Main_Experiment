@@ -21,7 +21,7 @@ describe("completed-session expiry", () => {
     const created = await jsonRequest("/api/admin/participants", {
       method: "POST",
       token: ADMIN_TOKEN,
-      body: { participant_id: 810_001, participant_name: "Test Participant" },
+      body: { participant_id: 810_001 },
     });
     const invitationToken = new URLSearchParams(
       new URL(created.json.invitation.invitation_url).hash.slice(1),

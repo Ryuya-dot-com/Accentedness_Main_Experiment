@@ -1,4 +1,5 @@
--- Participant-entered identity is a confirmation of the researcher-bound invite.
+-- The participant's first successful invitation redemption binds the name verifier.
+-- Later redemptions confirm that the participant supplies the same normalized name.
 -- The plaintext name is deliberately never stored: only a domain-separated HMAC
 -- verifier created with IDENTITY_SECRET is persisted.
 CREATE TABLE participant_identity_bindings (

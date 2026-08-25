@@ -14,7 +14,7 @@
 
 Picture Matching は行いません。preではPicture Namingだけを行い、L2-to-L1は行いません。直後・遅延のテスト順はPicture Naming、L2-to-L1で固定します。課題順を固定する理由は、L2-to-L1で正答語を聞くことがPicture Namingを促進するテスト効果を避けるためです。
 
-## 2. 参加者ID、配布先確認、学習時アクセント
+## 2. 参加者ID、氏名入力の継続照合、学習時アクセント
 
 正の10進整数だけを参加者IDとして受け付けます。先頭ゼロ、文字列ラベル、0、負数、小数、JavaScriptの安全整数範囲外は拒否します。
 
@@ -26,11 +26,11 @@ Picture Matching は行いません。preではPicture Namingだけを行い、L
 
 同じIDを再登録しても、新しい条件やmanifestは生成されません。既存の不変manifestを再利用します。
 
-管理者は、募集台帳で対応づけた数値IDと氏名を同時に入力して参加者を作成します。氏名は配布先確認のための一時入力であり、割付には使いません。serverは氏名をNFKC正規化し、Unicode空白を1個へ畳んで前後を除き、Roman textを小文字化します。制御文字・改行・bidi制御文字、80 Unicode code point超、256 UTF-8 byte超は拒否します。
+管理者は数値IDだけを入力して参加者を作成・参照し、氏名を転記しません。参加者はPre招待の初回redeem時にIDと氏名を入力します。serverは氏名をNFKC正規化し、Unicode空白を1個へ畳んで前後を除き、Roman textを小文字化します。制御文字・改行・bidi制御文字、80 Unicode code point超、256 UTF-8 byte超は拒否します。
 
-正規化済み氏名は、専用の`IDENTITY_SECRET`をkeyとして、participant UUID、数値ID、正規化版、verifier版を含むdomain-separated HMAC-SHA-256へ変換します。D1に保存するのはHMACとversion、確認回数・時刻だけで、平文氏名はD1、R2、API応答、log、browser storage、ZIPへ残しません。trial responseとtelemetry eventはtask/type別のfield allowlist以外をserverで拒否し、将来のclient回帰で氏名fieldが分析データへ混入する経路も遮断します。同じIDと正規化後に同じ氏名の再登録は冪等です。別氏名はHTTP 409となり、既存HMACを上書きしません。
+正規化済み氏名は、専用の`IDENTITY_SECRET`をkeyとして、participant UUID、数値ID、正規化版、verifier版を含むdomain-separated HMAC-SHA-256へ変換します。初回binding、visit開始、session作成、招待redeem、auditは同じD1 batchで原子的に確定します。D1に保存するのはHMACとversion、確認回数・時刻だけで、平文氏名はD1、R2、API応答、log、browser storage、ZIPへ残しません。trial responseとtelemetry eventはtask/type別のfield allowlist以外をserverで拒否します。後続redeemで正規化後に同じ氏名なら確認回数を増やし、別氏名ならHTTP 409として既存HMACを上書きしません。
 
-参加者はraw招待tokenを含む新しいlinkをredeemするとき、IDと氏名の両方を入力します。不足・不一致は同じ汎用エラーとなり、visit、session、招待redeem回数、本人確認回数、監査logを一切変更しません。redeem後の同じsession内では平文氏名を保持せず、session tokenだけを使います。`0006`以前の参加者は管理者が外部募集台帳を確認して明示的にHMAC bindingを追加するまで招待を発行できません。参加終了・離脱後もIDは再利用しません。
+初回アクセスの認可は、手動配布されたraw招待tokenと招待に一致する数値IDが担います。初回氏名は募集台帳との照合済み本人情報ではなく、その後のImmediate・Delayedで同じ入力を要求する継続確認情報です。ID不一致・氏名欠落・競合は汎用エラーとなり、binding、visit、session、招待redeem回数、確認回数、監査logを一切変更しません。binding後の氏名不一致も同じく無変更です。redeem後の同じsession内では平文氏名を保持せず、session tokenだけを使います。bindingのない既存参加者も、次の有効な招待を最初に正常redeemした時点でbindingします。参加終了・離脱後もIDは再利用しません。
 
 学習時アクセント、24-cell、manifest seedは引き続き数値IDだけから決まり、氏名やHMACは割付へ影響しません。`IDENTITY_SECRET`は`RANDOMIZATION_SECRET`や`ADMIN_TOKEN`と分離し、既存bindingを照合する全期間で固定します。
 

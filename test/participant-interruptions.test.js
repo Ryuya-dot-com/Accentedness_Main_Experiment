@@ -37,11 +37,10 @@ async function createParticipant(participantId) {
     method: "POST",
     body: {
       participant_id: participantId,
-      participant_name: PARTICIPANT_NAME,
     },
   });
   expect(created.response.status).toBe(201);
-  expect(created.json.participant.identity_registered).toBe(true);
+  expect(created.json.participant.identity_registered).toBe(false);
   return created.json;
 }
 

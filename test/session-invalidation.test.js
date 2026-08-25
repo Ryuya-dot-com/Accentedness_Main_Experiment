@@ -27,7 +27,7 @@ async function createAndRedeemPre(participantId) {
   const createdResult = await api("/api/admin/participants", {
     method: "POST",
     token: ADMIN_TOKEN,
-    body: { participant_id: participantId, participant_name: "Test Participant" },
+    body: { participant_id: participantId },
   });
   expect(createdResult.response.status).toBe(201);
   const created = createdResult.json;

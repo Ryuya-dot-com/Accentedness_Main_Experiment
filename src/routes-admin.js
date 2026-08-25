@@ -5,11 +5,6 @@ import { ApiError, jsonResponse, readJson, requireMethod, requireUuid } from "./
 import { requireAdmin } from "./lib/auth.js";
 import { collectionConfiguration } from "./lib/config.js";
 import { DELAY_MINIMUM_DAYS } from "./lib/protocol.js";
-import {
-  ParticipantIdentityError,
-  createParticipantIdentityBinding,
-  participantIdentityVerifierEqual,
-} from "./lib/participant-identity.js";
 
 function assertProductionCollectionSafe(env) {
   const configuration = collectionConfiguration(env);
@@ -36,101 +31,16 @@ function assertProductionCollectionSafe(env) {
 
 async function visitForIssue(db, visitUuid) {
   return db.prepare(`
-    SELECT v.*, p.numeric_id, p.status AS participant_status,
-      pib.verifier_hex AS identity_verifier_hex
+    SELECT v.*, p.numeric_id, p.status AS participant_status
     FROM visits v JOIN participants p ON p.participant_uuid = v.participant_uuid
-    LEFT JOIN participant_identity_bindings pib
-      ON pib.participant_uuid = p.participant_uuid
     WHERE v.visit_uuid = ? LIMIT 1
   `).bind(visitUuid).first();
-}
-
-function mapIdentityError(error) {
-  if (!(error instanceof ParticipantIdentityError)) throw error;
-  if (error.code === "identity_secret_unconfigured") {
-    throw new ApiError(503, "identity_verification_unconfigured", "Participant identity verification is not configured");
-  }
-  throw new ApiError(400, error.code, error.message);
-}
-
-async function identityBindingFor(env, participantUuid, numericId, participantName) {
-  try {
-    return await createParticipantIdentityBinding({
-      identitySecret: env.IDENTITY_SECRET,
-      participantUuid,
-      participantId: numericId,
-      participantName,
-    });
-  } catch (error) {
-    return mapIdentityError(error);
-  }
-}
-
-async function bindOrVerifyExistingIdentity(env, participant, numericId, participantName, nowMs) {
-  const proposed = await identityBindingFor(
-    env,
-    participant.participant_uuid,
-    numericId,
-    participantName,
-  );
-  if (participant.identity_verifier_hex) {
-    const matches = participant.identity_normalization_version === proposed.normalization_version
-      && participant.identity_verifier_version === proposed.verifier_version
-      && await participantIdentityVerifierEqual(
-        participant.identity_verifier_hex,
-        proposed.verifier_hex,
-      );
-    if (!matches) {
-      throw new ApiError(409, "participant_binding_mismatch", "Participant ID and name do not match the registered recipient");
-    }
-    return participant;
-  }
-
-  try {
-    await env.DB.batch([
-      env.DB.prepare(`
-        INSERT INTO participant_identity_bindings (
-          participant_uuid, verifier_hex, normalization_version, verifier_version,
-          created_at_ms
-        ) VALUES (?, ?, ?, ?, ?)
-      `).bind(
-        participant.participant_uuid,
-        proposed.verifier_hex,
-        proposed.normalization_version,
-        proposed.verifier_version,
-        nowMs,
-      ),
-      env.DB.prepare(`
-        INSERT INTO audit_log (
-          audit_uuid, actor_type, action, participant_uuid, server_at_ms, details_json
-        ) VALUES (?, 'admin', 'participant_identity_registered', ?, ?, ?)
-      `).bind(
-        crypto.randomUUID(),
-        participant.participant_uuid,
-        nowMs,
-        stableJson({ normalization_version: proposed.normalization_version }),
-      ),
-    ]);
-  } catch {
-    const raced = await findParticipantByNumericId(env.DB, numericId);
-    if (!raced?.identity_verifier_hex
-        || raced.identity_normalization_version !== proposed.normalization_version
-        || raced.identity_verifier_version !== proposed.verifier_version
-        || !(await participantIdentityVerifierEqual(raced.identity_verifier_hex, proposed.verifier_hex))) {
-      throw new ApiError(409, "participant_binding_mismatch", "Participant ID and name do not match the registered recipient");
-    }
-    return raced;
-  }
-  return findParticipantByNumericId(env.DB, numericId);
 }
 
 async function issueInvitation(env, requestUrl, visitUuid, nowMs) {
   assertProductionCollectionSafe(env);
   const visit = await visitForIssue(env.DB, visitUuid);
   if (!visit) throw new ApiError(404, "visit_not_found", "Visit was not found");
-  if (!visit.identity_verifier_hex) {
-    throw new ApiError(409, "participant_identity_not_registered", "Register the participant recipient before issuing an invitation");
-  }
   if (visit.participant_status === "withdrawn") {
     throw new ApiError(409, "participant_withdrawn", "Cannot issue an invitation after participation has ended");
   }
@@ -248,6 +158,13 @@ export async function createParticipant(request, env) {
   await requireAdmin(request, env);
   assertProductionCollectionSafe(env);
   const body = await readJson(request);
+  if (Object.hasOwn(body, "participant_name")) {
+    throw new ApiError(
+      422,
+      "participant_name_not_accepted",
+      "Participant names are entered by participants, not administrators",
+    );
+  }
   let numericId;
   try {
     numericId = canonicalParticipantId(body.participant_id);
@@ -268,32 +185,9 @@ export async function createParticipant(request, env) {
       randomizationSecret: env.RANDOMIZATION_SECRET,
     });
     const nowMs = Date.now();
-    const identityBinding = await identityBindingFor(
-      env,
-      design.assignment.participantUuid,
-      numericId,
-      body.participant_name,
-    );
-    const inserted = await insertParticipantDesign(env.DB, design, identityBinding, nowMs);
+    const inserted = await insertParticipantDesign(env.DB, design, nowMs);
     participant = await findParticipantByNumericId(env.DB, numericId);
     created = !inserted.existing;
-    if (inserted.existing) {
-      participant = await bindOrVerifyExistingIdentity(
-        env,
-        participant,
-        numericId,
-        body.participant_name,
-        nowMs,
-      );
-    }
-  } else {
-    participant = await bindOrVerifyExistingIdentity(
-      env,
-      participant,
-      numericId,
-      body.participant_name,
-      Date.now(),
-    );
   }
   let invitation = null;
   if (body.issue_pre_invitation !== false) {
@@ -310,7 +204,7 @@ export async function createParticipant(request, env) {
       pre_visit_id: participant.pre_visit_uuid,
       immediate_visit_id: participant.immediate_visit_uuid,
       delayed_visit_id: participant.delayed_visit_uuid,
-      identity_registered: true,
+      identity_registered: Boolean(participant.identity_verifier_hex),
     },
     invitation,
   }, created ? 201 : 200);

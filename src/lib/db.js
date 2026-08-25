@@ -70,7 +70,7 @@ export async function findParticipantByNumericId(db, numericId) {
   `).bind(numericId).first();
 }
 
-export async function insertParticipantDesign(db, design, identityBinding, nowMs) {
+export async function insertParticipantDesign(db, design, nowMs) {
   const existing = await findParticipantByNumericId(db, design.assignment.numericId);
   if (existing) return { existing: true, participant: existing };
 
@@ -102,18 +102,6 @@ export async function insertParticipantDesign(db, design, identityBinding, nowMs
       assignment.assetVersion,
       stableJson(assignment),
       nowMs,
-      nowMs,
-    ),
-    db.prepare(`
-      INSERT INTO participant_identity_bindings (
-        participant_uuid, verifier_hex, normalization_version, verifier_version,
-        created_at_ms
-      ) VALUES (?, ?, ?, ?, ?)
-    `).bind(
-      assignment.participantUuid,
-      identityBinding.verifier_hex,
-      identityBinding.normalization_version,
-      identityBinding.verifier_version,
       nowMs,
     ),
     db.prepare(`

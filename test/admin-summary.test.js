@@ -64,7 +64,6 @@ describe("admin allocation monitoring", () => {
         method: "POST",
         body: {
           participant_id: participantId,
-          participant_name: "Test Participant",
           issue_pre_invitation: false,
         },
       });
@@ -98,7 +97,7 @@ describe("admin allocation monitoring", () => {
   it("separates invitation, redemption, first trial, behavioral completion, and finalization", async () => {
     const created = await adminRequest("/api/admin/participants", {
       method: "POST",
-      body: { participant_id: 41, participant_name: "Test Participant" },
+      body: { participant_id: 41 },
     });
     expect(created.response.status).toBe(201);
 
@@ -106,19 +105,19 @@ describe("admin allocation monitoring", () => {
     // a staggered cohort so adjacent funnel stages cannot accidentally collapse.
     const assignedOnly = await adminRequest("/api/admin/participants", {
       method: "POST",
-      body: { participant_id: 113, participant_name: "Test Participant", issue_pre_invitation: false },
+      body: { participant_id: 113, issue_pre_invitation: false },
     });
     const issuedOnly = await adminRequest("/api/admin/participants", {
       method: "POST",
-      body: { participant_id: 185, participant_name: "Test Participant" },
+      body: { participant_id: 185 },
     });
     const redeemedOnly = await adminRequest("/api/admin/participants", {
       method: "POST",
-      body: { participant_id: 257, participant_name: "Test Participant" },
+      body: { participant_id: 257 },
     });
     const firstTrialOnly = await adminRequest("/api/admin/participants", {
       method: "POST",
-      body: { participant_id: 329, participant_name: "Test Participant" },
+      body: { participant_id: 329 },
     });
     for (const cohort of [assignedOnly, issuedOnly, redeemedOnly, firstTrialOnly]) {
       expect(cohort.response.status).toBe(201);
