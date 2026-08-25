@@ -2,6 +2,34 @@ export function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+export function countdownState(deadlinePerfMs, durationMs, nowPerfMs) {
+  const safeDurationMs = Math.max(1, Number(durationMs) || 0);
+  const remainingMs = Math.max(0, Number(deadlinePerfMs) - Number(nowPerfMs));
+  return {
+    remainingMs,
+    remainingSeconds: Math.ceil(remainingMs / 1_000),
+    fraction: Math.max(0, Math.min(1, remainingMs / safeDurationMs)),
+  };
+}
+
+export function progressState(label, completedInput, totalInput, { inProgress = false } = {}) {
+  const total = Math.max(0, Math.trunc(Number(totalInput) || 0));
+  const completed = Math.max(0, Math.min(total, Math.trunc(Number(completedInput) || 0)));
+  const position = inProgress && completed < total ? completed + 1 : completed;
+  return {
+    completed,
+    total,
+    position,
+    percent: total > 0 ? position / total * 100 : 0,
+    labelText: inProgress && completed < total
+      ? `${label}　試行 ${position}/${total}`
+      : `${label}　${completed}/${total} 完了`,
+    valueText: inProgress && completed < total
+      ? `${label}、現在の試行 ${position}/${total}、完了 ${completed}/${total}`
+      : `${label}、完了 ${completed}/${total}`,
+  };
+}
+
 export function validateBrowserEnvironment({ microphone }) {
   const failures = [];
   const userAgent = navigator.userAgent ?? "";
@@ -57,7 +85,9 @@ export class ExperimentUi {
     this.startButton = document.getElementById("start-button");
     this.welcomeStatus = document.getElementById("welcome-status");
     this.progressLabel = document.getElementById("progress-label");
+    this.progressTrack = document.getElementById("progress-track");
     this.progressFill = document.getElementById("progress-fill");
+    this.progressDetail = document.getElementById("progress-detail");
     this.saveState = document.getElementById("save-state");
     this.stage = document.getElementById("stage");
     this.fixation = document.getElementById("fixation");
@@ -66,13 +96,20 @@ export class ExperimentUi {
     this.placeholderGloss = document.getElementById("placeholder-gloss");
     this.audioCue = document.getElementById("audio-cue");
     this.recording = document.getElementById("recording-indicator");
+    this.responseTimer = document.getElementById("response-timer");
+    this.responseTimerLabel = document.getElementById("response-timer-label");
+    this.responseTimerValue = document.getElementById("response-timer-value");
+    this.responseTimerFill = document.getElementById("response-timer-fill");
     this.message = document.getElementById("stage-message");
     this.continueButton = document.getElementById("continue-button");
     this.downloadLink = document.getElementById("download-link");
     this.taskStatus = document.getElementById("task-status");
     this.activeImageUrl = null;
     this.activeDownloadUrl = null;
+    this.responseTimerFrame = null;
+    this.responseTimerRun = 0;
     window.addEventListener("pagehide", () => {
+      this.stopResponseTimer();
       if (this.activeDownloadUrl) URL.revokeObjectURL(this.activeDownloadUrl);
     }, { once: true });
   }
@@ -112,9 +149,11 @@ export class ExperimentUi {
   beginTask() {
     this.welcome.hidden = true;
     this.task.hidden = false;
+    this.task.scrollIntoView({ block: "start" });
   }
 
   resetStage() {
+    this.stopResponseTimer();
     if (this.activeImageUrl) {
       URL.revokeObjectURL(this.activeImageUrl);
       this.activeImageUrl = null;
@@ -166,16 +205,68 @@ export class ExperimentUi {
     this.taskStatus.textContent = text;
   }
 
-  updateProgress(label, completed, total) {
-    const percent = total > 0 ? Math.max(0, Math.min(100, completed / total * 100)) : 0;
-    this.progressLabel.textContent = `${label}　${completed}/${total}`;
-    this.progressFill.style.width = `${percent.toFixed(2)}%`;
+  updateProgress(label, completed, total, options = {}) {
+    const progress = progressState(label, completed, total, options);
+    this.progressLabel.textContent = progress.labelText;
+    this.progressFill.style.width = `${progress.percent.toFixed(2)}%`;
+    this.progressTrack.setAttribute("aria-valuemax", String(progress.total));
+    this.progressTrack.setAttribute("aria-valuenow", String(progress.position));
+    this.progressTrack.setAttribute("aria-valuetext", progress.valueText);
+    this.progressDetail.textContent = `完了 ${progress.completed}/${progress.total}。最終画面で「全試行・録音の保存完了」と表示されるまで閉じないでください。`;
+  }
+
+  startResponseTimer(deadlinePerfMs, durationMs, label = "回答時間") {
+    this.stopResponseTimer();
+    const run = this.responseTimerRun;
+    this.responseTimerLabel.textContent = label;
+    this.responseTimer.hidden = false;
+    let priorSeconds = null;
+    const tick = (nowPerfMs) => {
+      if (run !== this.responseTimerRun) return;
+      const state = countdownState(deadlinePerfMs, durationMs, nowPerfMs);
+      if (state.remainingSeconds !== priorSeconds) {
+        this.responseTimerValue.textContent = state.remainingSeconds > 0
+          ? `残り ${state.remainingSeconds} 秒`
+          : "時間終了";
+        this.responseTimer.setAttribute(
+          "aria-label",
+          state.remainingSeconds > 0
+            ? `${label}、残り${state.remainingSeconds}秒`
+            : `${label}、時間終了`,
+        );
+        priorSeconds = state.remainingSeconds;
+      }
+      this.responseTimerFill.style.transform = `scaleX(${state.fraction.toFixed(5)})`;
+      this.responseTimer.classList.toggle("ending", state.remainingMs > 0 && state.remainingMs <= 3_000);
+      if (state.remainingMs > 0) {
+        this.responseTimerFrame = window.requestAnimationFrame(tick);
+      } else {
+        this.responseTimerFrame = null;
+      }
+    };
+    this.responseTimerFrame = window.requestAnimationFrame(tick);
+  }
+
+  stopResponseTimer() {
+    this.responseTimerRun += 1;
+    if (this.responseTimerFrame !== null) {
+      window.cancelAnimationFrame(this.responseTimerFrame);
+      this.responseTimerFrame = null;
+    }
+    if (this.responseTimer) {
+      this.responseTimer.hidden = true;
+      this.responseTimer.classList.remove("ending");
+    }
   }
 
   setSaveState(state) {
     const pending = state !== "saved";
     this.saveState.classList.toggle("pending", pending);
-    this.saveState.textContent = state === "saving" ? "保存中…" : state === "queued" ? "再送待ち" : "保存済み";
+    this.saveState.textContent = state === "saving"
+      ? "データ保存：同期中…"
+      : state === "queued"
+        ? "データ保存：未送信あり"
+        : "データ保存：この時点まで完了";
   }
 
   async prompt(message, buttonLabel = "続ける") {
@@ -283,6 +374,7 @@ export class ExperimentUi {
   }
 
   completed(message, { preserveDownload = false } = {}) {
+    this.stopResponseTimer();
     if (preserveDownload) {
       [
         this.fixation,
@@ -296,6 +388,10 @@ export class ExperimentUi {
       this.resetStage();
     }
     this.progressFill.style.width = "100%";
+    const progressMax = this.progressTrack.getAttribute("aria-valuemax") ?? "1";
+    this.progressTrack.setAttribute("aria-valuenow", progressMax);
+    this.progressTrack.setAttribute("aria-valuetext", "セッションの全試行と録音の保存完了");
+    this.progressLabel.textContent = "セッション完了";
     this.message.textContent = message;
     this.message.hidden = false;
     if (preserveDownload && this.activeDownloadUrl) {
@@ -305,11 +401,13 @@ export class ExperimentUi {
       this.continueButton.hidden = false;
       this.continueButton.addEventListener("click", () => window.location.reload(), { once: true });
     }
-    this.saveState.textContent = "完了";
+    this.progressDetail.textContent = "全試行・録音の保存完了を研究用サーバーで確認しました。";
+    this.saveState.textContent = "全試行・録音の保存完了";
     this.saveState.classList.remove("pending");
   }
 
   fatal(error) {
+    this.stopResponseTimer();
     this.welcome.hidden = true;
     this.task.hidden = true;
     this.fatalPanel.hidden = false;

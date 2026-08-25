@@ -21,7 +21,7 @@
     <li><label><input type="checkbox"> G4 Main-data-ready: 収集用bundleとproduction環境を固定し、soft launchを通過した</label></li>
   </ul>
   <p><strong>Gate依存:</strong> G2 = G1＋第5節、G3 = G2＋第6–7節、G4 = G3＋trigger済み第8節＋第9–10節。下位gateを飛ばして上位だけをcheckedにしない。</p>
-  <p><strong>現在の単一next action:</strong> 24語を変更せず、実Chrome・実microphoneを使うclean-path ID 2のPre pilotを開始する。ID 1はsynthetic API smoke専用で再利用しない。</p>
+  <p><strong>現在の単一next action:</strong> ID 2で観測した完了認識とserver正本の乖離を解消するUX版を非本番へ配備し、その同一versionで次の未使用ID 3からPre clean-path pilotをやり直す。ID 1はsynthetic API smoke、ID 2はUX discovery専用として再利用しない。</p>
   <p><strong>G1 evidence（2026-08-26）:</strong> code baseline <code>800216f</code>に対し<code>npm run verify</code>を実行し、types check、67 tests、2 secrets × ID 1–2160の4,320 design監査、development/production deploy dry-runが成功した。</p>
 
   <h2>1. 固定済みの実験契約</h2>
@@ -69,6 +69,11 @@
     <li><label><input type="checkbox" checked> 5日未満のDelayedを拒否し、5日以降は遅れても受付する</label></li>
     <li><label><input type="checkbox" checked> exact 5-day境界と400日後の受付を自動testし、上限なしを実時間で待ち続けて検証しない</label></li>
     <li><label><input type="checkbox" checked> participant-facingのエラーは、再試行可能・担当者連絡・進行停止を区別して表示する</label></li>
+    <li><label><input type="checkbox" checked> 各試行前の既存準備・試行間時間内に高contrastの注視点<code>+</code>を表示し、L2-to-L1でも音声前に表示する</label></li>
+    <li><label><input type="checkbox" checked> 練習・本番を分け、現在試行と完了試行を明記したsticky progress barを常時表示する</label></li>
+    <li><label><input type="checkbox" checked> Picture Namingは画像onset、L2-to-L1は音声offsetを起点とする既存10秒deadlineから、表示専用countdownを算出する</label></li>
+    <li><label><input type="checkbox" checked> countdownは録音停止を制御せず、background throttlingや描画遅延でも回答窓を延長しない</label></li>
+    <li><label><input type="checkbox" checked> 部分保存を「この時点まで保存」、visit完了を「全試行・録音の保存完了」と表示し、同一表現を使わない</label></li>
   </ul>
 
   <h2>4. データ完全性とローカル保存</h2>
@@ -105,8 +110,8 @@
   <p><strong>G2 evidence（2026-08-26）:</strong> URL <code>https://accentedness-main-experiment.komuro-4121.workers.dev</code>、runtime source commit <code>6057d6d</code>、最新deployment version <code>3b8cef76-b31e-4749-8751-682736f4f1d8</code>（code変更を伴わない非本番ADMIN_TOKEN rotation後）。bindingsはD1 <code>main-experiment</code>、R2 <code>main-experiment-recordings</code> / <code>main-experiment-stimuli</code>。versionは<code>main-v3-placeholder-assets</code> / <code>hmac-sha256+xoshiro128ss-v1</code> / <code>placeholder-v1</code>。8 HTML routesは200、health・認証・secret名・private R2を確認した。ID 1は<code>synthetic-api-smoke</code>専用で、今後のclean-path件数照合へ再利用しない。</p>
 
   <h2>6. 敵対的E2E pilot — プレースホルダーで実施</h2>
-  <p>UIの完了表示ではなく、D1/R2/ZIPの実体で成功を判定する。clean-pathは次の未使用連番ID 2から開始し、障害注入用IDと分ける。Delayedの実時計pilotは5日以上を要するが、その待機中に他の項目を並行する。</p>
-  <p><strong>G3進行中（2026-08-26）:</strong> clean-path用ID 2を非本番に作成し、設計どおりtraining accent <code>chinese</code>、counterbalance cell 1であることを確認した。D1は3 visits、24 item assignments、6 segments、276 manifest trials、active Pre invitation 1件、session / attempt / recording各0件で、実施前の原子的な初期状態にある。招待tokenは文書・chatへ記録せず、mode <code>0600</code>の一時local handoffだけに保持する。これはpilot準備の証拠であり、下記clean-path完遂項目を完了扱いにはしない。</p>
+  <p>UIの完了表示ではなく、D1/R2/ZIPの実体で成功を判定する。ID 2はUX discovery pilotへ再分類し、修正版のclean-pathは次の未使用連番ID 3から開始して障害注入用IDと分ける。Delayedの実時計pilotは5日以上を要するが、その待機中に他の項目を並行する。</p>
+  <p><strong>UX discovery evidence（2026-08-26、ID 2）:</strong> 参加者はPre完了と認識したが、D1正本はvisit <code>started</code>、canonical response / uploaded WAV各1/26、第2練習試行はstimulus onset後・response未保存・recording <code>pending</code>だった。第1WAVは48 kHz、10.037秒、RMS 0.0234、clipping 0で正常であり、内部参照矛盾は0件だった。Immediate招待はserver gateにより未発行のまま維持した。この乖離を、注視点の知覚性、progressの意味、10秒窓、部分保存とvisit完了の区別が不十分なUX defectとして扱う。ID 2を修正前後混在のclean-path証拠へ転用しない。</p>
   <ul>
     <li><label><input type="checkbox"> clean-path専用IDで、実Chrome・実マイクからpre → Immediate → Delayedの6 URLを中断なしで所定順に完遂する</label></li>
     <li><label><input type="checkbox"> pre完了前のImmediate、Immediate保存前のDelayed、5日未満のDelayedが拒否されることを確認する</label></li>

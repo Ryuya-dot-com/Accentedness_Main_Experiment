@@ -61,6 +61,35 @@ describe("participant ID contract", () => {
 });
 
 describe("participant-level manifest invariants", () => {
+  it("keeps every participant-facing timing contract unchanged", async () => {
+    const design = await designFor(2);
+    const allTrials = [
+      ...design.pre.trials,
+      ...design.immediate.trials,
+      ...design.delayed.trials,
+    ];
+    for (const trial of allTrials.filter((candidate) => candidate.segment === "learning")) {
+      expect(trial.protocol.timing).toEqual({
+        visualDurationMs: 5_000,
+        audioOnsetMs: 750,
+        interTrialMs: 650,
+      });
+    }
+    for (const trial of allTrials.filter((candidate) => candidate.segment === "picture_naming")) {
+      expect(trial.protocol.timing).toEqual({
+        responseWindowMs: 10_000,
+        interTrialMs: 650,
+      });
+    }
+    for (const trial of allTrials.filter((candidate) => candidate.segment === "l2_to_l1")) {
+      expect(trial.protocol.timing).toEqual({
+        preAudioRecordingMs: 150,
+        responseWindowAfterAudioMs: 10_000,
+        interTrialMs: 650,
+      });
+    }
+  });
+
   it("satisfies learning, test, timing, and timepoint contracts", async () => {
     for (const id of [1, 2, 3, 4, 72, 73, 216, 217]) {
       const design = await designFor(id);

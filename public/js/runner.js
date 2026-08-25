@@ -375,13 +375,14 @@ export class ExperimentRunner {
   async runLearningTrial(trial, loaded, nextTrial = null) {
     if (!loaded.cueBuffer) throw new Error("学習音声を読み込めませんでした。");
     const protocol = trial.protocol.timing;
+    this.ui.showFixation();
+    this.ui.setTaskStatus("中央の＋を見て、次の絵と英単語に備えてください。");
     if (loaded.cueBuffer.duration * 1000 + protocol.audioOnsetMs > protocol.visualDurationMs) {
       throw new Error("学習音声が5秒の提示窓に収まりません。刺激担当者へ連絡してください。");
     }
     const authorization = await this.authorizeTrial(trial);
     this.primeNextTrial(nextTrial);
     this.visibilityInterrupted = false;
-    this.ui.showFixation();
     const targetOnsetPerfMs = await this.prepareOnset(300);
     this.requireVisibleBeforeOnset();
     this.activeTrial = trial;
@@ -391,6 +392,7 @@ export class ExperimentRunner {
       () => this.ui.showVisual(trial, loaded.imageUrl),
       this.audio,
     );
+    this.ui.setTaskStatus("絵と英単語を覚えてください。5秒後に自動で次へ進みます。");
     const onsetLateMs = this.reportOnsetLateness(
       targetOnsetPerfMs,
       onset.performance_time_ms,
@@ -449,10 +451,11 @@ export class ExperimentRunner {
 
   async runPictureNamingTrial(trial, loaded, nextTrial = null) {
     const protocol = trial.protocol.timing;
+    this.ui.showFixation();
+    this.ui.setTaskStatus("中央の＋を見て、次の絵に備えてください。");
     const authorization = await this.authorizeTrial(trial);
     this.primeNextTrial(nextTrial);
     this.visibilityInterrupted = false;
-    this.ui.showFixation();
     const targetOnsetPerfMs = await this.prepareOnset(350);
     this.requireVisibleBeforeOnset();
     this.activeTrial = trial;
@@ -472,6 +475,8 @@ export class ExperimentRunner {
     );
     const responseDeadlinePerfMs = onset.performance_time_ms + protocol.responseWindowMs;
     const responseDeadlineContextS = onset.context_time_s + protocol.responseWindowMs / 1000;
+    this.ui.setTaskStatus("英単語を10秒以内に話してください。答えた後も自動で切り替わるまでお待ちください。");
+    this.ui.startResponseTimer(responseDeadlinePerfMs, protocol.responseWindowMs);
     const analysisStartSeconds = Math.max(0, onset.context_time_s - captureStart.start_context_s);
     const recordingPromise = this.audio.stopCaptureAt(responseDeadlineContextS, analysisStartSeconds);
     void this.sendEvent("picture_naming_visual_onset", {
@@ -515,10 +520,11 @@ export class ExperimentRunner {
   async runL2Trial(trial, loaded, nextTrial = null) {
     if (!loaded.cueBuffer) throw new Error("テスト音声を読み込めませんでした。");
     const protocol = trial.protocol.timing;
+    this.ui.showFixation();
+    this.ui.setTaskStatus("中央の＋を見て、次の英語音声に備えてください。");
     const authorization = await this.authorizeTrial(trial);
     this.primeNextTrial(nextTrial);
     this.visibilityInterrupted = false;
-    this.ui.showAudioCue();
     const targetOnsetPerfMs = await this.prepareOnset(
       350,
       protocol.preAudioRecordingMs + 40,
@@ -541,6 +547,8 @@ export class ExperimentRunner {
     );
     const responseDeadlineContextS = playback.scheduledEndContextS
       + protocol.responseWindowAfterAudioMs / 1000;
+    const responseDeadlinePerfMs = clockAnchor.performance_time_ms
+      + (responseDeadlineContextS - clockAnchor.context_time_s) * 1000;
     const analysisStartSeconds = Math.max(0, playback.scheduledEndContextS - captureStart.start_context_s);
     const recordingPromise = this.audio.stopCaptureAt(responseDeadlineContextS, analysisStartSeconds);
     void this.sendEvent("l2_audio_scheduled", {
@@ -548,12 +556,24 @@ export class ExperimentRunner {
       audio_scheduled_context_s: playback.scheduledStartContextS,
       audio_scheduled_end_context_s: playback.scheduledEndContextS,
     }, trial, authorization.attempt_id).catch(() => {});
-    const playbackEndPromise = playback.ended.then((ended) => {
-      this.ui.setTaskStatus("日本語で答えてください。");
+    const audioCueOnsetPromise = delayUntilPerformance(scheduledAudioOnsetPerfMs).then(() => {
+      this.ui.showAudioCue();
+      this.ui.setRecording(true);
+      this.ui.setTaskStatus("英語音声を聞いてください。音声が終わると10秒の回答時間が始まります。");
+    });
+    const playbackEndPromise = playback.ended.then(async (ended) => {
+      await audioCueOnsetPromise;
+      this.ui.setTaskStatus("日本語で答えてください。回答時間は10秒です。");
+      this.ui.startResponseTimer(
+        responseDeadlinePerfMs,
+        protocol.responseWindowAfterAudioMs,
+      );
       return ended;
     });
-    const recording = await recordingPromise;
-    const playbackEnd = await playbackEndPromise;
+    const [recording, playbackEnd] = await Promise.all([
+      recordingPromise,
+      playbackEndPromise,
+    ]);
     this.ui.showFixation();
     this.ui.setRecording(false);
     this.scheduleNextOnset(recording.stopped_perf_ms, protocol.interTrialMs);

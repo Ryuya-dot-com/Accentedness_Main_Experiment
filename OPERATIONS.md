@@ -123,6 +123,8 @@ npx wrangler deploy --env production --strict --no-x-provision
 
 `GET /api/health` の `collection_ready` が `true` であることを確認します。さらに、非本番IDで全導線を実施し、D1応答数、R2録音数、音声内容、Immediate最終L2-to-L1行動応答のserver受理時刻から遅延目標時刻までが正確に5日であることを確認します。
 
+participant-facing UIを変更した後は、変更前のvisitを同じclean-path証拠へ混ぜません。新しい未使用IDを使い、desktop Chrome 1366×768・zoom 100%を最低基準として、各試行前の注視点、練習から本番へのprogress reset、現在試行と完了数、Picture Naming画像onset後の10秒表示、L2音声終了後の10秒表示、部分保存と「全試行・録音の保存完了」の区別を実画面で確認します。countdownは表示だけを担い、録音停止・刺激順・manifest timingを変更しないことを自動testでも固定します。
+
 参加者向け結果ZIPは3 visit分のWAVをR2から直接streamします。通常の48 kHz mono PCMでは概算130 MiB前後、各録音の上限4 MiBを単純合計した保守的上限では約520 MiBになり得ます。対応するdesktop ChromeではFile System Access APIで選択済みfileへ直接書き、browser memoryへ全量保持しません。転送中に進捗しているZIPを固定15分で切る上限は設けず、response headerの受信開始だけを30秒でtimeoutします。未対応時だけBlob downloadへfallbackするため、本番相当データで直接保存が使われること、生成時間、memory、再試行をpilotしてください。ZIP失敗はすでに完了したvisitやD1/R2正本を取り消しません。
 
 ## 6. preリンクとMain Experimentリンクの手動発行

@@ -39,19 +39,24 @@ async function main() {
     window.location.assign("/immediate-picture-naming/");
     return;
   }
+  const completedBeforeStart = learningTrials.filter((trial) => accepted.has(trial.trial_id)).length;
+  ui.updateProgress("語彙学習", completedBeforeStart, learningTrials.length, {
+    inProgress: remaining.length > 0,
+  });
   await ui.prompt("ヘッドホンの音量を確認します。次の短い確認音が聞こえる音量に調整してください。", "確認音を再生");
   await audio.playCalibrationTone();
   await ui.prompt("確認音がはっきり聞こえたら続けてください。聞こえない場合は担当者に知らせてください。", "続ける");
   await ui.prompt(
-    "これから学習を始めます。\n絵を見ながら、750ミリ秒後に流れる英単語をよく聞いて覚えてください。\n24試行ごとに休憩があります。",
+    "これから144試行の学習を始めます。\n中央の＋に続いて絵が5秒間表示され、絵が出てから750ミリ秒後に英単語が流れます。絵と英単語をよく覚えてください。\n各試行は自動で進み、24試行ごとに休憩があります。",
     "開始",
   );
   for (let trialIndex = 0; trialIndex < remaining.length; trialIndex += 1) {
     const trial = remaining[trialIndex];
     const nextTrial = remaining[trialIndex + 1] ?? null;
     const completed = learningTrials.filter((candidate) => accepted.has(candidate.trial_id)).length;
-    ui.updateProgress("語彙学習", completed, learningTrials.length);
-    ui.setTaskStatus("教材を準備しています。");
+    ui.updateProgress("語彙学習", completed, learningTrials.length, { inProgress: true });
+    ui.showFixation();
+    ui.setTaskStatus("中央の＋を見て、次の絵と英単語に備えてください。");
     const loaded = await runner.preloadTrial(trial);
     await runner.runLearningTrial(trial, loaded, nextTrial);
     accepted.add(trial.trial_id);
@@ -67,8 +72,9 @@ async function main() {
   }
   await runner.flushWithRetry();
   runner.stopMonitoring();
-  ui.completed("学習が終了し、すべて保存されました。これから直後テストへ進みます。");
-  await ui.prompt("直後テストでは、絵を見て英単語を答え、その後、音声を聞いて日本語訳を答えます。", "直後テストを開く");
+  ui.updateProgress("語彙学習", learningTrials.length, learningTrials.length);
+  ui.setSaveState("saved");
+  await ui.prompt("学習144試行は、この時点まで研究用サーバーに保存されました。\n直後テストでは、絵を見て英単語を答え、その後、音声を聞いて日本語訳を答えます。", "直後テストを開く");
   audio.close();
   window.location.assign("/immediate-picture-naming/");
 }

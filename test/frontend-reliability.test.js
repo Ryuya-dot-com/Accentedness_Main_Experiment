@@ -14,7 +14,11 @@ import {
   isQueuedTrialFullyAcknowledged,
 } from "../public/js/outbox.js";
 import { ExperimentRunner } from "../public/js/runner.js";
-import { participantErrorMessage } from "../public/js/ui.js";
+import {
+  countdownState,
+  participantErrorMessage,
+  progressState,
+} from "../public/js/ui.js";
 
 function stateWith({ manifest = [], accepted = [] } = {}) {
   return {
@@ -40,6 +44,53 @@ function runnerFor(state, apiOverrides = {}) {
 }
 
 describe("frontend reliability guards", () => {
+  it("derives countdown text from an absolute deadline without extending after a stalled frame", () => {
+    expect(countdownState(20_000, 10_000, 10_000)).toMatchObject({
+      remainingSeconds: 10,
+      fraction: 1,
+    });
+    expect(countdownState(20_000, 10_000, 10_001).remainingSeconds).toBe(10);
+    expect(countdownState(20_000, 10_000, 11_000).remainingSeconds).toBe(9);
+    expect(countdownState(20_000, 10_000, 19_999).remainingSeconds).toBe(1);
+    expect(countdownState(20_000, 10_000, 20_000)).toMatchObject({
+      remainingSeconds: 0,
+      fraction: 0,
+    });
+    expect(countdownState(20_000, 10_000, 16_000).remainingSeconds).toBe(4);
+    expect(countdownState(20_000, 10_000, 21_000).remainingMs).toBe(0);
+  });
+
+  it("separates the current trial position from durably completed progress", () => {
+    expect(progressState("Picture Naming 練習", 0, 2, { inProgress: true })).toMatchObject({
+      completed: 0,
+      position: 1,
+      total: 2,
+      percent: 50,
+      labelText: "Picture Naming 練習　試行 1/2",
+    });
+    expect(progressState("Picture Naming 練習", 1, 2, { inProgress: true })).toMatchObject({
+      completed: 1,
+      position: 2,
+      labelText: "Picture Naming 練習　試行 2/2",
+    });
+    expect(progressState("Picture Naming 本番", 0, 24, { inProgress: true })).toMatchObject({
+      completed: 0,
+      position: 1,
+      total: 24,
+    });
+    expect(progressState("語彙学習", 24, 144, { inProgress: true })).toMatchObject({
+      completed: 24,
+      position: 25,
+      total: 144,
+    });
+    expect(progressState("L2-to-L1 本番", 24, 24)).toMatchObject({
+      completed: 24,
+      position: 24,
+      percent: 100,
+      labelText: "L2-to-L1 本番　24/24 完了",
+    });
+  });
+
   it("purges a queued trial only after both remote acknowledgements are durable", () => {
     expect(isQueuedTrialFullyAcknowledged({ responseAck: true, recordingAck: true })).toBe(true);
     expect(isQueuedTrialFullyAcknowledged({ responseAck: true, recordingAck: false })).toBe(false);

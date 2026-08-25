@@ -32,13 +32,25 @@ document.getElementById("app").innerHTML = `
   </section>
 
   <section id="task" class="task" hidden>
-    <div class="progress-row">
-      <span id="progress-label"></span>
-      <span id="save-state" class="save-state">保存済み</span>
+    <div class="task-progress">
+      <div class="progress-row">
+        <strong id="progress-label">課題を準備しています</strong>
+        <span id="save-state" class="save-state pending">データ保存：未開始</span>
+      </div>
+      <div
+        id="progress-track"
+        class="progress-track"
+        role="progressbar"
+        aria-labelledby="progress-label"
+        aria-valuemin="0"
+        aria-valuemax="1"
+        aria-valuenow="0"
+        aria-valuetext="課題開始前"
+      ><div id="progress-fill"></div></div>
+      <p id="progress-detail" class="progress-detail">「全試行・録音の保存完了」と表示されるまで、このページを閉じないでください。</p>
     </div>
-    <div class="progress-track" aria-hidden="true"><div id="progress-fill"></div></div>
-    <div id="stage" class="stage" aria-live="polite">
-      <div id="fixation" class="fixation" hidden>+</div>
+    <div id="stage" class="stage" aria-live="polite" tabindex="-1">
+      <div id="fixation" class="fixation" aria-hidden="true" hidden>+</div>
       <img id="stimulus-image" class="stimulus-image" alt="" hidden />
       <div id="placeholder-card" class="placeholder-card" hidden>
         <span class="placeholder-kicker">画像プレースホルダー</span>
@@ -46,6 +58,15 @@ document.getElementById("app").innerHTML = `
       </div>
       <div id="audio-cue" class="audio-cue" hidden aria-label="音声再生中"><span>♪</span></div>
       <div id="recording-indicator" class="recording-indicator" hidden><span></span>録音中</div>
+      <div id="response-timer" class="response-timer" role="timer" aria-live="off" hidden>
+        <div class="response-timer-row">
+          <span id="response-timer-label">回答時間</span>
+          <strong id="response-timer-value">残り10秒</strong>
+        </div>
+        <div class="response-timer-track" aria-hidden="true">
+          <div id="response-timer-fill"></div>
+        </div>
+      </div>
       <div id="stage-message" class="stage-message" hidden></div>
       <button id="continue-button" class="continue-button" type="button" hidden>続ける</button>
       <a id="download-link" class="continue-button button-link" href="#" hidden>ZIPをこのパソコンに保存</a>

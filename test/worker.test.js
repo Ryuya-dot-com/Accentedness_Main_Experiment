@@ -848,6 +848,31 @@ describe("Worker API", () => {
     }
   });
 
+  it("serves the participant-visible progress, fixation, timer, and completion-state contract", async () => {
+    const taskPageResponse = await exports.default.fetch(new Request(`${ORIGIN}/js/task-page.js`));
+    expect(taskPageResponse.status).toBe(200);
+    const taskPage = await taskPageResponse.text();
+    expect(taskPage).toContain('id="progress-track"');
+    expect(taskPage).toContain('role="progressbar"');
+    expect(taskPage).toContain('id="fixation"');
+    expect(taskPage).toContain('aria-hidden="true" hidden>+</div>');
+    expect(taskPage).toContain('id="response-timer"');
+    expect(taskPage).toContain('role="timer" aria-live="off"');
+    expect(taskPage).toContain("全試行・録音の保存完了");
+
+    const uiResponse = await exports.default.fetch(new Request(`${ORIGIN}/js/ui.js`));
+    expect(uiResponse.status).toBe(200);
+    const ui = await uiResponse.text();
+    expect(ui).toContain('this.progressLabel.textContent = "セッション完了"');
+    expect(ui).toContain('"セッションの全試行と録音の保存完了"');
+
+    const stylesResponse = await exports.default.fetch(new Request(`${ORIGIN}/styles.css`));
+    expect(stylesResponse.status).toBe(200);
+    const styles = await stylesResponse.text();
+    expect(styles).toContain(".task-progress");
+    expect(styles).toContain(".response-timer");
+  });
+
   it("does not preload a stimulus across a Picture Naming to L2-to-L1 boundary", async () => {
     const created = await createParticipant(9);
     await env.DB.prepare(`
