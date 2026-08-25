@@ -1,0 +1,24 @@
+{
+  "name": "accentedness-main-experiment",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev --local",
+    "deploy:check": "wrangler deploy --dry-run",
+    "db:migrate:local": "wrangler d1 migrations apply main-experiment --local",
+    "test": "vitest run",
+    "audit:randomization": "node scripts/audit-randomization.mjs",
+    "test:watch": "vitest",
+    "types": "wrangler types",
+    "types:check": "wrangler types --check",
+    "verify": "npm run types:check && npm test && npm run audit:randomization && npm run deploy:check"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "^1.0.0",
+    "@cloudflare/workers-types": "^5.20260825.1",
+    "@types/node": "^26.3.0",
+    "vitest": "^4.1.11",
+    "wrangler": "^4.125.0"
+  }
+}

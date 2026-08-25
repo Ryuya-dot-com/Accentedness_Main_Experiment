@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Main Experiment 内部ロードマップ</title>
+</head>
+<body>
+  <h1>Main Experiment 内部ロードマップ</h1>
+  <p>このHTMLをversion管理されたロードマップの正本とする。状態を変えるときは <code>checked</code> 属性を更新し、根拠と一緒にcommitする。Word/PDF版は作成しない。参加者へ配信しないよう <code>public/</code> の外に置く。</p>
+
+  <h2>本番開始を止める項目</h2>
+  <p><label><input type="checkbox"> 実際の24語、画像、学習音声、テスト音声を凍結した</label></p>
+  <p><label><input type="checkbox"> 主要estimand、主要時点、採点規準、除外規準、欠測処理、解析モデルを事前登録した</label></p>
+  <p><label><input type="checkbox"> 対象効果と脱落を考慮した標本数根拠を確定した</label></p>
+  <p><label><input type="checkbox"> pretesting効果を含む設計であること、pre完了→学習開始の許容間隔、pre後離脱の扱いを事前登録した</label></p>
+  <p><label><input type="checkbox"> 倫理審査、同意文書、音声データの保管期間・アクセス権・削除手順を確定した</label></p>
+  <p><label><input type="checkbox"> 本番相当の端末・ブラウザ・マイクで、直後から遅延までの通しpilotと回収データ照合を完了した</label></p>
+  <p><label><input type="checkbox"> プレースホルダーの強制遮断が有効なままであることを確認した</label></p>
+
+  <h2>確定済みの設計</h2>
+  <p><label><input type="checkbox" checked> 学習時accentは正の整数IDの3で割った余りで固定する</label></p>
+  <p><label><input type="checkbox" checked> No/Highをwithin-participantとし、24語×6回で学習する</label></p>
+  <p><label><input type="checkbox" checked> L2-to-L1は各時点でaccent各8語、accent・variabilityの連続は最大2とする</label></p>
+  <p><label><input type="checkbox" checked> テスト音声はaccentごと1名の固定女性話者（計3名）を練習・本番、直後・遅延で使う</label></p>
+  <p><label><input type="checkbox" checked> 上記仕様ではテストaccentと話者identityが完全に交絡し、randomizationや統計モデルでは分離できないことを設計文書に記載した</label></p>
+  <p><label><input type="checkbox"> この交絡により、L2-to-L1のaccent差の推論対象を「選定した3名の音声」に限定することを事前登録した</label></p>
+
+  <h2>参加者用導線</h2>
+  <p><label><input type="checkbox" checked> Main Experiment学習用URL <code>/main-experiment/</code> を独立させた</label></p>
+  <p><label><input type="checkbox" checked> Pre Picture Naming用URL <code>/pre-picture-naming/</code> を独立させ、L2-to-L1を含めないことを検査した</label></p>
+  <p><label><input type="checkbox" checked> Immediate Picture Naming用URL <code>/immediate-picture-naming/</code> を独立させた</label></p>
+  <p><label><input type="checkbox" checked> Immediate L2-to-L1用URL <code>/immediate-l2-to-l1/</code> を独立させた</label></p>
+  <p><label><input type="checkbox" checked> Delayed Picture Naming用URL <code>/delayed-picture-naming/</code> を独立させた</label></p>
+  <p><label><input type="checkbox" checked> Delayed L2-to-L1用URL <code>/delayed-l2-to-l1/</code> を独立させた</label></p>
+  <p><label><input type="checkbox" checked> pre/immediate/delayedの3 token、server ordinal、segment越境preload、session supersedeを自動テストした</label></p>
+  <p><label><input type="checkbox"> 本番相当ブラウザで6 URLのcanonical redirect、session引継ぎ、outbox完送を通しpilotした</label></p>
+
+  <h2>刺激と操作確認</h2>
+  <p><label><input type="checkbox"> 3名のテスト話者を確定し、話者ID・言語背景・収録条件を凍結した</label></p>
+  <p><label><input type="checkbox"> 直後・遅延で同一話者の同一WAV tokenを再提示する現行仕様を採用するか、同一話者の別takeにするかを確定した</label></p>
+  <p><label><input type="checkbox"> American English、Mandarin-accented English、Japanese-accented Englishの操作確認を独立評定者で行った</label></p>
+  <p><label><input type="checkbox"> 音量、duration、leading/trailing silence、sample rate、clippingを機械検査した</label></p>
+  <p><label><input type="checkbox"> 画像の概念一致度と命名一致度を別sampleで確認した</label></p>
+  <p><label><input type="checkbox"> asset inventory、SHA-256、reviewer、approval状態を凍結した</label></p>
+
+  <h2>データ回収とエクスポート</h2>
+  <p><label><input type="checkbox" checked> 個々のWAVをR2、metadata・QC・hashをD1に保存する</label></p>
+  <p><label><input type="checkbox" checked> phase完了時にQueueでZIPを自動生成し、別の非公開R2へimmutable保存する</label></p>
+  <p><label><input type="checkbox" checked> 管理者用ページ/APIから完成済みZIPをdownloadでき、参加者端末へは保存しない</label></p>
+  <p><label><input type="checkbox" checked> ZIP内manifestにtrial/attempt ID、practice、hash、bytes、upload時刻を含め、元R2 keyはD1 member tableだけに保持する</label></p>
+  <p><label><input type="checkbox" checked> ZIPを全体memory展開せず、1 phase最大30本、認可、download監査、元WAV byte一致を自動テストした</label></p>
+  <p><label><input type="checkbox"> Workers Paid、Queue、DLQ、EXPORTS R2、scheduled trigger、Cloudflare Accessをproduction accountで構築した</label></p>
+  <p><label><input type="checkbox"> D1とR2の定期backup、restore、保管期間後の削除をリハーサルした</label></p>
+
+  <h2>検証とリリース</h2>
+  <p><label><input type="checkbox" checked> 参加者ID 1–2160のrandomization監査を実行できる</label></p>
+  <p><label><input type="checkbox" checked> 変更後のunit/integration/randomizationテストがすべて成功した</label></p>
+  <p><label><input type="checkbox"> 不正URL、期限前delayed、他人の音声、将来試行へのアクセスが拒否される</label></p>
+  <p><label><input type="checkbox"> CloudflareのD1・R2・secret・custom domainをproduction用に凍結した</label></p>
+  <p><label><input type="checkbox"> 本番版の <code>ASSIGNMENT_VERSION</code>、<code>SEED_ALGORITHM_VERSION</code>、<code>ASSET_VERSION</code>、commit SHAを記録した</label></p>
+  <p><label><input type="checkbox"> 回収開始の最終承認を2名以上で行った</label></p>
+</body>
+</html>

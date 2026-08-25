@@ -1,0 +1,180 @@
+export function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export function validateBrowserEnvironment({ microphone }) {
+  const failures = [];
+  const userAgent = navigator.userAgent ?? "";
+  const isChrome = /Chrome\//u.test(userAgent) && !/Edg\/|OPR\/|CriOS/u.test(userAgent);
+  const isMobile = /Android|iPhone|iPad|Mobile/u.test(userAgent);
+  if (!isChrome) failures.push("パソコン版Google Chromeで開いてください。");
+  if (isMobile) failures.push("スマートフォンやタブレットでは実施できません。パソコンを使用してください。");
+  if (!window.isSecureContext) failures.push("安全なHTTPS接続で開いてください。");
+  if (!window.indexedDB) failures.push("このブラウザでは一時保存機能を利用できません。");
+  if (!window.AudioContext) failures.push("このブラウザでは音声再生機能を利用できません。");
+  if (microphone && (!navigator.mediaDevices?.getUserMedia || !window.AudioWorkletNode)) {
+    failures.push("このブラウザでは必要なマイク録音機能を利用できません。");
+  }
+  return failures;
+}
+
+export class ExperimentUi {
+  constructor() {
+    this.welcome = document.getElementById("welcome");
+    this.task = document.getElementById("task");
+    this.fatalPanel = document.getElementById("fatal");
+    this.fatalMessage = document.getElementById("fatal-message");
+    this.badge = document.getElementById("connection-badge");
+    this.summary = document.getElementById("participant-summary");
+    this.readyCheck = document.getElementById("ready-check");
+    this.startButton = document.getElementById("start-button");
+    this.welcomeStatus = document.getElementById("welcome-status");
+    this.progressLabel = document.getElementById("progress-label");
+    this.progressFill = document.getElementById("progress-fill");
+    this.saveState = document.getElementById("save-state");
+    this.stage = document.getElementById("stage");
+    this.fixation = document.getElementById("fixation");
+    this.image = document.getElementById("stimulus-image");
+    this.placeholder = document.getElementById("placeholder-card");
+    this.placeholderGloss = document.getElementById("placeholder-gloss");
+    this.audioCue = document.getElementById("audio-cue");
+    this.recording = document.getElementById("recording-indicator");
+    this.message = document.getElementById("stage-message");
+    this.continueButton = document.getElementById("continue-button");
+    this.taskStatus = document.getElementById("task-status");
+    this.activeImageUrl = null;
+  }
+
+  setConnected(state) {
+    this.badge.textContent = state ? "接続済み" : "接続エラー";
+    this.badge.classList.toggle("error", !state);
+  }
+
+  setParticipant(id, visitType) {
+    const visitLabel = visitType === "immediate" ? "直後セッション" : "遅延セッション";
+    this.summary.textContent = `参加者ID: ${id}　／　${visitLabel}`;
+    this.summary.hidden = false;
+  }
+
+  enableStartWhenReady() {
+    const update = () => {
+      this.startButton.disabled = !this.readyCheck.checked;
+    };
+    this.readyCheck.addEventListener("change", update);
+    update();
+  }
+
+  waitForStart() {
+    return new Promise((resolve) => {
+      this.startButton.addEventListener("click", () => {
+        this.startButton.disabled = true;
+        resolve();
+      }, { once: true });
+    });
+  }
+
+  beginTask() {
+    this.welcome.hidden = true;
+    this.task.hidden = false;
+  }
+
+  resetStage() {
+    if (this.activeImageUrl) {
+      URL.revokeObjectURL(this.activeImageUrl);
+      this.activeImageUrl = null;
+    }
+    [this.fixation, this.image, this.placeholder, this.audioCue, this.message, this.continueButton]
+      .forEach((element) => { if (element) element.hidden = true; });
+    if (this.recording) this.recording.hidden = true;
+    this.taskStatus.textContent = "";
+  }
+
+  showFixation() {
+    this.resetStage();
+    this.fixation.hidden = false;
+  }
+
+  showVisual(trial, imageUrl = null) {
+    this.resetStage();
+    if (imageUrl) {
+      this.activeImageUrl = imageUrl;
+      this.image.src = this.activeImageUrl;
+      this.image.alt = "課題の絵";
+      this.image.hidden = false;
+      return "image";
+    }
+    this.placeholderGloss.textContent = "刺激画像を読み込めませんでした";
+    this.placeholder.hidden = false;
+    return "placeholder";
+  }
+
+  showAudioCue() {
+    this.resetStage();
+    this.audioCue.hidden = false;
+  }
+
+  setRecording(active) {
+    if (this.recording) this.recording.hidden = !active;
+  }
+
+  setTaskStatus(text) {
+    this.taskStatus.textContent = text;
+  }
+
+  updateProgress(label, completed, total) {
+    const percent = total > 0 ? Math.max(0, Math.min(100, completed / total * 100)) : 0;
+    this.progressLabel.textContent = `${label}　${completed}/${total}`;
+    this.progressFill.style.width = `${percent.toFixed(2)}%`;
+  }
+
+  setSaveState(state) {
+    const pending = state !== "saved";
+    this.saveState.classList.toggle("pending", pending);
+    this.saveState.textContent = state === "saving" ? "保存中…" : state === "queued" ? "再送待ち" : "保存済み";
+  }
+
+  async prompt(message, buttonLabel = "続ける") {
+    this.resetStage();
+    this.message.textContent = message;
+    this.message.hidden = false;
+    this.continueButton.textContent = buttonLabel;
+    this.continueButton.hidden = false;
+    await new Promise((resolve) => {
+      const cleanup = () => {
+        document.removeEventListener("keydown", onKey);
+        this.continueButton.removeEventListener("click", onClick);
+      };
+      const finish = () => {
+        cleanup();
+        resolve();
+      };
+      const onClick = () => finish();
+      const onKey = (event) => {
+        if (event.code !== "Space" && event.key !== "Enter") return;
+        event.preventDefault();
+        finish();
+      };
+      this.continueButton.addEventListener("click", onClick);
+      document.addEventListener("keydown", onKey);
+      this.continueButton.focus();
+    });
+  }
+
+  completed(message) {
+    this.resetStage();
+    this.progressFill.style.width = "100%";
+    this.message.textContent = message;
+    this.message.hidden = false;
+    this.saveState.textContent = "完了";
+    this.saveState.classList.remove("pending");
+  }
+
+  fatal(error) {
+    this.welcome.hidden = true;
+    this.task.hidden = true;
+    this.fatalPanel.hidden = false;
+    const code = error?.code ? `（${error.code}）` : "";
+    this.fatalMessage.textContent = `${error?.message ?? String(error)} ${code}`.trim();
+    this.fatalPanel.focus();
+  }
+}

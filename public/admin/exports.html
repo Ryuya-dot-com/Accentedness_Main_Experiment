@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex,nofollow" />
+    <title>録音ZIP管理</title>
+  </head>
+  <body>
+    <main>
+      <h1>録音ZIP管理</h1>
+      <p>参加者には共有しない管理者用ページです。ZIPは各phaseの録音完了後に自動生成されます。</p>
+      <form id="search-form">
+        <p><label>ADMIN_TOKEN <input id="admin-token" type="password" required autocomplete="off" /></label></p>
+        <p><label>参加者ID <input id="participant-id" inputmode="numeric" pattern="[1-9][0-9]*" required /></label></p>
+        <button type="submit">状態を更新</button>
+      </form>
+      <p id="status" role="status"></p>
+      <table border="1" cellpadding="6">
+        <thead><tr><th>phase</th><th>状態</th><th>WAV数</th><th>ZIP</th><th>操作</th></tr></thead>
+        <tbody id="exports"></tbody>
+      </table>
+    </main>
+    <script type="module" src="/js/admin-exports.js"></script>
+  </body>
+</html>

@@ -1,0 +1,202 @@
+const SESSION_TOKEN_KEY = "main_experiment_session_token";
+const SESSION_VISIT_KEY = "main_experiment_session_visit";
+const CLIENT_INSTANCE_KEY = "main_experiment_client_instance";
+const JSON_TIMEOUT_MS = 30_000;
+const HEARTBEAT_TIMEOUT_MS = 10_000;
+const STIMULUS_TIMEOUT_MS = 30_000;
+const RECORDING_TIMEOUT_MS = 60_000;
+
+export class ApiClientError extends Error {
+  constructor(status, code, message, details = null) {
+    super(message);
+    this.name = "ApiClientError";
+    this.status = status;
+    this.code = code;
+    this.details = details;
+  }
+}
+
+function getOrCreateClientInstanceId() {
+  let value = sessionStorage.getItem(CLIENT_INSTANCE_KEY);
+  if (!value) {
+    value = crypto.randomUUID();
+    sessionStorage.setItem(CLIENT_INSTANCE_KEY, value);
+  }
+  return value;
+}
+
+function invitationTokenFromFragment() {
+  return new URLSearchParams(window.location.hash.slice(1)).get("t");
+}
+
+function clearInvitationFragment() {
+  history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
+}
+
+async function parseApiResponse(response) {
+  const contentType = response.headers.get("Content-Type") ?? "";
+  const body = contentType.includes("application/json") ? await response.json() : null;
+  if (!response.ok) {
+    throw new ApiClientError(
+      response.status,
+      body?.error?.code ?? "request_failed",
+      body?.error?.message ?? `Request failed (${response.status})`,
+      body?.error?.details ?? null,
+    );
+  }
+  return body;
+}
+
+async function fetchWithDeadline(path, options, timeoutMs, consume) {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(path, { ...options, signal: controller.signal });
+    return await consume(response);
+  } catch (error) {
+    if (controller.signal.aborted || error?.name === "AbortError") {
+      const timeout = new TypeError("通信がタイムアウトしました。ネットワーク接続を確認してください。");
+      timeout.code = "request_timeout";
+      timeout.status = 408;
+      throw timeout;
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
+export class ExperimentApi {
+  constructor(expectedVisitType) {
+    this.expectedVisitType = expectedVisitType;
+    this.sessionToken = sessionStorage.getItem(SESSION_TOKEN_KEY);
+    this.clientInstanceId = getOrCreateClientInstanceId();
+  }
+
+  async request(path, options = {}) {
+    const headers = new Headers(options.headers ?? {});
+    if (options.json !== undefined) {
+      headers.set("Content-Type", "application/json");
+    }
+    if (this.sessionToken) headers.set("Authorization", `Bearer ${this.sessionToken}`);
+    return fetchWithDeadline(
+      path,
+      {
+        method: options.method ?? "GET",
+        headers,
+        body: options.json === undefined ? options.body : JSON.stringify(options.json),
+        cache: "no-store",
+        keepalive: Boolean(options.keepalive),
+      },
+      options.timeoutMs ?? JSON_TIMEOUT_MS,
+      parseApiResponse,
+    );
+  }
+
+  async bootstrap() {
+    const invitationToken = invitationTokenFromFragment();
+    if (invitationToken) {
+      const state = await fetchWithDeadline(
+        "/api/invitations/redeem",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            token: invitationToken,
+            client_instance_id: this.clientInstanceId,
+            expected_visit_type: this.expectedVisitType,
+          }),
+          cache: "no-store",
+        },
+        JSON_TIMEOUT_MS,
+        parseApiResponse,
+      );
+      clearInvitationFragment();
+      this.sessionToken = state.session_token;
+      sessionStorage.setItem(SESSION_TOKEN_KEY, this.sessionToken);
+      sessionStorage.setItem(SESSION_VISIT_KEY, state.visit.visit_type);
+      return state;
+    }
+    const storedVisit = sessionStorage.getItem(SESSION_VISIT_KEY);
+    if (!this.sessionToken || storedVisit !== this.expectedVisitType) {
+      throw new ApiClientError(401, "invitation_required", "担当者から送られた招待リンクを開いてください。");
+    }
+    return this.state();
+  }
+
+  state() {
+    return this.request("/api/session");
+  }
+
+  heartbeat() {
+    return this.request("/api/session/heartbeat", {
+      method: "POST",
+      json: {},
+      timeoutMs: HEARTBEAT_TIMEOUT_MS,
+    });
+  }
+
+  startTrial(trialId, startKey, clientStartedPerfMs, resumeAfterStimulus = false) {
+    return this.request(`/api/trials/${trialId}/start`, {
+      method: "POST",
+      json: {
+        start_key: startKey,
+        client_started_perf_ms: clientStartedPerfMs,
+        resume_after_stimulus: Boolean(resumeAfterStimulus),
+      },
+    });
+  }
+
+  saveResponse(trialId, attemptId, responseKey, payload) {
+    return this.request(`/api/trials/${trialId}/response`, {
+      method: "PUT",
+      json: { attempt_id: attemptId, response_key: responseKey, payload },
+    });
+  }
+
+  uploadRecording(attemptId, blob, sha256) {
+    return this.request(`/api/recordings/${attemptId}`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "audio/wav",
+        "X-Content-SHA256": sha256,
+      },
+      body: blob,
+      timeoutMs: RECORDING_TIMEOUT_MS,
+    });
+  }
+
+  events(events, keepalive = false) {
+    return this.request("/api/events", { method: "POST", json: { events }, keepalive });
+  }
+
+  completeVisit() {
+    return this.request("/api/visit/complete", { method: "POST", json: {} });
+  }
+
+  async fetchStimulus(endpoint) {
+    return fetchWithDeadline(
+      endpoint,
+      {
+        headers: { Authorization: `Bearer ${this.sessionToken}` },
+        cache: "no-store",
+      },
+      STIMULUS_TIMEOUT_MS,
+      async (response) => {
+        if (!response.ok) await parseApiResponse(response);
+        return response.blob();
+      },
+    );
+  }
+
+  clearSession() {
+    sessionStorage.removeItem(SESSION_TOKEN_KEY);
+    sessionStorage.removeItem(SESSION_VISIT_KEY);
+    this.sessionToken = null;
+  }
+}
+
+export async function sha256Blob(blob) {
+  const digest = await crypto.subtle.digest("SHA-256", await blob.arrayBuffer());
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}

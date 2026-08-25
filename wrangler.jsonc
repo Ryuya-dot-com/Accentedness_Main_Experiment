@@ -1,0 +1,76 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "accentedness-main-experiment",
+  "main": "src/index.js",
+  "compatibility_date": "2026-08-25",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "run_worker_first": ["/api/*"],
+    "html_handling": "auto-trailing-slash",
+    "not_found_handling": "404-page"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "main-experiment",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "RECORDINGS",
+      "bucket_name": "main-experiment-recordings"
+    },
+    {
+      "binding": "STIMULI",
+      "bucket_name": "main-experiment-stimuli"
+    },
+    {
+      "binding": "EXPORTS",
+      "bucket_name": "main-experiment-exports"
+    }
+  ],
+  "queues": {
+    "producers": [
+      {
+        "binding": "EXPORT_QUEUE",
+        "queue": "main-experiment-recording-exports"
+      }
+    ],
+    "consumers": [
+      {
+        "queue": "main-experiment-recording-exports",
+        "max_batch_size": 1,
+        "max_batch_timeout": 5,
+        "max_retries": 4,
+        "retry_delay": 60,
+        "dead_letter_queue": "main-experiment-recording-exports-dlq"
+      }
+    ]
+  },
+  "triggers": {
+    "crons": ["*/5 * * * *"]
+  },
+  "vars": {
+    "ENVIRONMENT": "development",
+    "ASSIGNMENT_VERSION": "main-v3-placeholder-assets",
+    "SEED_ALGORITHM_VERSION": "hmac-sha256+xoshiro128ss-v1",
+    "ASSET_VERSION": "placeholder-v1",
+    "ALLOW_PLACEHOLDER_ASSETS": "true",
+    "SESSION_TTL_SECONDS": "43200",
+    "DELAY_DAYS": "7",
+    "MAX_RECORDING_BYTES": "4194304"
+  },
+  "observability": {
+    "enabled": true,
+    "logs": {
+      "head_sampling_rate": 1
+    },
+    "traces": {
+      "enabled": true,
+      "head_sampling_rate": 0.05
+    }
+  }
+}
