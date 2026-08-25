@@ -6,76 +6,47 @@
   <title>Main Experiment 内部ロードマップ</title>
 </head>
 <body>
-  <h1>Main Experiment 内部ロードマップ</h1>
-  <p>このHTMLをversion管理されたロードマップの正本とする。状態を変えるときは <code>checked</code> 属性を更新し、根拠と一緒にcommitする。Word/PDF版は作成しない。参加者へ配信しないよう <code>public/</code> の外に置く。</p>
+  <h1>Main Experiment 実装ロードマップ</h1>
+  <p>このHTMLはリポジトリの完成状態と、本番環境で必要な技術確認だけを追跡する。Word/PDF版は作らず、参加者へ配信しない。</p>
+  <p><strong>判定境界:</strong> リポジトリの完成は第1節だけで判定する。実刺激、実Cloudflare account、実端末を必要とする項目は第3節へ分離し、未完了でもコード未完成とは扱わない。</p>
 
-  <h2>本番開始を止める項目</h2>
-  <p><label><input type="checkbox"> 実際の24語、画像、学習音声、テスト音声を凍結した</label></p>
-  <p><label><input type="checkbox"> 主要estimand、主要時点、採点規準、除外規準、欠測処理、解析モデルを事前登録した</label></p>
-  <p><label><input type="checkbox"> 対象効果と脱落を考慮した標本数根拠を確定した</label></p>
-  <p><label><input type="checkbox"> pretesting効果を含む設計であること、pre→learning実間隔の分布、pre後離脱、間隔に関する感度分析を事前登録した</label></p>
-  <p><label><input type="checkbox"> data-lock／解析cutoff、時点別のrisk set、統一したreminder・連絡回数、遅延回答の主要・副次estimandを事前登録した</label></p>
-  <p><label><input type="checkbox"> 倫理審査、同意文書、音声データの保管期間・アクセス権・削除手順を確定した</label></p>
-  <p><label><input type="checkbox"> 無期限active bearer linkを許容するか、参加資格は無期限のままcredentialだけを期限付き再発行にするかをrisk評価し、漏えい・離脱・撤回時のrevoke手順を確定した</label></p>
-  <p><label><input type="checkbox"> 本番相当の端末・ブラウザ・マイクで、直後から遅延までの通しpilotと回収データ照合を完了した</label></p>
-  <p><label><input type="checkbox"> 本番Cloudflare accountでWorkers Paidを有効化し、311文の参加者作成batchと最大WAV受理を実環境で確認した</label></p>
-  <p><label><input type="checkbox"> Cloudflare Accessを実環境で有効化し、研究チーム外から <code>/admin/*</code> と <code>/api/admin/*</code> が拒否されることを確認した</label></p>
-  <p><label><input type="checkbox"> D1/R2の組織backup・保管期限・削除手順を確定し、隔離先へのD1復元とWAV 1件の復旧後にD1のsize/hashとの一致を確認した</label></p>
-  <p><label><input type="checkbox"> 旧版を配置済みなら旧Queue・DLQ・<code>EXPORTS</code> bucket・5分cronの有無を確認し、正本資源との照合後に廃止した（未作成ならN/Aを記録した）</label></p>
-  <p><label><input type="checkbox" checked> productionではプレースホルダーまたは未確定test-token方針が残ると参加者作成・招待発行・招待redeem・新規trial開始を遮断するcodeとtestを実装した</label></p>
-  <p><label><input type="checkbox"> production配置後に上記の強制遮断と解除を実環境で確認した</label></p>
-  <p><label><input type="checkbox"> 募集順IDの発番責任・外部台帳・監査証跡を確定するか、原子的なserver連番発番を実装した</label></p>
+  <h2>1. リポジトリ完成条件</h2>
+  <p><strong>現在の判定: 既知の未解決blockerなし。</strong></p>
+  <p><label><input type="checkbox" checked> 指定された6つのparticipant URLだけをcanonical routeとして実装した</label></p>
+  <p><label><input type="checkbox" checked> IDによるaccent割当、24-cell、No/High、話者、順序、seedの不変条件を実装した</label></p>
+  <p><label><input type="checkbox" checked> pre→learningは順序だけ、delayedはImmediate最終L2-to-L1応答＋5日かつImmediate保存確定、以後は上限なしとした</label></p>
+  <p><label><input type="checkbox" checked> D1応答、R2 WAV、IndexedDB outbox、再送、再開、session supersedeを実装した</label></p>
+  <p><label><input type="checkbox" checked> Delayed完了後の参加者端末ZIPと、管理者用canonical結果ZIPを実装した</label></p>
+  <p><label><input type="checkbox" checked> placeholder・未確定token方針ではproduction回収をfail closedにした</label></p>
+  <p><label><input type="checkbox" checked> 旧Queue・定期export・派生ZIP保存・独自backup CLI・旧URL aliasをruntimeから除いた</label></p>
+  <p><label><input type="checkbox" checked> migration整合、67 tests、4,320 design監査、development/production dry-runを通した</label></p>
 
-  <h2>確定済みの設計</h2>
-  <p><label><input type="checkbox" checked> 学習時accentは正の整数IDの3で割った余りで固定する</label></p>
-  <p><label><input type="checkbox" checked> No/Highをwithin-participantとし、24語×6回で学習する</label></p>
-  <p><label><input type="checkbox" checked> L2-to-L1は各時点でaccent各8語、accent・variabilityの連続は最大2とする</label></p>
-  <p><label><input type="checkbox" checked> テスト音声はaccentごと1名の固定女性話者（計3名）を練習・本番、直後・遅延で使う</label></p>
-  <p><label><input type="checkbox" checked> pre完了→learning開始は順序だけを強制し、実施間隔の上限・下限、招待linkの年齢による失効、自動除外を設けない</label></p>
-  <p><label><input type="checkbox" checked> delayedはImmediate最終L2-to-L1行動応答のserver受理時刻＋5日かつImmediate保存確定を開始条件とし、それ以後は上限期限なしで受付する</label></p>
-  <p><label><input type="checkbox" checked> 上記仕様ではテストaccentと話者identityが完全に交絡し、randomizationや統計モデルでは分離できないことを設計文書に記載した</label></p>
-  <p><label><input type="checkbox"> この交絡により、L2-to-L1のaccent差の推論対象を「選定した3名の音声」に限定することを事前登録した</label></p>
+  <h2>2. 共同研究者からの入力待ち</h2>
+  <p><label><input type="checkbox"> 実際の24語、練習語、画像、学習音声、テスト音声、話者IDを受領した</label></p>
+  <p><label><input type="checkbox"> 直後・遅延で同一WAV tokenを使うか、同一話者の別takeを使うかの決定を受領した</label></p>
+  <p>現行コードは同一WAV token方式を実装済みである。別take方式が選ばれた場合だけ、key規約・manifest・testを新しい実装scopeとして開く。入力前に両方式を同時実装しない。</p>
 
-  <h2>参加者用導線</h2>
-  <p><label><input type="checkbox" checked> Main Experiment学習用URL <code>/main-experiment/</code> を独立させた</label></p>
-  <p><label><input type="checkbox" checked> Pre Picture Naming用URL <code>/pre-picture-naming/</code> を独立させ、L2-to-L1を含めないことを検査した</label></p>
-  <p><label><input type="checkbox" checked> Immediate Picture Naming用URL <code>/immediate-picture-naming/</code> を独立させた</label></p>
-  <p><label><input type="checkbox" checked> Immediate L2-to-L1用URL <code>/immediate-l2-to-l1/</code> を独立させた</label></p>
-  <p><label><input type="checkbox" checked> Delayed Picture Naming用URL <code>/delayed-picture-naming/</code> を独立させた</label></p>
-  <p><label><input type="checkbox" checked> Delayed L2-to-L1用URL <code>/delayed-l2-to-l1/</code> を独立させた</label></p>
-  <p><label><input type="checkbox" checked> pre/immediate/delayedの3 token、server ordinal、segment越境preload、session supersedeを自動テストした</label></p>
-  <p><label><input type="checkbox" checked> 手動リンク配布、遅延対象、ID欠番、accent×cell別の割付・完了数を確認できる内部管理HTMLを実装した</label></p>
-  <p><label><input type="checkbox" checked> 応答再送、visit完了再送、preload再試行、local WAV欠損時のfail-stop、segment別マイク確認を自動テストした</label></p>
-  <p><label><input type="checkbox" checked> D1応答とR2録音の両ACK後に残留したIndexedDB WAVを、visitを問わず次回flushで削除する</label></p>
-  <p><label><input type="checkbox"> 本番相当ブラウザで6 URLのcanonical redirect、session引継ぎ、outbox完送を通しpilotした</label></p>
+  <h2>3. 本番配備・実機検証</h2>
+  <p><label><input type="checkbox"> 実刺激を組み込み、期待key、SHA-256、WAV形式・duration・level、画像形式を照合した</label></p>
+  <p><label><input type="checkbox"> 本番versionを固定し、placeholderを無効化して <code>collection_ready=true</code> を確認した</label></p>
+  <p><label><input type="checkbox"> Workers Paid、D1、R2、secrets、custom domain、migrationを本番環境で確認した</label></p>
+  <p><label><input type="checkbox"> Cloudflare Accessにより研究チーム外から管理画面と管理APIが拒否されることを確認した</label></p>
+  <p><label><input type="checkbox"> 旧版を配置済みなら旧Queue・DLQ・EXPORTS bucket・5分cronを廃止した（未作成ならN/A）</label></p>
+  <p><label><input type="checkbox"> 実Chrome・実マイクで6 URL、session遷移、reload、通信中断、outbox再送を通し確認した</label></p>
+  <p><label><input type="checkbox"> 本番相当の3 visitデータ量で参加者端末ZIPを保存・再試行・展開し、entry数とhashを照合した</label></p>
+  <p><label><input type="checkbox"> 隔離先へのD1復元とWAV復旧を行い、D1のsize/hashと一致することを確認した</label></p>
+  <p><label><input type="checkbox"> 本番commit SHAと各versionを運用記録へ残した</label></p>
 
-  <h2>刺激と操作確認</h2>
-  <p><label><input type="checkbox"> 3名のテスト話者を確定し、話者ID・言語背景・収録条件を凍結した</label></p>
-  <p><label><input type="checkbox"> 直後・遅延で同一話者の同一WAV tokenを再提示する現行仕様を採用するか、同一話者の別takeにするかを確定した</label></p>
-  <p><label><input type="checkbox"> American English、Mandarin-accented English、Japanese-accented Englishの操作確認を独立評定者で行った</label></p>
-  <p><label><input type="checkbox"> 音量、duration、leading/trailing silence、sample rate、clippingを機械検査した</label></p>
-  <p><label><input type="checkbox"> 画像の概念一致度と命名一致度を別sampleで確認した</label></p>
-  <p><label><input type="checkbox"> asset inventory、SHA-256、reviewer、approval状態を凍結した</label></p>
+  <h2>4. 固定済みの実験プログラム仕様</h2>
+  <p><label><input type="checkbox" checked> 学習時accentは正の整数IDを3で割った余りで固定する</label></p>
+  <p><label><input type="checkbox" checked> No/Highを参加者内要因とし、24語を各6回学習する</label></p>
+  <p><label><input type="checkbox" checked> preはPicture Namingだけ、Immediate・DelayedはPicture Namingの後にL2-to-L1を行う</label></p>
+  <p><label><input type="checkbox" checked> L2-to-L1は各accent 8語、accent・variabilityの連続は最大2とする</label></p>
+  <p><label><input type="checkbox" checked> テスト音声はaccentごと1名の固定女性話者を使う</label></p>
+  <p><label><input type="checkbox" checked> リンクは手動配布し、管理画面でID欠番とaccent×cellの進捗を監査する</label></p>
+  <p><label><input type="checkbox" checked> Pre・Immediateでは参加者ZIPを渡さず、Delayed完了後だけ3 visit分を渡す</label></p>
 
-  <h2>データ回収とエクスポート</h2>
-  <p><label><input type="checkbox" checked> 個々のWAVをR2、metadata・QC・hashをD1に保存する</label></p>
-  <p><label><input type="checkbox" checked> Delayed完了確定後だけ、3 visitの全canonical回答・WAVを参加者が単一ZIPで明示保存でき、対応Chromeでは全量Blob化せず直接fileへstreamする</label></p>
-  <p><label><input type="checkbox" checked> Pre・直後では結果ZIPを提示せず、遅延測定前の聞き返し・復習を防ぐ</label></p>
-  <p><label><input type="checkbox" checked> 管理者が参加者IDから収集済みcanonical結果ZIPをオンデマンド取得できる</label></p>
-  <p><label><input type="checkbox" checked> 参加者ZIPには刺激・条件・話者・内部UUIDを含めず、R2 objectのsizeとSHA-256を照合する</label></p>
-  <p><label><input type="checkbox" checked> 研究者ZIPのresponses JSONに、opaque WAV名と採点用刺激・条件・内部ID・再提示flag・録音QCの対応を含める</label></p>
-  <p><label><input type="checkbox"> 本番相当の全3 visitデータ量でZIP生成時間、browser memory、download再試行をpilotした</label></p>
-  <p><label><input type="checkbox"> 共用PCへの音声保存、保存先、確認、保管、削除を同意文書と実施手順に反映した</label></p>
-
-  <h2>検証とリリース</h2>
-  <p><label><input type="checkbox" checked> 参加者ID 1–2160を2つの独立secretで生成し、計4,320 designのrandomization不変条件を監査できる</label></p>
-  <p><label><input type="checkbox" checked> 変更後のunit/integration/randomizationテストがすべて成功した</label></p>
-  <p><label><input type="checkbox" checked> 不正URL、期限前delayed、他人の刺激、将来試行へのアクセス拒否を自動テストした</label></p>
-  <p><label><input type="checkbox" checked> 古いpre完了、古いactive招待、5日を大幅に過ぎたdelayedを受付し、期限切れsessionは同じ招待linkから再開できることを自動テストした</label></p>
-  <p><label><input type="checkbox" checked> 行動endpointを用いるpre→学習・課題間・保持・遅延目標偏差の6間隔をD1 viewと回帰testで固定した</label></p>
-  <p><label><input type="checkbox" checked> push時にunit/integration、4,320 design監査、development/production dry-runを実行するCIを追加した</label></p>
-  <p><label><input type="checkbox"> CloudflareのD1・R2・secret・custom domainをproduction用に凍結した</label></p>
-  <p><label><input type="checkbox"> 本番版の <code>ASSIGNMENT_VERSION</code>、<code>SEED_ALGORITHM_VERSION</code>、<code>ASSET_VERSION</code>、commit SHAを記録した</label></p>
-  <p><label><input type="checkbox"> 回収開始の最終承認を2名以上で行った</label></p>
+  <h2>このロードマップで追跡しない事項</h2>
+  <p>事前登録、倫理審査、同意、標本数、解析計画、採点規準、募集承認はPI・共同研究者がリポジトリ外で管理する。本書はそれらの必要性を判定せず、コード完成判定にも用いない。外部決定がruntime仕様を変える場合だけ、明示された変更内容を新しい実装scopeとして取り込む。</p>
 </body>
 </html>
