@@ -102,7 +102,7 @@
     <li><label><input type="checkbox" checked> ID 1の第1 Pre trialでplaceholder image fallbackと合成WAV uploadを既存participant API経由で実行した</label></li>
     <li><label><input type="checkbox" checked> R2 WAV 960,044 bytesを再取得し、D1のbyte count・SHA-256と一致することを確認した</label></li>
   </ul>
-  <p><strong>G2 evidence（2026-08-26）:</strong> URL <code>https://accentedness-main-experiment.komuro-4121.workers.dev</code>、source commit <code>6057d6d</code>、deployment version <code>971c13ae-b29f-4662-a197-1cc670812379</code>。bindingsはD1 <code>main-experiment</code>、R2 <code>main-experiment-recordings</code> / <code>main-experiment-stimuli</code>。versionは<code>main-v3-placeholder-assets</code> / <code>hmac-sha256+xoshiro128ss-v1</code> / <code>placeholder-v1</code>。8 HTML routesは200、health・認証・secret名・private R2を確認した。ID 1は<code>synthetic-api-smoke</code>専用で、今後のclean-path件数照合へ再利用しない。</p>
+  <p><strong>G2 evidence（2026-08-26）:</strong> URL <code>https://accentedness-main-experiment.komuro-4121.workers.dev</code>、runtime source commit <code>6057d6d</code>、最新deployment version <code>3b8cef76-b31e-4749-8751-682736f4f1d8</code>（code変更を伴わない非本番ADMIN_TOKEN rotation後）。bindingsはD1 <code>main-experiment</code>、R2 <code>main-experiment-recordings</code> / <code>main-experiment-stimuli</code>。versionは<code>main-v3-placeholder-assets</code> / <code>hmac-sha256+xoshiro128ss-v1</code> / <code>placeholder-v1</code>。8 HTML routesは200、health・認証・secret名・private R2を確認した。ID 1は<code>synthetic-api-smoke</code>専用で、今後のclean-path件数照合へ再利用しない。</p>
 
   <h2>6. 敵対的E2E pilot — プレースホルダーで実施</h2>
   <p>UIの完了表示ではなく、D1/R2/ZIPの実体で成功を判定する。clean-pathは次の未使用連番ID 2から開始し、障害注入用IDと分ける。Delayedの実時計pilotは5日以上を要するが、その待機中に他の項目を並行する。</p>
@@ -124,7 +124,7 @@
 
   <h2>7. 手動運用rehearsal</h2>
   <ul>
-    <li><label><input type="checkbox"> 非本番ADMIN_TOKENを一時handoff fileから研究チームのpassword managerへ移し、元fileを削除する</label></li>
+    <li><label><input type="checkbox" checked> 非本番ADMIN_TOKENの暫定正本をrepository外の親directory <code>.env</code>へ置き、mode <code>0600</code>、新tokenのHTTP 200、旧tokenのHTTP 403を確認し、一時handoff directoryを削除した。Dropbox同期対象のためproduction恒久正本には流用しない</label></li>
     <li><label><input type="checkbox"> Cloudflare DashboardでWorkers plan名とbilling担当を確認し、311-query実測結果と併記する</label></li>
     <li><label><input type="checkbox"> participant ID台帳の主担当と代替担当を定め、共有台帳から次の未使用正整数を発行する</label></li>
     <li><label><input type="checkbox"> IDを再利用せず、accentやcellを見て都合のよいIDを選ばない手順を確認する</label></li>

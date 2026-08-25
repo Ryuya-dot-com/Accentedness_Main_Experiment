@@ -61,6 +61,8 @@ npx wrangler secret list --env=""
 
 初回deployへsecretを同梱する場合は、Git・Dropbox外の権限`0600`一時fileを`--secrets-file`へ渡し、成功直後にそのfileを削除します。secret値をcommand引数、標準出力、shell historyへ出しません。今回の非本番bootstrapはこの方法を使いました。
 
+2026-08-26以降、非本番`ADMIN_TOKEN`の暫定正本はrepository外の親directoryにある`.env`です。file modeは`0600`とし、この単一keyだけを標準入力経由でWranglerへ渡します。`.env`全体またはtoken値を表示・記録しません。rotation後に新tokenでHTTP 200、旧tokenでHTTP 403を確認し、bootstrap用の一時handoff directoryは削除済みです。この`.env`はDropbox同期対象なので、現時点の非本番運用にだけ用い、production secretの恒久正本とはみなしません。`RANDOMIZATION_SECRET`、production resource、production secretはこのrotationで変更していません。
+
 非本番`GET /api/health`の期待値は、`environment=development`、`placeholder_assets=true`、`test_token_policy=undecided`、`test_token_policy_ready=false`、`collection_ready=false`です。これは正常なplaceholder pilot状態です。実際にplaceholder participantを1名作成し、311文batchの完全性とduration、D1/R2 binding、管理token拒否、R2非公開を別途確認します。現在の非本番URLは`https://accentedness-main-experiment.komuro-4121.workers.dev`です。
 
 ## 3. productionの初回セットアップ
