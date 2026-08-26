@@ -1,7 +1,7 @@
 const body = document.body;
 const segment = body.dataset.segment;
 const title = body.dataset.title ?? "実験課題";
-const eyebrow = body.dataset.eyebrow ?? "Main Experiment";
+const eyebrow = body.dataset.eyebrow ?? "英単語学習実験";
 const description = body.dataset.description ?? "担当者の案内に従って課題を進めてください。";
 const microphone = segment !== "learning";
 
@@ -25,7 +25,7 @@ document.getElementById("app").innerHTML = `
       hidden
     >
       <h2 id="participant-id-heading">参加者情報の確認</h2>
-      <p id="participant-id-guidance">担当者から案内された参加者IDを入力してください。氏名は、正しい参加者記録であることを次の画面で確認するために使います。</p>
+      <p id="participant-id-guidance">担当者から案内された参加者IDを入力してください。次の画面で、ご自身の氏名が表示されることを確認します。</p>
       <div class="identity-fields">
         <label>
           <span>参加者ID</span>
@@ -101,7 +101,7 @@ document.getElementById("app").innerHTML = `
       </div>
       <label class="consent-row">
         <input id="ready-check" type="checkbox" />
-        <span>上記を確認し、担当者から開始の案内を受けました。</span>
+        <span>上の内容を確認しました。</span>
       </label>
       <div class="actions">
         <button id="start-button" type="button" disabled></button>
@@ -116,7 +116,7 @@ document.getElementById("app").innerHTML = `
       <div class="progress-row">
         <strong id="progress-label">課題を準備しています</strong>
         <div class="progress-controls">
-          <span id="save-state" class="save-state pending">データ保存：未開始</span>
+          <span id="save-state" class="save-state pending">保存：未開始</span>
           <button id="interruption-button" class="interruption-button" type="button">中断・終了</button>
         </div>
       </div>
@@ -130,13 +130,14 @@ document.getElementById("app").innerHTML = `
         aria-valuenow="0"
         aria-valuetext="課題開始前"
       ><div id="progress-fill"></div></div>
-      <p id="progress-detail" class="progress-detail">回答は各試行後に保存されます。通常完了時には「全試行・録音の保存完了」と表示します。途中で続けられなくなった場合は「中断・終了」を選んでください。</p>
+      <p id="progress-detail" class="progress-detail">進み具合は上のバーで確認できます。途中で続けられなくなったときは「中断・終了」を選んでください。</p>
     </div>
     <div id="stage" class="stage" aria-live="polite" tabindex="-1">
       <div id="fixation" class="fixation" aria-hidden="true" hidden>+</div>
       <img id="stimulus-image" class="stimulus-image" alt="" hidden />
+      <div id="stimulus-emoji" class="stimulus-emoji" role="img" aria-label="" hidden></div>
       <div id="placeholder-card" class="placeholder-card" hidden>
-        <span class="placeholder-kicker">画像プレースホルダー</span>
+        <span class="placeholder-kicker">画像を表示できません</span>
         <strong id="placeholder-gloss"></strong>
       </div>
       <div id="audio-cue" class="audio-cue" hidden aria-label="音声再生中"><span>♪</span></div>
@@ -151,15 +152,17 @@ document.getElementById("app").innerHTML = `
         </div>
       </div>
       <div id="stage-message" class="stage-message" hidden></div>
+      <p id="prompt-keyboard-hint" class="prompt-keyboard-hint" hidden>キーボードのスペースキーを1回押してください。クリックや他のキーでは進みません。</p>
+      <p id="continue-key-label" class="continue-key-label" hidden>Space</p>
       <button id="continue-button" class="continue-button" type="button" hidden>続ける</button>
       <a id="download-link" class="continue-button button-link" href="#" hidden>ZIPをこのパソコンに保存</a>
       <section id="interruption-choice" class="interruption-choice" aria-labelledby="interruption-choice-title" hidden>
         <h2 id="interruption-choice-title">課題を中断・終了しますか？</h2>
-        <p id="interruption-choice-description">一時中断は、同じ招待リンクから研究用サーバーが受け付けた位置へ戻れます。参加終了を選ぶと、これ以降の課題には参加せず、再開できません。送信待ちデータがあれば、確定前に送信を試みます。</p>
+        <p id="interruption-choice-description">一時中断すると、ここまでを保存し、同じ招待リンクから続きに戻れます。参加終了を選ぶと、実験への参加を終え、再開できません。</p>
         <div class="interruption-actions">
           <button id="pause-participation-button" type="button">一時中断する</button>
-          <button id="terminate-participation-button" class="danger-button" type="button">参加を終了する</button>
           <button id="cancel-interruption-button" class="secondary-button" type="button">課題に戻る</button>
+          <button id="terminate-participation-button" class="danger-button" type="button">参加を終了する</button>
         </div>
       </section>
     </div>
@@ -169,7 +172,7 @@ document.getElementById("app").innerHTML = `
   <section id="fatal" class="card error-card" role="alert" tabindex="-1" hidden>
     <h2>課題を続行できません</h2>
     <p id="fatal-message"></p>
-    <p>表示されたコードを記録し、担当者へ知らせてください。</p>
+    <p>お問い合わせ番号と画面の状況を担当者へ知らせてください。</p>
   </section>
 `;
 
@@ -182,10 +185,11 @@ const checks = [
   microphone
     ? "ヘッドホンまたはイヤホンを装着し、マイクを接続してください。"
     : "ヘッドホンまたはイヤホンを装着してください。",
-  microphone
-    ? "ブラウザからマイクの許可を求められたら「許可」を選んでください。"
-    : "途中で別のタブやアプリに移動しないでください。",
+  "課題中は別のタブやアプリに移動しないでください。",
 ];
+if (microphone) {
+  checks.push("ブラウザからマイクの許可を求められたら「許可」を選んでください。");
+}
 const checksElement = document.getElementById("environment-checks");
 for (const check of checks) {
   const item = document.createElement("li");

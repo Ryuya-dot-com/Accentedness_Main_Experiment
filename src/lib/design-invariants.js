@@ -1,14 +1,17 @@
 import {
   ACCENTS,
+  LEARNING_PRACTICE_STIMULI,
+  LEARNING_PRACTICE_TALKERS,
   L2_TO_L1_PRACTICE_STIMULI,
   MAIN_STIMULI,
   PICTURE_NAMING_PRACTICE_STIMULI,
   PRACTICE_TEST_TALKERS,
+  TRAINING_TALKERS,
 } from "./stimuli.js";
 
 const VISIT_EXPECTATIONS = Object.freeze({
   pre: Object.freeze({ trials: 26, recordings: 26 }),
-  immediate: Object.freeze({ trials: 197, recordings: 53 }),
+  immediate: Object.freeze({ trials: 199, recordings: 53 }),
   delayed: Object.freeze({ trials: 53, recordings: 53 }),
 });
 
@@ -36,8 +39,25 @@ function sameUniqueMembers(values, expected) {
 }
 
 function checkPracticeStimuli(design) {
+  invariant(
+    new Set(Object.values(LEARNING_PRACTICE_TALKERS)).size === ACCENTS.length,
+    "Learning practice talker uniqueness",
+  );
+  for (const accent of ACCENTS) {
+    const practiceTalker = LEARNING_PRACTICE_TALKERS[accent];
+    invariant(Boolean(practiceTalker), `${accent} Learning practice talker presence`);
+    invariant(
+      !TRAINING_TALKERS[accent].includes(practiceTalker),
+      `${accent} Learning practice/main talker disjointness`,
+    );
+    invariant(
+      PRACTICE_TEST_TALKERS[accent] !== practiceTalker,
+      `${accent} Learning practice/test talker disjointness`,
+    );
+  }
   const sourcePools = [
     ["main", MAIN_STIMULI],
+    ["Learning practice", LEARNING_PRACTICE_STIMULI],
     ["Picture Naming practice", PICTURE_NAMING_PRACTICE_STIMULI],
     ["L2-to-L1 practice", L2_TO_L1_PRACTICE_STIMULI],
   ];
@@ -49,9 +69,19 @@ function checkPracticeStimuli(design) {
   const mainSourceWords = new Set(MAIN_STIMULI.map((item) => item.word));
   const pictureSourceIds = new Set(PICTURE_NAMING_PRACTICE_STIMULI.map((item) => item.id));
   const pictureSourceWords = new Set(PICTURE_NAMING_PRACTICE_STIMULI.map((item) => item.word));
-  for (const item of [...PICTURE_NAMING_PRACTICE_STIMULI, ...L2_TO_L1_PRACTICE_STIMULI]) {
+  for (const item of [
+    ...LEARNING_PRACTICE_STIMULI,
+    ...PICTURE_NAMING_PRACTICE_STIMULI,
+    ...L2_TO_L1_PRACTICE_STIMULI,
+  ]) {
     invariant(!mainSourceIds.has(item.id), "practice/main source item ID disjointness");
     invariant(!mainSourceWords.has(item.word), "practice/main source word disjointness");
+  }
+  const learningSourceIds = new Set(LEARNING_PRACTICE_STIMULI.map((item) => item.id));
+  const learningSourceWords = new Set(LEARNING_PRACTICE_STIMULI.map((item) => item.word));
+  for (const item of [...PICTURE_NAMING_PRACTICE_STIMULI, ...L2_TO_L1_PRACTICE_STIMULI]) {
+    invariant(!learningSourceIds.has(item.id), "practice task source item ID disjointness");
+    invariant(!learningSourceWords.has(item.word), "practice task source word disjointness");
   }
   for (const item of L2_TO_L1_PRACTICE_STIMULI) {
     invariant(!pictureSourceIds.has(item.id), "practice task source item ID disjointness");
@@ -86,8 +116,38 @@ function checkPracticeStimuli(design) {
   const l2ItemsById = new Map(L2_TO_L1_PRACTICE_STIMULI.map((item) => [item.id, item]));
   for (const visitType of visitTypes) {
     const visitPractice = design[visitType].trials.filter((trial) => trial.practice);
+    const learning = visitPractice.filter((trial) => trial.segment === "learning");
     const picture = visitPractice.filter((trial) => trial.segment === "picture_naming");
     const l2 = visitPractice.filter((trial) => trial.segment === "l2_to_l1");
+    const expectedLearningItems = visitType === "immediate" ? LEARNING_PRACTICE_STIMULI : [];
+    invariant(
+      sameUniqueMembers(
+        learning.map((trial) => trial.itemId),
+        expectedLearningItems.map((item) => item.id),
+      ),
+      `${visitType} Learning practice item set`,
+    );
+    for (const trial of learning) {
+      const item = LEARNING_PRACTICE_STIMULI.find((candidate) => candidate.id === trial.itemId);
+      invariant(trial.excludeFromAnalysis === true, `${visitType} Learning practice analysis exclusion`);
+      invariant(trial.expectsRecording === false, `${visitType} Learning practice recording exclusion`);
+      invariant(item?.word === trial.itemWord && item?.gloss === trial.itemGloss, `${visitType} Learning practice item identity`);
+      invariant(
+        trial.listId === null && trial.listRank === null && trial.variability === null,
+        `${visitType} Learning practice condition metadata`,
+      );
+      invariant(trial.testAccent === null, `${visitType} Learning practice test-accent metadata`);
+      const practiceAccent = design.assignment.trainingAccent;
+      const practiceTalker = LEARNING_PRACTICE_TALKERS[practiceAccent];
+      invariant(trial.talkerId === practiceTalker, `${visitType} Learning practice accent-matched talker`);
+      invariant(trial.imageKey === null, `${visitType} Learning practice image absence`);
+      invariant(trial.protocol?.visualEmoji === item?.emoji, `${visitType} Learning practice emoji`);
+      invariant(trial.protocol?.visualLabel === item?.gloss, `${visitType} Learning practice visual label`);
+      invariant(
+        trial.audioKey === `stimuli/${trial.assetVersion}/learning-practice/${practiceAccent}/${practiceTalker}/${trial.itemWord}.wav`,
+        `${visitType} Learning practice audio key category`,
+      );
+    }
     invariant(
       sameUniqueMembers(
         picture.map((trial) => trial.itemId),

@@ -25,6 +25,40 @@ body {
   margin: 0;
 }
 
+body.experiment-active {
+  height: 100dvh;
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+body.experiment-active .shell {
+  height: 100dvh;
+  padding: clamp(8px, 1.5vh, 16px) 0;
+}
+
+body.experiment-active .task {
+  display: grid;
+  height: 100%;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: clamp(6px, 1vh, 10px);
+  padding-top: 0;
+}
+
+body.experiment-active .task-progress {
+  position: static;
+  padding: 0;
+}
+
+body.experiment-active .stage {
+  height: 100%;
+  min-height: 0;
+}
+
+body.experiment-active .task-status {
+  min-height: 1.4em;
+  margin: 0;
+}
+
 body {
   background:
     radial-gradient(circle at 12% 8%, rgba(8, 119, 110, 0.08), transparent 32rem),
@@ -371,6 +405,13 @@ h2 {
   object-fit: contain;
 }
 
+.stimulus-emoji {
+  font-family: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif;
+  font-size: clamp(8rem, 32vmin, 18rem);
+  line-height: 1;
+  user-select: none;
+}
+
 .placeholder-card {
   display: flex;
   width: min(82%, 680px);
@@ -506,6 +547,49 @@ h2 {
   text-align: center;
 }
 
+.stage.prompt-active {
+  align-items: flex-start;
+}
+
+.stage.prompt-active .stage-message {
+  display: flex;
+  height: calc(100% - 146px);
+  align-items: center;
+  justify-content: center;
+  margin-top: 10px;
+  font-size: clamp(1rem, min(2.5vw, 3.3vh), 1.45rem);
+  line-height: 1.65;
+}
+
+.prompt-keyboard-hint {
+  position: absolute;
+  right: 18px;
+  bottom: 88px;
+  left: 18px;
+  margin: 0;
+  color: #dce9e4;
+  font-size: 0.9rem;
+  font-weight: 750;
+  text-align: center;
+}
+
+.continue-key-label {
+  position: absolute;
+  bottom: 34px;
+  left: 50%;
+  min-width: 104px;
+  margin: 0;
+  transform: translateX(-50%);
+  border: 2px solid #aebdb7;
+  border-radius: 7px;
+  padding: 8px 18px 10px;
+  background: #f3f6f4;
+  color: var(--ink);
+  box-shadow: inset 0 -3px 0 #cad4d0;
+  font-weight: 850;
+  text-align: center;
+}
+
 .interruption-choice {
   width: min(88%, 680px);
   border-radius: 12px;
@@ -604,6 +688,11 @@ button.secondary-button:hover:not(:disabled) {
   .stage {
     min-height: 390px;
     height: 70vh;
+  }
+
+  body.experiment-active .stage {
+    height: 100%;
+    min-height: 0;
   }
 
   .recording-indicator {

@@ -267,7 +267,7 @@ describe("Worker API", () => {
     const storedSeeds = await env.DB.prepare(`SELECT root_seed_hex FROM participants WHERE numeric_id = 1`).first();
     expect(storedSeeds.root_seed_hex).toMatch(/^[0-9a-f]{64}$/u);
     const manifestRows = await env.DB.prepare(`SELECT COUNT(*) AS count FROM trial_manifest`).first();
-    expect(Number(manifestRows.count)).toBe(276);
+    expect(Number(manifestRows.count)).toBe(278);
     const prematureMain = await api(`/api/admin/visits/${created.participant.immediate_visit_id}/invitations`, {
       method: "POST",
       token: ADMIN_TOKEN,
@@ -339,6 +339,62 @@ describe("Worker API", () => {
     expect(missingAsset.json.error.code).toBe("stimulus_asset_missing");
     expect(missingAsset.json.error.details).toBeNull();
     expect(JSON.stringify(missingAsset.json)).not.toContain(sensitiveKey);
+  });
+
+  it("serves every L2 practice placeholder WAV through an authorized stimulus endpoint", async () => {
+    const created = await createParticipant(109);
+    await env.DB.prepare(`
+      UPDATE visits SET status = 'completed', finalized_at_ms = 0 WHERE visit_uuid = ?
+    `).bind(created.participant.immediate_visit_id).run();
+    await env.DB.prepare(`
+      UPDATE visits SET available_at_ms = 0, target_at_ms = 0 WHERE visit_uuid = ?
+    `).bind(created.participant.delayed_visit_id).run();
+    const issued = await api(`/api/admin/visits/${created.participant.delayed_visit_id}/invitations`, {
+      method: "POST",
+      token: ADMIN_TOKEN,
+      body: {},
+    });
+    expect(issued.response.status).toBe(201);
+    const redeemed = await api("/api/invitations/redeem", {
+      method: "POST",
+      body: {
+        token: tokenFromInvitation(issued.json.invitation.invitation_url),
+        participant_id: 109,
+        name_action: "confirm",
+        participant_name_confirmed: true,
+        client_instance_id: "10910910-9109-4109-8109-109109109109",
+        expected_visit_type: "delayed",
+      },
+    });
+    expect(redeemed.response.status).toBe(200);
+    await env.DB.prepare(`
+      UPDATE trial_manifest SET canonical_attempt_uuid = 'test-skip-picture-naming-for-practice-audio'
+      WHERE visit_uuid = ? AND segment = 'picture_naming'
+    `).bind(created.participant.delayed_visit_id).run();
+
+    const practiceTrials = redeemed.json.manifest
+      .filter((trial) => trial.segment === "l2_to_l1" && trial.practice);
+    expect(practiceTrials).toHaveLength(3);
+    const hashes = [];
+    for (const trial of practiceTrials) {
+      const result = await api(trial.audio_endpoint, { token: redeemed.json.session_token });
+      expect(result.response.status).toBe(200);
+      expect(result.response.headers.get("Content-Type")).toContain("audio");
+      expect(result.response.headers.get("Cache-Control")).toBe("private, no-store");
+      const bytes = new Uint8Array(await result.response.arrayBuffer());
+      expect(new TextDecoder("ascii").decode(bytes.subarray(0, 4))).toBe("RIFF");
+      const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+      hashes.push([...digest].map((byte) => byte.toString(16).padStart(2, "0")).join(""));
+      await env.DB.prepare(`
+        UPDATE trial_manifest SET canonical_attempt_uuid = 'test-practice-audio-served'
+        WHERE trial_uuid = ?
+      `).bind(trial.trial_id).run();
+    }
+    expect(new Set(hashes)).toEqual(new Set([
+      "57d9978e795cf0d7ba2f45fc86a9f4881c97b4a2112a2331674c001be251062c",
+      "536c8c11ad042f46c8a6a9ce0ce3eac0f6a0c0e2e51f052824f5f17315d15422",
+      "c5f171836beb4ed2b1d3d13d6b8e81e184903526c64e59e025a275c707704da5",
+    ]));
   });
 
   it("makes trial start and response idempotent and rejects a conflicting retry", async () => {
@@ -950,7 +1006,7 @@ describe("Worker API", () => {
     expect(taskPage).toContain('id="response-timer"');
     expect(taskPage).toContain('role="timer" aria-live="off"');
     expect(taskPage).toContain('id="welcome-interruption-button"');
-    expect(taskPage).toContain("全試行・録音の保存完了");
+    expect(taskPage).toContain("進み具合は上のバーで確認できます");
 
     const uiResponse = await exports.default.fetch(new Request(`${ORIGIN}/js/ui.js`));
     expect(uiResponse.status).toBe(200);
@@ -958,8 +1014,8 @@ describe("Worker API", () => {
     expect(ui).toContain('document.getElementById("interruption-button")');
     expect(ui).toContain('document.getElementById("welcome-interruption-button")');
     expect(ui).toContain("for (const button of this.interruptionButtons)");
-    expect(ui).toContain('this.progressLabel.textContent = "セッション完了"');
-    expect(ui).toContain('"セッションの全試行と録音の保存完了"');
+    expect(ui).toContain('this.progressLabel.textContent = "課題完了"');
+    expect(ui).toContain('"この課題の回答と録音を保存済み"');
 
     for (const path of ["/js/learning.js", "/js/segment.js"]) {
       const entryResponse = await exports.default.fetch(new Request(`${ORIGIN}${path}`));

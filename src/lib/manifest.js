@@ -1,5 +1,7 @@
 import {
   ACCENTS,
+  LEARNING_PRACTICE_STIMULI,
+  LEARNING_PRACTICE_TALKERS,
   L2_TO_L1_PRACTICE_STIMULI,
   MAIN_STIMULI,
   PICTURE_NAMING_PRACTICE_STIMULI,
@@ -200,6 +202,45 @@ async function buildLearningTrials(itemAssignments, counterbalance, rootSeedHex,
     }
   }
   return trials;
+}
+
+function buildLearningPracticeTrials(assetVersion, trainingAccent) {
+  const talkerId = LEARNING_PRACTICE_TALKERS[trainingAccent];
+  if (!talkerId) throw new Error(`Unsupported learning practice accent: ${trainingAccent}`);
+  return LEARNING_PRACTICE_STIMULI.map((item) => ({
+    segment: "learning",
+    practice: true,
+    excludeFromAnalysis: true,
+    itemId: item.id,
+    itemWord: item.word,
+    itemGloss: item.gloss,
+    listId: null,
+    listRank: null,
+    variability: null,
+    exposure: null,
+    cycle: null,
+    learningBlock: null,
+    blockIndex: null,
+    miniblock: null,
+    testAccent: null,
+    talkerId,
+    audioKey: audioKey(
+      assetVersion,
+      "learning-practice",
+      trainingAccent,
+      talkerId,
+      item.word,
+    ),
+    imageKey: null,
+    expectsRecording: false,
+    visualEmoji: item.emoji,
+    visualLabel: item.gloss,
+    timing: {
+      visualDurationMs: LEARNING_VISUAL_MS,
+      audioOnsetMs: VISUAL_TO_AUDIO_MS,
+      interTrialMs: INTER_TRIAL_MS,
+    },
+  }));
 }
 
 async function buildPictureNamingOrder(itemAssignments, rootSeedHex, timepoint, alternate = 0) {
@@ -477,6 +518,7 @@ export async function buildParticipantDesign({
   );
   const rootSeedHex = bytesToHex(rootSeedBytes);
   const itemAssignments = await createItemAssignments(counterbalance, assetVersion);
+  const learningPractice = buildLearningPracticeTrials(assetVersion, counterbalance.trainingAccent);
   const learningTrials = await buildLearningTrials(itemAssignments, counterbalance, rootSeedHex, assetVersion);
 
   const pictureNamingPre = await buildPictureNamingOrder(itemAssignments, rootSeedHex, "pre");
@@ -527,6 +569,7 @@ export async function buildParticipantDesign({
     ...pictureNamingPre,
   ];
   const immediateRaw = [
+    ...learningPractice,
     ...learningTrials,
     ...pictureNamingPracticeImmediate,
     ...pictureNamingImmediate,

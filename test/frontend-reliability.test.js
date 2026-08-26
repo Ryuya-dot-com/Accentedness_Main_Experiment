@@ -36,7 +36,10 @@ import {
   PARTICIPANT_COPY_DELIVERY,
   participantCopyCompletionMessage,
   participantErrorMessage,
+  participantGuidanceError,
+  participantSupportCode,
   progressState,
+  validateBrowserEnvironment,
 } from "../public/js/ui.js";
 
 function stateWith({ manifest = [], accepted = [] } = {}) {
@@ -73,6 +76,7 @@ function interactiveElement(overrides = {}) {
     innerHTML: "unchanged-sentinel",
     focus: vi.fn(),
     setAttribute: vi.fn((name, value) => attributes.set(name, value)),
+    removeAttribute: vi.fn((name) => attributes.delete(name)),
     getAttribute: vi.fn((name) => attributes.get(name) ?? null),
     addEventListener: vi.fn((type, listener) => listeners.set(type, listener)),
     removeEventListener: vi.fn((type, listener) => {
@@ -86,6 +90,30 @@ function interactiveElement(overrides = {}) {
 }
 
 describe("frontend reliability guards", () => {
+  it("blocks task start when the effective viewport cannot contain the no-scroll layout", () => {
+    vi.stubGlobal("navigator", {
+      userAgent: "Mozilla/5.0 Chrome/140.0.0.0 Safari/537.36",
+      mediaDevices: { getUserMedia: vi.fn() },
+    });
+    vi.stubGlobal("window", {
+      isSecureContext: true,
+      indexedDB: {},
+      AudioContext: function AudioContext() {},
+      AudioWorkletNode: function AudioWorkletNode() {},
+      innerWidth: 899,
+      innerHeight: 600,
+    });
+    try {
+      expect(validateBrowserEnvironment({ microphone: true })).toContain(
+        "課題画面が見切れています。ウィンドウを最大化するか、Chromeのズームを100%に戻してから再読み込みしてください。",
+      );
+      window.innerWidth = 900;
+      expect(validateBrowserEnvironment({ microphone: true })).toEqual([]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("derives countdown text from an absolute deadline without extending after a stalled frame", () => {
     expect(countdownState(20_000, 10_000, 10_000)).toMatchObject({
       remainingSeconds: 10,
@@ -107,13 +135,14 @@ describe("frontend reliability guards", () => {
       completed: 0,
       position: 1,
       total: 2,
-      percent: 50,
-      labelText: "Picture Naming 練習　試行 1/2",
+      percent: 0,
+      labelText: "Picture Naming 練習　1/2 回目",
     });
     expect(progressState("Picture Naming 練習", 1, 2, { inProgress: true })).toMatchObject({
       completed: 1,
       position: 2,
-      labelText: "Picture Naming 練習　試行 2/2",
+      percent: 50,
+      labelText: "Picture Naming 練習　2/2 回目",
     });
     expect(progressState("Picture Naming 本番", 0, 24, { inProgress: true })).toMatchObject({
       completed: 0,
@@ -532,6 +561,97 @@ describe("frontend reliability guards", () => {
     expect(source).toContain('id="participant-name-confirmation-value" class="summary" aria-live="polite"');
     expect(source).toContain('maxlength="256"');
     expect(source).toContain('aria-describedby="participant-name-status"');
+    expect(source).toContain('id="stimulus-emoji"');
+    expect(source).toContain('id="prompt-keyboard-hint"');
+    expect(source).toContain('id="continue-key-label"');
+  });
+
+  it("uses a fresh Space press as the only prompt keyboard shortcut", async () => {
+    const listeners = new Map();
+    const fakeDocument = {
+      body: interactiveElement(),
+      addEventListener: vi.fn((type, listener) => listeners.set(type, listener)),
+      removeEventListener: vi.fn((type, listener) => {
+        if (listeners.get(type) === listener) listeners.delete(type);
+      }),
+    };
+    vi.stubGlobal("document", fakeDocument);
+    try {
+      const ui = Object.create(ExperimentUi.prototype);
+      const continueButton = interactiveElement();
+      const continueKeyLabel = interactiveElement();
+      const stage = interactiveElement();
+      Object.assign(ui, {
+        resetStage: vi.fn(),
+        message: interactiveElement(),
+        promptKeyboardHint: interactiveElement(),
+        continueKeyLabel,
+        continueButton,
+        stage,
+        activePromptFinish: null,
+        spaceHeld: false,
+      });
+
+      let resolved = false;
+      const pending = ui.prompt("確認", "進む").then(() => { resolved = true; });
+      expect(stage.getAttribute("aria-keyshortcuts")).toBe("Space");
+      continueButton.dispatch("click");
+      await Promise.resolve();
+      expect(resolved).toBe(false);
+      const enterEvent = {
+        code: "Enter",
+        key: "Enter",
+        target: stage,
+        repeat: false,
+        preventDefault: vi.fn(),
+      };
+      listeners.get("keydown")(enterEvent);
+      await Promise.resolve();
+      expect(enterEvent.preventDefault).toHaveBeenCalledTimes(1);
+      expect(resolved).toBe(false);
+
+      const repeatedSpace = {
+        code: "Space",
+        key: " ",
+        target: stage,
+        repeat: true,
+        preventDefault: vi.fn(),
+      };
+      listeners.get("keydown")(repeatedSpace);
+      await Promise.resolve();
+      expect(resolved).toBe(false);
+
+      const freshSpace = {
+        ...repeatedSpace,
+        repeat: false,
+        preventDefault: vi.fn(),
+      };
+      listeners.get("keydown")(freshSpace);
+      await pending;
+      expect(resolved).toBe(true);
+      expect(stage.getAttribute("aria-keyshortcuts")).toBe(null);
+      expect(continueKeyLabel.textContent).toBe("Space");
+      expect(ui.promptKeyboardHint.textContent).toContain("スペースキーを1回押すと「進む」");
+      expect(continueButton.addEventListener).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("locks the viewport only while the experiment task is active", async () => {
+    const [uiResponse, stylesResponse] = await Promise.all([
+      exports.default.fetch(new Request("https://experiment.test/js/ui.js")),
+      exports.default.fetch(new Request("https://experiment.test/styles.css")),
+    ]);
+    const uiSource = await uiResponse.text();
+    const styles = await stylesResponse.text();
+    expect(uiSource).toContain('document.body.classList.add("experiment-active")');
+    expect(uiSource).toContain('document.body.classList.remove("experiment-active")');
+    expect(styles).toMatch(/body\.experiment-active\s*\{[^}]*overflow:\s*hidden/su);
+    expect(styles).toMatch(/body\.experiment-active \.stage\s*\{[^}]*min-height:\s*0/su);
+    expect(styles).toMatch(/\.stage\.prompt-active \.stage-message\s*\{[^}]*height:\s*calc\(100% - 146px\)/su);
+    expect(uiSource).toContain('this.stage.classList?.add("prompt-active")');
+    expect(uiSource).toContain('this.stage.classList?.remove("prompt-active")');
   });
 
   it("renders a participant name with textContent and removes it after either confirmation choice", async () => {
@@ -647,6 +767,100 @@ describe("frontend reliability guards", () => {
     expect(uiSource).not.toContain("participantNameConfirmationValue.innerHTML");
   });
 
+  it("keeps researcher-only timing and storage vocabulary out of participant copy", async () => {
+    const paths = [
+      "/js/learning.js",
+      "/js/segment.js",
+      "/js/task-page.js",
+      "/js/ui.js",
+      "/js/runner.js",
+    ];
+    const sources = await Promise.all(paths.map(async (path) => {
+      const response = await exports.default.fetch(new Request(`https://experiment.test${path}`));
+      expect(response.status).toBe(200);
+      return response.text();
+    }));
+    const participantSource = sources.join("\n");
+
+    expect(participantSource).not.toMatch(/750ミリ秒|研究用サーバー|server受付済み|日本語の練習|日本語音声/u);
+    expect(sources[0]).toContain("最初に${practiceTrials.length}回練習");
+    expect(sources[0]).toContain("英単語の音声");
+    expect(sources[1]).toContain("絵を見て英単語を答える課題");
+    expect(sources[1]).toContain("英語を聞いて日本語で答える課題");
+    expect(sources[1]).toContain("やさしい英単語");
+    expect(sources[1]).not.toContain("本番には出ない");
+    expect(sources[1]).toContain("分かった時点ですぐに");
+    expect(sources[1]).not.toContain("reviewPracticeRecording");
+  });
+
+  it("does not expose raw internal errors to participants", () => {
+    expect(participantErrorMessage(new Error("IndexedDB transaction aborted")))
+      .not.toContain("IndexedDB");
+    expect(participantErrorMessage(new Error("Internal API manifest mismatch")))
+      .not.toContain("manifest");
+    expect(participantErrorMessage(new Error("学習音声が5秒の提示窓に収まりません")))
+      .not.toContain("5秒の提示窓");
+    expect(participantErrorMessage(new Error("録音中に音声frameの欠落を検出しました")))
+      .not.toContain("frame");
+    expect(participantErrorMessage(new Error("中断リクエストの確認情報が一致しません")))
+      .not.toContain("リクエスト");
+    const internal = { code: "local_recording_missing" };
+    expect(participantSupportCode(internal)).toMatch(/^E-[0-9A-Z]{7}$/u);
+    expect(participantSupportCode(internal)).not.toContain(internal.code);
+    expect(participantErrorMessage(participantGuidanceError("パソコン版Google Chromeで開いてください。")))
+      .toBe("パソコン版Google Chromeで開いてください。");
+  });
+
+  it("renders an opaque inquiry number instead of a raw error code on the fatal screen", () => {
+    vi.stubGlobal("document", {
+      body: { classList: { remove: vi.fn() } },
+    });
+    try {
+      const ui = Object.create(ExperimentUi.prototype);
+      Object.assign(ui, {
+        stopResponseTimer: vi.fn(),
+        welcome: interactiveElement(),
+        task: interactiveElement(),
+        fatalPanel: interactiveElement(),
+        fatalMessage: interactiveElement(),
+      });
+      ui.fatal({
+        code: "session_superseded",
+        message: "Internal session epoch mismatch",
+      });
+      expect(ui.fatalMessage.textContent).toContain("お問い合わせ番号: E-");
+      expect(ui.fatalMessage.textContent).not.toContain("session_superseded");
+      expect(ui.fatalMessage.textContent).not.toContain("epoch mismatch");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("makes the safe action the default in a partial-data termination warning", async () => {
+    const ui = Object.create(ExperimentUi.prototype);
+    const terminate = interactiveElement();
+    const cancel = interactiveElement();
+    Object.assign(ui, {
+      resetStage: vi.fn(),
+      setInterruptionControlEnabled: vi.fn(),
+      progressDetail: interactiveElement(),
+      saveState: { textContent: "", classList: { add: vi.fn() } },
+      interruptionChoiceTitle: interactiveElement(),
+      interruptionChoiceDescription: interactiveElement(),
+      pauseParticipationButton: interactiveElement(),
+      terminateParticipationButton: terminate,
+      cancelInterruptionButton: cancel,
+      interruptionChoice: interactiveElement(),
+    });
+
+    const choice = ui.confirmTerminationWithPartialData();
+    expect(cancel.focus).toHaveBeenCalledTimes(1);
+    expect(ui.progressDetail.textContent).toContain("保存できていません");
+    expect(ui.saveState.textContent).toBe("一部未保存");
+    cancel.dispatch("click");
+    await expect(choice).resolves.toBe(false);
+  });
+
   it("shows participant-facing Japanese guidance for common server errors", () => {
     expect(participantErrorMessage({
       code: "session_superseded",
@@ -659,11 +873,11 @@ describe("frontend reliability guards", () => {
     expect(participantErrorMessage({
       code: "session_expired",
       message: "The session expired",
-    })).toContain("参加期限ではありません");
+    })).toContain("回答期限ではありません");
     expect(participantErrorMessage({
       code: "participant_copy_session_expired",
       message: "The session expired",
-    })).toContain("研究担当者へ依頼");
+    })).toContain("担当者へ依頼");
     expect(participantErrorMessage({
       code: "invalid_response_payload",
       message: "invalid response",
@@ -683,12 +897,12 @@ describe("frontend reliability guards", () => {
       { interruptionRequested: true },
     );
 
-    expect(message).toContain("通常完了、一時中断、参加終了のいずれも確認できていません");
-    expect(message).toContain("どこまで受け付けたかも確認できていません");
+    expect(message).toContain("通常完了、一時中断、参加終了のどれが完了したか確認できていません");
+    expect(message).toContain("どこまで保存されたかも確認できていません");
     expect(message).toContain("同じ有効な招待リンクを開き直し");
     expect(message).toContain("参加者IDを入力");
     expect(message).toContain("表示される氏名を確認");
-    expect(message).toContain("新しい試行を始める前に「中断・終了」");
+    expect(message).toContain("新しい問題を始める前に「中断・終了」");
     expect(message).toContain("担当者へ連絡");
     expect(message).not.toContain("保存は完了");
     expect(message).not.toContain("サーバー受付済み");
@@ -816,7 +1030,7 @@ describe("frontend reliability guards", () => {
     const direct = participantCopyCompletionMessage(
       PARTICIPANT_COPY_DELIVERY.DIRECT_WRITE_CONFIRMED,
     );
-    expect(direct).toContain("研究用サーバー保存が完了");
+    expect(direct).toContain("回答と録音は保存されました");
     expect(direct).toContain("選択した保存先へのZIP書き込みも完了");
     expect(direct).not.toContain("ダウンロードを開始しました");
 
@@ -824,7 +1038,7 @@ describe("frontend reliability guards", () => {
       PARTICIPANT_COPY_DELIVERY.DOWNLOAD_STARTED,
       { alreadyCompleted: true, filename: "accentedness_results.zip" },
     );
-    expect(fallback).toContain("研究用サーバーに保存済み");
+    expect(fallback).toContain("回答と録音も保存済み");
     expect(fallback).toContain("ZIPのダウンロードを開始しました");
     expect(fallback).toContain("Chromeのダウンロード一覧");
     expect(fallback).toContain("accentedness_results.zip");
@@ -905,7 +1119,7 @@ describe("frontend reliability guards", () => {
     expect(fetchParticipantCopy).toHaveBeenNthCalledWith(1, fileHandle);
     expect(fetchParticipantCopy).toHaveBeenNthCalledWith(2, fileHandle);
     expect(ui.prompt).toHaveBeenCalledWith(
-      expect.stringContaining("研究用サーバーへの保存は完了しています"),
+      expect.stringContaining("実験データは保存されています"),
       "ZIPを再準備する",
     );
   });
@@ -940,7 +1154,7 @@ describe("frontend reliability guards", () => {
     expect(acknowledge).toHaveBeenNthCalledWith(2, api, "attempt-1");
     expect(ui.setSaveState).toHaveBeenCalledWith("queued");
     expect(ui.prompt).toHaveBeenCalledWith(
-      expect.stringContaining("この試行の回答をまだ送信できていません"),
+      expect.stringContaining("この回の回答をまだ保存できていません"),
       "回答を再送する",
     );
   });
@@ -1210,6 +1424,45 @@ describe("frontend reliability guards", () => {
     expect(clearSession).toHaveBeenCalledTimes(1);
     expect(ui.interrupted).toHaveBeenCalledWith("terminate", { partialData: true });
     expect(api.completeVisit).not.toHaveBeenCalled();
+  });
+
+  it("does not finalize partial-data termination without an explicit click confirmation", async () => {
+    const interruptionId = "23232323-2323-4232-8232-232323232323";
+    const requestParticipationInterruption = vi.fn(async (mode, requestId) => ({
+      interruption: {
+        interruption_id: interruptionId,
+        request_id: requestId,
+        mode,
+        state: "requested",
+      },
+    }));
+    const finalizeParticipationInterruption = vi.fn();
+    const clearSession = vi.fn();
+    const { runner, ui } = runnerFor(stateWith(), {
+      requestParticipationInterruption,
+      finalizeParticipationInterruption,
+      clearSession,
+    });
+    Object.assign(ui, {
+      chooseInterruptionMode: vi.fn().mockResolvedValue("terminate"),
+      confirmTerminationWithPartialData: vi.fn().mockResolvedValue(false),
+      interruptionUnconfirmed: vi.fn(),
+    });
+    runner.stopMonitoring = vi.fn();
+    runner.participantExitRequested = true;
+    runner.flushWithRetry = vi.fn().mockRejectedValue(
+      Object.assign(new Error("recording missing"), { code: "local_recording_missing" }),
+    );
+
+    await expect(runner.handleParticipantExit()).rejects.toMatchObject({
+      name: "ParticipantExitRequested",
+      mode: "terminate",
+      confirmed: false,
+    });
+    expect(finalizeParticipationInterruption).not.toHaveBeenCalled();
+    expect(clearSession).not.toHaveBeenCalled();
+    const requestId = requestParticipationInterruption.mock.calls[0][1];
+    expect(ui.interruptionUnconfirmed).toHaveBeenCalledWith("terminate", requestId);
   });
 
   it("does not finalize a pause when a local recording is missing", async () => {

@@ -34,9 +34,9 @@
   },
   "vars": {
     "ENVIRONMENT": "development",
-    "ASSIGNMENT_VERSION": "main-v3-placeholder-assets",
+    "ASSIGNMENT_VERSION": "main-v5-english-learning-practice-placeholder",
     "SEED_ALGORITHM_VERSION": "hmac-sha256+xoshiro128ss-v1",
-    "ASSET_VERSION": "placeholder-v1",
+    "ASSET_VERSION": "placeholder-v2",
     "ALLOW_PLACEHOLDER_ASSETS": "true",
     "TEST_TOKEN_POLICY": "undecided",
     "SESSION_TTL_SECONDS": "43200",
@@ -77,9 +77,9 @@
       },
       "vars": {
         "ENVIRONMENT": "production",
-        "ASSIGNMENT_VERSION": "main-v3-placeholder-assets",
+        "ASSIGNMENT_VERSION": "main-v5-english-learning-practice-placeholder",
         "SEED_ALGORITHM_VERSION": "hmac-sha256+xoshiro128ss-v1",
-        "ASSET_VERSION": "placeholder-v1",
+        "ASSET_VERSION": "placeholder-v2",
         "ALLOW_PLACEHOLDER_ASSETS": "true",
         "TEST_TOKEN_POLICY": "undecided",
         "SESSION_TTL_SECONDS": "43200",

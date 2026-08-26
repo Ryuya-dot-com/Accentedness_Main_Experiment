@@ -47,21 +47,25 @@ IDは秘密情報ではなく、研究用連番の低entropyな値なので第�
 - High条件内および連結するHigh blockの境界で同一話者を連続させない。
 - 各語6回の総学習試行数は144。
 
-練習では本番24語を一切使いません。固定する練習項目は次の5語です。
+練習では本番24語を一切使いません。固定する練習項目は次の7語です。
 
 | task | ID | word | gloss | asset |
 |---|---:|---|---|---|
-| Picture Naming | 901 | abacus | そろばん | 専用画像、音声なし |
-| Picture Naming | 902 | binoculars | 双眼鏡 | 専用画像、音声なし |
-| L2-to-L1 | 903 | thermometer | 温度計 | 専用練習音声、画像なし |
-| L2-to-L1 | 904 | xylophone | 木琴 | 専用練習音声、画像なし |
-| L2-to-L1 | 905 | detergent | 洗剤 | 専用練習音声、画像なし |
+| Learning | 906 | apple | りんご | 🍎、割当学習accent別の専用練習話者 |
+| Learning | 907 | orange | オレンジ | 🍊、割当学習accent別の専用練習話者 |
+| Picture Naming | 901 | dog | 犬 | 専用画像、音声なし |
+| Picture Naming | 902 | chair | 椅子 | 専用画像、音声なし |
+| L2-to-L1 | 903 | book | 本 | 専用練習音声、画像なし |
+| L2-to-L1 | 904 | water | 水 | 専用練習音声、画像なし |
+| L2-to-L1 | 905 | car | 車 | 専用練習音声、画像なし |
 
-ID、word、非nullのimage key・audio keyはいずれも本番項目と非重複にし、Picture Naming練習とL2-to-L1練習の語も互いに重複させません。L2-to-L1練習音声は`practice`専用keyを使います。全練習trialは`practice=1`かつ`exclude_from_analysis=1`で、本分析に含めません。この分離はmanifest生成後のinvariant checkerでも検査します。
+ID、word、非nullのimage key・audio keyはいずれも本番項目と非重複にし、3課題の練習語も互いに重複させません。Learning練習は2回の固定順で、絵文字は全群共通、音声accentは参加者に割り当てられた学習accentへ一致させます。練習話者は本番学習6話者・テスト3話者とは別のaccent別専用話者です。これにより、特定群だけが本番直前に異accentへ曝露されることと、本番話者への事前馴化を避けます。browser実行時のTTSは使用しません。L2-to-L1練習音声は`practice`専用keyを使います。全練習trialは`practice=1`かつ`exclude_from_analysis=1`で、本分析に含めません。この分離はmanifest生成後のinvariant checkerでも検査します。
 
 学習は各cycle内で12語の条件blockを2つ提示し、24試行ごとに参加者制御の休憩を入れます。block順をcycleごとに反転するため、ラベル列だけを連結すると同条件が最大24になりますが、その境界には必ず休憩があります。休憩をまたがない連続提示は最大12語です。この選択は、各条件をcycle内の前半・後半に同数配置するための意図的なトレードオフです。
 
 ## 4. 学習試行の時系列
+
+本番144回の前に、ID 906（`apple`／🍎）と907（`orange`／🍊）の英語練習2回を固定順で行います。練習も同じ5,000 ms・750 ms・650 msのtimingを使い、D1へ実施ログを残しますが、録音せず本分析から除外します。練習は操作の理解だけを目的とし、main randomizationの乱数domainや消費順には入れません。参加者向け画面には、行動を変えない5,000 ms・750 ms・650 msの実装値を表示せず、「＋のあとに絵と英単語が出て、自動で進む」とだけ案内します。
 
 1. 画像を表示する。
 2. 画像onsetから750 ms後に学習音声を開始する。
@@ -74,7 +78,7 @@ ID、word、非nullのimage key・audio keyはいずれも本番項目と非重�
 
 pre・直後・遅延の各時点で練習2試行、本番24試行です。
 
-練習2試行はID 901（abacus）と902（binoculars）の専用画像です。3時点とも同じ2項目を使いますが、本番24語のword・imageとは重複しません。
+練習2回はID 901（`dog`）と902（`chair`）の専用画像です。3時点とも同じ高頻度2項目を使いますが、本番24語のword・imageとは重複しません。手順練習そのものが低頻度語彙知識を測ることを避けるための選択です。
 
 - 音声captureは画像onset直前にarmし、冒頭欠落を防ぐ。採点・QCの分析窓は画像onsetから開始。
 - 応答窓は10秒。
@@ -83,21 +87,31 @@ pre・直後・遅延の各時点で練習2試行、本番24試行です。
 - 条件連続は最大2。
 - pre・直後・遅延では別domain seedを使い、3順序の完全同一をpairwiseに明示的に拒否。
 
+Picture Naming latencyは、Barcroft and Sommers (2005) Experiment 2が踏襲したExperiment 1の定義に合わせ、画像cue onsetから参加者の最初の発声までとします。参加者には、`えーと`、`うーんと`、`あっ`等を付けず、答えの英単語だけを最初から1回発話し、分からなければ無言で待つよう、練習前と本番前に表示します。
+
 preでは正答語、英語音声、綴り、正誤feedbackを提示しません。それでも、同じ24画像を見て英語語彙を検索・発話しようとする行為は画像馴化とpretesting/retrieval-attempt効果を導入します。このため、主要推論の対象は「pre Picture Namingを受けた学習者」に限られ、preなしの学習へ直接一般化できません。pre完了から学習開始までの実施上の上限・下限は設けず、間隔だけを理由に受付拒否や自動除外をしません。実間隔の分布とpre後離脱は条件別に報告し、主要解析での扱いと感度分析はPI・共同研究者がリポジトリ外の解析計画で結果確認前に固定します。参加者IDはpre後の離脱があっても再利用しません。pre→学習間隔の正本は、pre Picture Naming最終試行の行動応答受理時刻からimmediate学習最初の試行開始時刻までとします。招待linkのredeem時刻や、録音upload完了後のvisit確定時刻はこの間隔に用いません。
 
 ## 6. L2-to-L1
 
 各時点で練習3試行、本番24試行です。
 
-練習3試行はID 903（thermometer）、904（xylophone）、905（detergent）の専用音声です。English / Chinese / Japaneseを1試行ずつ含み、本番24語のword・audioとは重複しません。語とaccentの対応はparticipant seedで変わるため、asset inventoryには3語×3 accentsの9 WAVを用意します。
+練習3回はID 903（`book`）、904（`water`）、905（`car`）の専用音声です。English / Chinese / Japaneseを1回ずつ含み、本番24語のword・audioとは重複しません。語とaccentの対応はparticipant seedで変わるため、asset inventoryには3語×3 accentsの9 WAVを用意します。現契約では本番と同じ固定テスト話者を使うため、本番前に3話者へ1 tokenずつ馴化します。したがって、測るのは完全に新規な話者への反応ではなく、この共通馴化後の成績です。
+
+録音課題の開始前にはマイク確認で1回録音・再生します。練習中は本番と同じ連続した課題流れを保つため、各練習回答後の自己録音再生は行いません。
 
 - 録音は音声開始150 ms前から開始。
-- 音声offset後に10秒の応答窓。
+- Web Audioの再生buffer末尾後に10秒の応答窓。latency分析では、QA済みの音響的語末へ別途補正する。
 - English / Chinese / Japaneseを各8語。
 - 各アクセント内でNo 4語、High 4語。
 - 6 strata（2 variability×3 accents）を1つずつ含む6試行miniblockを4つ作る。
 - variabilityとaccentの連続はいずれも、練習を含む実際の聴取系列全体で最大2。
 - 直後と遅延では語→アクセント→話者の写像を固定し、提示順だけを独立化。
+
+L2-to-L1のlatencyは、本研究の操作的定義として、テスト語の音響的offsetから日本語回答の最初の発声までとします。Barcroft and Sommers (2005)はL2-to-L1にもlatencyを報告していますが、本文の手順記述はその起点が音声onsetかoffsetかを明記していないため、offset基準を同論文の明示的定義として引用しません。参加者への前置き・言い直し・無回答指示はPicture Namingと同じ方針です。
+
+現行録音の`analysis_start_seconds`はWeb Audio buffer末尾です。これは音響的な語末と同一とは限らないため、本番刺激ごとにQA台帳の`acoustic_word_offset_ms`を確定し、buffer末尾との差を補正してlatencyを算出します。末尾無音を未検査のままbuffer末尾を音響offsetとみなしません。
+
+ただし、この補正だけでも実ヘッドホン出力とマイク入力のhardware latencyは除去できません。Picture Namingの画像基準もDOM更新直後のbrowser timestampであり、光学的なpixel onsetを測った値ではありません。現行programはremote端末のloopback校正を実施しないため、収集前に、(a) 同一管理機材と外部loopbackで校正する、または (b) latencyをbrowser/software基準の近似値として扱い絶対RTの精密比較を主張しない、のどちらかを固定します。この未決定を音響語末QAだけで解消したとみなしません。
 
 L2-to-L1音声は各アクセント1名の固定女性話者、計3名を練習・本番で使います。同じ語に対する話者は直後と遅延で変えません。現行R2 keyはtimepointを含まないため、同じ語には直後・遅延で同一WAV tokenを再提示します。同一話者の別takeを使う場合は、刺激確定前にtimepointをkeyとasset inventoryへ追加し、反復効果とtoken差のどちらを統制するかをPI・共同研究者がリポジトリ外の解析計画で決定します。
 
@@ -123,6 +137,10 @@ root seedから、`learning/...`、`picture_naming/pre/...`、`picture_naming/im
 - `SEED_ALGORITHM_VERSION` または `ASSIGNMENT_VERSION` を変えるとroot seedが変わる。
 - 作成後のmanifest、hash、root seed、versionをD1に保存し、途中で再生成しない。
 - secret自体はD1、クライアント、ログへ出さない。
+
+seedが固定するのは、割付、試行順、語、条件、話者、刺激key、protocol timingを含むplanned manifestです。実際のvisual onset、音声schedule・終了、lateness、visibility、server受理時刻等のruntime logはseedで事前生成されず、参加者実施時に観測して別に保存します。分析の正本はD1へ固定したmanifestとcanonical runtime responseであり、分析時にseedから再生成した順序ではありません。研究者ZIPの`design.json`は割付・version・visit別manifest hashを、`learning_trials.csv`は保存済みmanifestの全Learning計画行について`planned_`列とcanonical `runtime_`列を分離して出力します。未実施行のruntime値は空欄とし、開始後に未受理・再提示となったtrialも全attempt数とnoncanonical attempt数で見分けます。氏名、secret、raw root seedはZIPへ出しません。
+
+日本語練習を英語・学習accent一致の練習へ変更したmanifest契約は`main-v5-english-learning-practice-placeholder`へ版上げし、asset keyも`placeholder-v2`へ分離します。固定練習自体はmain用乱数を消費しませんが、root seed入力に`ASSIGNMENT_VERSION`を含める契約上、v5で新規作成する参加者のmain順序はv4以前と同じであるとは仮定しません。v3（Learning練習なし）・v4（日本語練習）で作成済みの参加者は保存済みmanifestを正本として変更せず、version別cohortとして区別します。v4再開用の`ringo.wav`・`mikan.wav`は削除せず、hash testで固定します。
 
 生成後のmanifestは再利用可能なinvariant checkerで検査します。学習・各テストの試行数、録音数、High話者頻度、Picture NamingのNo/High pair orientation、L2 miniblockの6 strata、直後・遅延の語→accent→話者→WAV写像を契約として扱います。監査scriptはID 1–2160を独立した2つのrandomization secretで生成し、計4,320 designを検査します。同じserial positionの一致数は報告指標であり、恣意的に順序を再抽選する制約にはしません。
 
@@ -153,10 +171,10 @@ PN練習2 → PN本番24
 直後visitは次の順です。
 
 ```text
-学習144 → PN練習2 → PN本番24 → L2練習3 → L2本番24
+学習練習2 → 学習本番144 → PN練習2 → PN本番24 → L2練習3 → L2本番24
 ```
 
-合計197試行、録音53件です。
+合計199試行、録音53件です。
 
 遅延visitは次の順です。
 
@@ -168,6 +186,8 @@ PN練習2 → PN本番24 → L2練習3 → L2本番24
 
 6つのparticipant URLを用意しますが、token/sessionの境界はpre、immediate、delayedの3 visitです。招待linkに経過時間による失効はありません。短期session tokenには認証上の有効期限がありますが、同じactiveな招待linkを開き直せば未完了位置から再開できるため、これは参加期限ではありません。immediate内とdelayed内では同じsession epochを引き継ぎます。次segmentの開始前に、前segmentの録音がすべてR2へ保存済みであることをserverが検査します。
 
+課題画面はviewport内へ固定し、ページscrollを無効にします。課題進行に使えるkeyboard shortcutはfreshなSpace押下だけとし、EnterとSpace長押しrepeatでは進めません。timed trialは自動進行し、Spaceで短縮できません。Space案内はclick可能なCTAではなくkeyboard keyとして表示します。中断・終了、氏名入力、保存先選択は誤操作を避けるため明示button／入力操作のままにします。進捗見出しは現在位置、barと詳細は受理済み完了数を表し、開始前の1/2回目を50%完了とは表示しません。参加者向け説明には行動に必要な回数・休憩・10秒だけを残し、exact onset、seed、manifest、保存基盤、内部error codeを出しません。fatal時はallowlist済みの固定案内または一般案内とopaqueなお問い合わせ番号だけを表示します。部分データを失う可能性がある終了確認では、安全側の「終了せず担当者へ連絡」を先頭・初期focusにします。
+
 Pre・直後で録音や回答を参加者へdownloadさせると、聞き返し・復習が遅延成績を汚染し得るため、参加者向けZIPは提示しません。Delayed L2-to-L1を含むvisitをserver側で完了確定した後だけ、3 visitすべてのcanonical回答とWAVを単一ZIPとして明示ボタンから提供します。download失敗で保存済みvisitを未完了へ戻しません。
 
 ## 10. 一時中断、参加終了、通常完了
@@ -178,7 +198,7 @@ Pre・直後で録音や回答を参加者へdownloadさせると、聞き返し
 - requestと試行開始が競合した場合、先に開始済みの1試行だけは応答・録音をdrainできます。requestが先なら次のtrial startをAPIとD1 triggerの両方が拒否します。openなinterruption中はvisit完了、招待発行、管理者revokeも拒否します。
 - 一時中断では参加者とvisitを完了・withdraw扱いにせず、現在sessionだけを閉じ、同じactive招待を保持します。finalize時にもserverがcanonical responseに対応する録音待ち0件を再検査し、1件でも残れば`requested`のまま拒否します。同じ招待linkでIDを入力し、保存済み氏名を確認すると新sessionとなり、serverが受理したcanonical trialの直後から再開します。
 - pause requestのfinalize前にtabを失った場合、再認証しても`requested`を自動で`resumed`へ変えず、次trialを禁止したまま送信とpause確定を続行します。pauseが`paused`まで確定した後の再認証だけを明示的な再開として`resumed`にします。
-- 回復不能な回答・録音エラーで安全な再開を保証できない場合、pauseを完了扱いにはしません。pause要求後なら、参加者は未確定の確認コードを残すか、同じrequest UUID・interruption UUIDを保持した一方向の`pause/requested`→`terminate/requested`切替を明示的に選びます。再訪時のoutbox照合で初めて判明した場合も新trialを始めず、新しいterminate requestによるserver受理済み範囲での参加終了か担当者連絡だけを提示します。逆方向やfinalize済み状態の変更は拒否します。
+- 回復不能な回答・録音エラーで安全な再開を保証できない場合、pauseを完了扱いにはしません。pause要求後なら、参加者は未確定の確認番号を残すか、同じrequest UUID・interruption UUIDを保持した一方向の`pause/requested`→`terminate/requested`切替を明示的に選びます。再訪時のoutbox照合で初めて判明した場合も新trialを始めず、新しいterminate requestによるserver受理済み範囲での参加終了か担当者連絡だけを提示します。逆方向やfinalize済み状態の変更は拒否します。
 - pause時に開始済みだが未受理だったattemptを再提示する場合、旧attemptと録音slotは`superseded_on_resume`でabandoned・非canonicalにし、新attemptへ`repeated_after_interruption=1`を付けます。学習なら追加曝露として`extra_exposure=1`も付けます。
 - 永続的な参加終了では、受理済みcanonical responseとupload済みR2 WAVを削除・上書きしません。未受理attemptは非canonicalのabandoned、canonical responseに対応する未upload録音は`participant_terminated`のabandonedとして区別します。完了済みvisitはそのまま保持し、未完了visitだけを`withdrawn`にします。
 - 参加終了は`behavioral_completed_at_ms`、segment完了時刻、`finalized_at_ms`を新規設定しません。部分データを通常完了に見せず、active sessionと招待を閉じ、以後の再開を拒否します。

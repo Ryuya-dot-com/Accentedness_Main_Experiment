@@ -5,9 +5,9 @@ import { buildParticipantDesign } from "../src/lib/manifest.js";
 const DESIGN_INPUT = Object.freeze({
   participantId: 1,
   participantUuid: "00000000-0000-4000-8000-000000000001",
-  assignmentVersion: "main-v3-placeholder-assets",
+  assignmentVersion: "main-v5-english-learning-practice-placeholder",
   seedAlgorithmVersion: "hmac-sha256+xoshiro128ss-v1",
-  assetVersion: "placeholder-v1",
+  assetVersion: "placeholder-v2",
   randomizationSecret: "focused-design-invariant-test-secret",
 });
 

@@ -11,8 +11,8 @@
     "test": "vitest run",
     "audit:randomization": "node scripts/audit-randomization.mjs",
     "test:watch": "vitest",
-    "types": "wrangler types",
-    "types:check": "wrangler types --check",
+    "types": "wrangler types --env-file /dev/null",
+    "types:check": "wrangler types --check --env-file /dev/null",
     "verify": "npm run types:check && npm test && npm run audit:randomization && npm run deploy:check && npm run deploy:check:production"
   },
   "devDependencies": {

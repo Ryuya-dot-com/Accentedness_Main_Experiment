@@ -8,9 +8,9 @@ import {
 import { maxRun } from "../src/lib/randomization.js";
 
 const DESIGN_INPUT = Object.freeze({
-  assignmentVersion: "main-v3-placeholder-assets",
+  assignmentVersion: "main-v5-english-learning-practice-placeholder",
   seedAlgorithmVersion: "hmac-sha256+xoshiro128ss-v1",
-  assetVersion: "placeholder-v1",
+  assetVersion: "placeholder-v2",
   randomizationSecret: "test-randomization-secret-that-is-independent",
 });
 
@@ -105,10 +105,10 @@ describe("participant-level manifest invariants", () => {
     const mainAudioKeys = new Set(main.map((trial) => trial.audioKey).filter(Boolean));
 
     expect(new Set(practice.map((trial) => trial.itemId))).toEqual(
-      new Set([901, 902, 903, 904, 905]),
+      new Set([901, 902, 903, 904, 905, 906, 907]),
     );
     expect(new Set(practice.map((trial) => trial.itemWord))).toEqual(
-      new Set(["abacus", "binoculars", "thermometer", "xylophone", "detergent"]),
+      new Set(["dog", "chair", "book", "water", "car", "apple", "orange"]),
     );
     expect(practice.every((trial) => trial.excludeFromAnalysis)).toBe(true);
     expect(practice.every((trial) => !mainIds.has(trial.itemId))).toBe(true);
@@ -119,12 +119,36 @@ describe("participant-level manifest invariants", () => {
       .every((trial) => !mainAudioKeys.has(trial.audioKey))).toBe(true);
 
     for (const visitType of ["pre", "immediate", "delayed"]) {
+      const learning = design[visitType].trials.filter(
+        (trial) => trial.segment === "learning" && trial.practice,
+      );
+      if (visitType === "immediate") {
+        expect(learning.map((trial) => [
+          trial.itemId,
+          trial.itemWord,
+          trial.protocol.visualEmoji,
+        ])).toEqual([
+          [906, "apple", "🍎"],
+          [907, "orange", "🍊"],
+        ]);
+        const practiceAccent = design.assignment.trainingAccent;
+        const practiceTalker = `${practiceAccent[0]}_practice_f1`;
+        expect(learning.every((trial) => (
+          trial.imageKey === null
+          && trial.expectsRecording === false
+          && trial.talkerId === practiceTalker
+          && trial.audioKey === `stimuli/${trial.assetVersion}/learning-practice/${practiceAccent}/${practiceTalker}/${trial.itemWord}.wav`
+        ))).toBe(true);
+      } else {
+        expect(learning).toHaveLength(0);
+      }
+
       const picture = design[visitType].trials.filter(
         (trial) => trial.segment === "picture_naming" && trial.practice,
       );
       expect(picture.map((trial) => [trial.itemId, trial.itemWord])).toEqual([
-        [901, "abacus"],
-        [902, "binoculars"],
+        [901, "dog"],
+        [902, "chair"],
       ]);
       expect(picture.every((trial) => (
         trial.audioKey === null
@@ -139,9 +163,9 @@ describe("participant-level manifest invariants", () => {
         continue;
       }
       expect(l2.map((trial) => [trial.itemId, trial.itemWord])).toEqual([
-        [903, "thermometer"],
-        [904, "xylophone"],
-        [905, "detergent"],
+        [903, "book"],
+        [904, "water"],
+        [905, "car"],
       ]);
       expect(l2.every((trial) => (
         trial.imageKey === null
@@ -263,7 +287,7 @@ describe("participant-level manifest invariants", () => {
       expect(mapping(immediateL2)).toEqual(mapping(delayedL2));
       expect(design.pre.expectedTrialCount).toBe(26);
       expect(design.pre.expectedRecordingCount).toBe(26);
-      expect(design.immediate.expectedTrialCount).toBe(197);
+      expect(design.immediate.expectedTrialCount).toBe(199);
       expect(design.immediate.expectedRecordingCount).toBe(53);
       expect(design.delayed.expectedTrialCount).toBe(53);
       expect(design.delayed.expectedRecordingCount).toBe(53);

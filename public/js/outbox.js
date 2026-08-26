@@ -181,7 +181,11 @@ export async function hasQueuedRecording(visitId, attemptId) {
 
 export async function acknowledgeTrialResponse(api, attemptId) {
   const record = await queuedTrial(attemptId);
-  if (!record) throw new Error(`保存待ち試行が見つかりません: ${attemptId}`);
+  if (!record) {
+    const error = new Error("保存待ちの回答を確認できません。担当者に知らせてください。");
+    error.code = "local_outbox_inconsistent";
+    throw error;
+  }
   if (!record.responseAck) {
     await api.saveResponse(record.trialId, record.attemptId, record.responseKey, record.payload);
     record.responseAck = true;

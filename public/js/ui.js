@@ -20,14 +20,30 @@ export function progressState(label, completedInput, totalInput, { inProgress = 
     completed,
     total,
     position,
-    percent: total > 0 ? position / total * 100 : 0,
+    percent: total > 0 ? completed / total * 100 : 0,
     labelText: inProgress && completed < total
-      ? `${label}　試行 ${position}/${total}`
+      ? `${label}　${position}/${total} 回目`
       : `${label}　${completed}/${total} 完了`,
     valueText: inProgress && completed < total
-      ? `${label}、現在の試行 ${position}/${total}、完了 ${completed}/${total}`
+      ? `${label}、現在 ${position}/${total} 回目、完了 ${completed}/${total}`
       : `${label}、完了 ${completed}/${total}`,
   };
+}
+
+export function participantGuidanceError(message) {
+  const error = new Error(String(message));
+  Object.defineProperty(error, "participantGuidance", { value: true });
+  return error;
+}
+
+export function participantSupportCode(error) {
+  const source = String(error?.code ?? error?.message ?? error?.name ?? "participant-error");
+  let hash = 2_166_136_261;
+  for (let index = 0; index < source.length; index += 1) {
+    hash ^= source.charCodeAt(index);
+    hash = Math.imul(hash, 16_777_619);
+  }
+  return `E-${(hash >>> 0).toString(36).toUpperCase().padStart(7, "0")}`;
 }
 
 export const PARTICIPANT_COPY_DELIVERY = Object.freeze({
@@ -42,14 +58,14 @@ export function participantCopyCompletionMessage(
   const safeFilename = /^[A-Za-z0-9._-]+\.zip$/u.test(String(filename))
     ? String(filename)
     : "accentedness_results.zip";
-  const serverCompletion = alreadyCompleted
-    ? "遅延テストは研究用サーバーに保存済みです。"
-    : "遅延テストは終了し、すべての回答と録音の研究用サーバー保存が完了しました。";
+  const completion = alreadyCompleted
+    ? "遅延テストは終了しています。回答と録音も保存済みです。"
+    : "遅延テストは終了し、回答と録音は保存されました。";
   if (delivery === PARTICIPANT_COPY_DELIVERY.DIRECT_WRITE_CONFIRMED) {
-    return `${serverCompletion} 選択した保存先へのZIP書き込みも完了しました。必要なら下のボタンからもう一度保存できます。ご協力ありがとうございました。`;
+    return `${completion} 選択した保存先へのZIP書き込みも完了しました。必要なら下のボタンからもう一度保存できます。ご協力ありがとうございました。`;
   }
   if (delivery === PARTICIPANT_COPY_DELIVERY.DOWNLOAD_STARTED) {
-    return `${serverCompletion} ZIPのダウンロードを開始しました。Chromeのダウンロード一覧を開き、「${safeFilename}」が最後までダウンロードされていることを確認してください。確認できない場合は、下のリンクからもう一度ダウンロードを開始できます。ご協力ありがとうございました。`;
+    return `${completion} ZIPのダウンロードを開始しました。Chromeのダウンロード一覧を開き、「${safeFilename}」が最後までダウンロードされていることを確認してください。確認できない場合は、下のリンクからもう一度ダウンロードを開始できます。ご協力ありがとうございました。`;
   }
   throw new TypeError("参加者向けZIPの受け渡し状態を確認できませんでした。");
 }
@@ -64,6 +80,9 @@ export function validateBrowserEnvironment({ microphone }) {
   if (!window.isSecureContext) failures.push("安全なHTTPS接続で開いてください。");
   if (!window.indexedDB) failures.push("このブラウザでは一時保存機能を利用できません。");
   if (!window.AudioContext) failures.push("このブラウザでは音声再生機能を利用できません。");
+  if (window.innerWidth < 900 || window.innerHeight < 600) {
+    failures.push("課題画面が見切れています。ウィンドウを最大化するか、Chromeのズームを100%に戻してから再読み込みしてください。");
+  }
   if (microphone && (!navigator.mediaDevices?.getUserMedia || !window.AudioWorkletNode)) {
     failures.push("このブラウザでは必要なマイク録音機能を利用できません。");
   }
@@ -76,39 +95,44 @@ const PARTICIPANT_ERROR_MESSAGES = Object.freeze({
   wrong_visit_route: "このリンクと開いている課題が一致しません。ページを閉じ、担当者から届いたリンクを開き直してください。",
   participant_name_not_registered: "Preで氏名登録が完了していません。このまま進まず担当者へ連絡してください。",
   invalid_name_preview: "氏名確認情報を読み込めませんでした。このまま進まず担当者へ連絡してください。",
-  visit_closed: "このセッションはすでに終了しています。担当者に知らせてください。",
-  visit_not_available: "このセッションはまだ受付時刻に達していません。担当者の案内後に開き直してください。",
-  invalid_session: "セッション情報を確認できません。担当者から届いたリンクを開き直してください。",
-  session_expired: "安全のため一時セッションを更新します。参加期限ではありません。担当者から届いた同じ招待リンクを開き直すと、保存済み位置から再開できます。",
+  visit_closed: "この課題はすでに終了しています。担当者に知らせてください。",
+  visit_not_available: "この課題はまだ開始できません。担当者の案内後に開き直してください。",
+  invalid_session: "この画面の情報を確認できません。担当者から届いたリンクを開き直してください。",
+  session_expired: "この画面の有効時間が切れました。回答期限ではありません。担当者から届いた同じ招待リンクを開き直すと、続きから再開できます。",
   session_superseded: "別のタブまたは再開操作により、この画面は無効になりました。この画面では続行しないでください。",
   production_collection_blocked: "実験環境が本番開始条件を満たしていないため停止しました。担当者に知らせてください。",
   placeholder_assets_disabled: "本番刺激を確認できないため停止しました。担当者に知らせてください。",
   stimulus_asset_missing: "必要な刺激を読み込めないため停止しました。担当者に知らせてください。",
-  participant_copy_before_completion: "研究用サーバーで遅延セッションの完了を確認できません。担当者に知らせてください。",
-  participant_copy_visits_incomplete: "3回分の結果コピーを準備できません。研究用サーバーのvisit状態を担当者に確認してもらってください。",
-  participant_copy_not_ready: "3回分の回答または録音が研究用サーバーで不足しています。担当者に知らせてください。",
-  participant_copy_session_expired: "実験データは研究用サーバーに保存済みです。このパソコン向けZIPの再取得は、研究担当者へ依頼してください。",
-  participation_termination_pending: "参加終了の処理中です。同じ招待リンクを開き直して、終了確認を続けてください。新しい試行は開始されません。",
-  local_recording_missing: "前回の回答に対応する送信前録音を確認できないため、このセッションは完了しておらず、安全に再開もできません。参加終了を選ばず停止しました。このまま課題を再開せず、表示されたコードを担当者へ知らせてください。",
-  local_recording_unreadable: "前回の回答に対応する送信前録音を読み出せないため、このセッションは完了しておらず、安全に再開もできません。参加終了を選ばず停止しました。このまま課題を再開せず、表示されたコードを担当者へ知らせてください。",
+  participant_copy_before_completion: "遅延テストの完了を確認できません。担当者に知らせてください。",
+  participant_copy_visits_incomplete: "3回分の結果ファイルを準備できません。担当者に知らせてください。",
+  participant_copy_not_ready: "結果ファイルに必要な回答または録音を確認できません。担当者に知らせてください。",
+  participant_copy_session_expired: "実験データは保存済みです。このパソコン向けZIPをもう一度取得する場合は、担当者へ依頼してください。",
+  participation_termination_pending: "参加終了の処理中です。同じ招待リンクを開き直して、終了確認を続けてください。新しい問題は開始されません。",
+  local_outbox_inconsistent: "保存待ちの回答を確認できません。このまま課題を再開せず、お問い合わせ番号を担当者へ知らせてください。",
+  local_recording_missing: "前回の回答に対応する録音を確認できないため、この課題は完了しておらず、安全に再開もできません。参加終了を選ばず停止しました。このまま課題を再開せず、お問い合わせ番号を担当者へ知らせてください。",
+  local_recording_unreadable: "前回の回答に対応する録音を読み出せないため、この課題は完了しておらず、安全に再開もできません。参加終了を選ばず停止しました。このまま課題を再開せず、お問い合わせ番号を担当者へ知らせてください。",
+  request_timeout: "通信がタイムアウトしました。ネットワーク接続を確認し、担当者から届いた同じ招待リンクを開き直してください。",
+  session_storage_unavailable: "このブラウザでは回答を一時保存できません。通常モードのGoogle Chromeで開き直し、担当者に知らせてください。",
 });
 
 export function participantErrorMessage(error) {
   const code = String(error?.code ?? "");
   if (PARTICIPANT_ERROR_MESSAGES[code]) return PARTICIPANT_ERROR_MESSAGES[code];
   if (/^(invalid_|response_|recording_|trial_|stimulus_|idempotency_|canonical_)/u.test(code)) {
-    return "データまたは課題状態の整合性を確認できないため停止しました。表示されたコードを記録し、担当者へ知らせてください。";
+    return "データまたは課題状態の整合性を確認できないため停止しました。お問い合わせ番号を記録し、担当者へ知らせてください。";
   }
-  return error?.message ?? String(error);
+  const message = String(error?.message ?? "");
+  if (error?.participantGuidance === true && message) return message;
+  return "課題を続けられない問題が発生しました。お問い合わせ番号を記録し、担当者へ知らせてください。";
 }
 
 export function fatalErrorMessage(error, { interruptionRequested = false } = {}) {
   if (!interruptionRequested) return participantErrorMessage(error);
   return [
     "「中断・終了」を押した後、課題を安全に続行できない問題が発生しました。",
-    "この画面では、通常完了、一時中断、参加終了のいずれも確認できていません。研究用サーバーがこの試行の回答・録音をどこまで受け付けたかも確認できていません。",
-    "担当者から届いた同じ有効な招待リンクを開き直し、参加者IDを入力して表示される氏名を確認してください。画面が開いたら、新しい試行を始める前に「中断・終了」を選んでください。",
-    "同じリンクを開けない場合や状態が分からない場合は、表示されたコードとともに担当者へ連絡してください。",
+    "この画面では、通常完了、一時中断、参加終了のどれが完了したか確認できていません。回答や録音がどこまで保存されたかも確認できていません。",
+    "担当者から届いた同じ有効な招待リンクを開き直し、参加者IDを入力して表示される氏名を確認してください。画面が開いたら、新しい問題を始める前に「中断・終了」を選んでください。",
+    "同じリンクを開けない場合や状態が分からない場合は、お問い合わせ番号とともに担当者へ連絡してください。",
   ].join("\n\n");
 }
 
@@ -148,6 +172,7 @@ export class ExperimentUi {
     this.stage = document.getElementById("stage");
     this.fixation = document.getElementById("fixation");
     this.image = document.getElementById("stimulus-image");
+    this.emoji = document.getElementById("stimulus-emoji");
     this.placeholder = document.getElementById("placeholder-card");
     this.placeholderGloss = document.getElementById("placeholder-gloss");
     this.audioCue = document.getElementById("audio-cue");
@@ -157,6 +182,8 @@ export class ExperimentUi {
     this.responseTimerValue = document.getElementById("response-timer-value");
     this.responseTimerFill = document.getElementById("response-timer-fill");
     this.message = document.getElementById("stage-message");
+    this.promptKeyboardHint = document.getElementById("prompt-keyboard-hint");
+    this.continueKeyLabel = document.getElementById("continue-key-label");
     this.continueButton = document.getElementById("continue-button");
     this.downloadLink = document.getElementById("download-link");
     this.interruptionButton = document.getElementById("interruption-button");
@@ -177,12 +204,16 @@ export class ExperimentUi {
     this.responseTimerFrame = null;
     this.responseTimerRun = 0;
     this.activePromptFinish = null;
+    this.spaceHeld = false;
     this.interruptionHandler = null;
     for (const button of this.interruptionButtons) {
       button.addEventListener("click", () => {
         if (!button.disabled) this.interruptionHandler?.();
       });
     }
+    document.addEventListener("keyup", (event) => {
+      if (event.code === "Space") this.spaceHeld = false;
+    });
     window.addEventListener("pagehide", () => {
       this.stopResponseTimer();
       this.clearParticipantAccess();
@@ -197,10 +228,10 @@ export class ExperimentUi {
 
   setParticipant(id, visitType) {
     const visitLabel = {
-      pre: "事前セッション",
-      immediate: "直後セッション",
-      delayed: "遅延セッション",
-    }[visitType] ?? "実験セッション";
+      pre: "事前テスト",
+      immediate: "直後課題",
+      delayed: "遅延テスト",
+    }[visitType] ?? "実験課題";
     this.summary.textContent = `参加者ID: ${id}　／　${visitLabel}`;
     this.summary.hidden = false;
   }
@@ -352,12 +383,14 @@ export class ExperimentUi {
   }
 
   beginTask() {
+    document.body.classList.add("experiment-active");
     this.welcome.hidden = true;
     this.task.hidden = false;
-    this.task.scrollIntoView({ block: "start" });
+    window.scrollTo({ top: 0, left: 0, behavior: "auto" });
   }
 
   returnToWelcome() {
+    document.body.classList.remove("experiment-active");
     this.resetStage();
     this.task.hidden = true;
     this.welcome.hidden = false;
@@ -374,7 +407,7 @@ export class ExperimentUi {
   setInterruptionPending(activeTrial) {
     for (const button of this.interruptionButtons) {
       button.textContent = button === this.interruptionButton && activeTrial
-        ? "この試行後に確認"
+        ? "この回の後に確認"
         : "中断・終了を確認中";
       button.disabled = true;
     }
@@ -400,6 +433,7 @@ export class ExperimentUi {
 
   resetStage() {
     this.stopResponseTimer();
+    this.stage.classList?.remove("prompt-active");
     if (this.activeImageUrl) {
       URL.revokeObjectURL(this.activeImageUrl);
       this.activeImageUrl = null;
@@ -407,9 +441,12 @@ export class ExperimentUi {
     [
       this.fixation,
       this.image,
+      this.emoji,
       this.placeholder,
       this.audioCue,
       this.message,
+      this.promptKeyboardHint,
+      this.continueKeyLabel,
       this.continueButton,
       this.downloadLink,
       this.interruptionChoice,
@@ -434,6 +471,12 @@ export class ExperimentUi {
       this.image.hidden = false;
       return "image";
     }
+    if (trial.protocol?.visualEmoji) {
+      this.emoji.textContent = trial.protocol.visualEmoji;
+      this.emoji.setAttribute("aria-label", trial.protocol.visualLabel || "練習用の絵文字");
+      this.emoji.hidden = false;
+      return "emoji";
+    }
     this.placeholderGloss.textContent = "刺激画像を読み込めませんでした";
     this.placeholder.hidden = false;
     return "placeholder";
@@ -457,9 +500,9 @@ export class ExperimentUi {
     this.progressLabel.textContent = progress.labelText;
     this.progressFill.style.width = `${progress.percent.toFixed(2)}%`;
     this.progressTrack.setAttribute("aria-valuemax", String(progress.total));
-    this.progressTrack.setAttribute("aria-valuenow", String(progress.position));
+    this.progressTrack.setAttribute("aria-valuenow", String(progress.completed));
     this.progressTrack.setAttribute("aria-valuetext", progress.valueText);
-    this.progressDetail.textContent = `完了 ${progress.completed}/${progress.total}。回答は各試行後に保存されます。続けられなくなった場合は「中断・終了」を選んでください。`;
+    this.progressDetail.textContent = `完了 ${progress.completed}/${progress.total}。ここまで自動で保存されます。続けられなくなった場合は「中断・終了」を選んでください。`;
   }
 
   startResponseTimer(deadlinePerfMs, durationMs, label = "回答時間") {
@@ -510,22 +553,26 @@ export class ExperimentUi {
     const pending = state !== "saved";
     this.saveState.classList.toggle("pending", pending);
     this.saveState.textContent = state === "saving"
-      ? "データ保存：同期中…"
+      ? "保存中…"
       : state === "queued"
-        ? "データ保存：未送信あり"
-        : "データ保存：この時点まで完了";
+        ? "未送信あり"
+        : "ここまで保存済み";
   }
 
   async prompt(message, buttonLabel = "続ける") {
     this.resetStage();
+    this.stage.classList?.add("prompt-active");
     this.message.textContent = message;
     this.message.hidden = false;
-    this.continueButton.textContent = buttonLabel;
-    this.continueButton.hidden = false;
+    this.promptKeyboardHint.textContent = `キーボードのスペースキーを1回押すと「${buttonLabel}」へ進みます。クリックや他のキーでは進みません。`;
+    this.promptKeyboardHint.hidden = false;
+    this.continueKeyLabel.textContent = "Space";
+    this.continueKeyLabel.hidden = false;
+    this.stage.setAttribute("aria-keyshortcuts", "Space");
     await new Promise((resolve) => {
       const cleanup = () => {
         document.removeEventListener("keydown", onKey);
-        this.continueButton.removeEventListener("click", onClick);
+        this.stage.removeAttribute("aria-keyshortcuts");
       };
       const finish = () => {
         if (this.activePromptFinish !== finish) return;
@@ -533,17 +580,21 @@ export class ExperimentUi {
         cleanup();
         resolve();
       };
-      const onClick = () => finish();
       const onKey = (event) => {
-        if (event.code !== "Space" && event.key !== "Enter") return;
-        if (![this.continueButton, this.stage, document.body].includes(event.target)) return;
+        if (![this.stage, document.body].includes(event.target)) return;
+        if (event.key === "Enter") {
+          event.preventDefault();
+          return;
+        }
+        if (event.code !== "Space") return;
         event.preventDefault();
+        if (event.repeat || this.spaceHeld) return;
+        this.spaceHeld = true;
         finish();
       };
-      this.continueButton.addEventListener("click", onClick);
       document.addEventListener("keydown", onKey);
       this.activePromptFinish = finish;
-      this.continueButton.focus();
+      this.stage.focus({ preventScroll: true });
     });
   }
 
@@ -551,7 +602,7 @@ export class ExperimentUi {
     this.resetStage();
     this.setInterruptionControlEnabled(false);
     this.interruptionChoiceTitle.textContent = "課題を中断・終了しますか？";
-    this.interruptionChoiceDescription.textContent = "一時中断は、同じ招待リンクから研究用サーバーが受け付けた位置へ戻れます。参加終了を選ぶと、これ以降の課題には参加せず、再開できません。送信待ちデータがあれば、確定前に送信を試みます。";
+    this.interruptionChoiceDescription.textContent = "一時中断すると、ここまでを保存し、同じ招待リンクから続きに戻れます。参加終了を選ぶと、実験への参加を終え、再開できません。";
     this.pauseParticipationButton.textContent = "一時中断する";
     this.pauseParticipationButton.hidden = false;
     this.terminateParticipationButton.textContent = "参加を終了する";
@@ -581,7 +632,7 @@ export class ExperimentUi {
     this.resetStage();
     this.setInterruptionControlEnabled(false);
     this.interruptionChoiceTitle.textContent = "まだ確定していません";
-    this.interruptionChoiceDescription.textContent = `${message}\n\n通信を再試行できます。いま再試行しない場合も、確定済みとは表示せず、担当者へ伝えるための確認コードを次の画面に表示します。`;
+    this.interruptionChoiceDescription.textContent = `${message}\n\n通信を再試行できます。いま再試行しない場合も、確定済みとは表示せず、担当者へ伝えるための確認番号を次の画面に表示します。`;
     this.pauseParticipationButton.textContent = retryLabel;
     this.pauseParticipationButton.hidden = false;
     this.terminateParticipationButton.hidden = true;
@@ -606,13 +657,13 @@ export class ExperimentUi {
     this.resetStage();
     this.setInterruptionControlEnabled(false);
     this.interruptionChoiceTitle.textContent = "一時中断を安全に確定できません";
-    this.interruptionChoiceDescription.textContent = "送信待ちの回答または録音を研究用サーバーで確認できないため、再開可能な一時中断として確定できません。参加終了へ切り替えると、server受付済みデータだけを保持して以後の課題を終了します。切り替えない場合は未確定のまま担当者へ連絡してください。";
+    this.interruptionChoiceDescription.textContent = "まだ保存できていない回答または録音があるため、続きから再開できる状態で中断できません。参加終了へ切り替えると、すでに保存できたデータだけを残して実験への参加を終了します。切り替えない場合は担当者へ連絡してください。";
     this.pauseParticipationButton.hidden = true;
     this.terminateParticipationButton.textContent = "参加終了へ切り替える";
     this.terminateParticipationButton.hidden = false;
     this.cancelInterruptionButton.textContent = "切り替えず案内を見る";
     this.interruptionChoice.hidden = false;
-    this.terminateParticipationButton.focus();
+    this.cancelInterruptionButton.focus();
     return new Promise((resolve) => {
       const finish = (escalate) => {
         this.terminateParticipationButton.removeEventListener("click", onEscalate);
@@ -631,13 +682,13 @@ export class ExperimentUi {
     this.resetStage();
     this.setInterruptionControlEnabled(false);
     this.interruptionChoiceTitle.textContent = "前回のデータを安全に送信できません";
-    this.interruptionChoiceDescription.textContent = "前回の回答または録音に、再送しても解消できない問題があります。このまま通常再開や一時中断には進めません。参加終了を選ぶと、研究用サーバーが受け付け済みのデータだけを保持して以後の課題を終了します。終了を選ばない場合は、このまま担当者へ連絡してください。";
+    this.interruptionChoiceDescription.textContent = "前回の回答または録音を保存できないため、このまま課題を再開したり、一時中断したりできません。参加終了を選ぶと、すでに保存できたデータだけを残して実験への参加を終了します。終了を選ばない場合は担当者へ連絡してください。";
     this.pauseParticipationButton.hidden = true;
     this.terminateParticipationButton.textContent = "受付済みデータで参加を終了する";
     this.terminateParticipationButton.hidden = false;
     this.cancelInterruptionButton.textContent = "終了せず担当者へ連絡する";
     this.interruptionChoice.hidden = false;
-    this.terminateParticipationButton.focus();
+    this.cancelInterruptionButton.focus();
     return new Promise((resolve) => {
       const finish = (terminate) => {
         this.terminateParticipationButton.removeEventListener("click", onTerminate);
@@ -656,10 +707,10 @@ export class ExperimentUi {
     this.resetStage();
     this.setInterruptionControlEnabled(false);
     this.message.textContent = mode === "pause"
-      ? "送信待ちの回答と録音を研究用サーバーへ送り、一時中断を確定しています。"
-      : "送信待ちの回答と録音を研究用サーバーへ送り、参加終了を確定しています。";
+      ? "ここまでの回答と録音を保存し、一時中断の手続きをしています。"
+      : "ここまでの回答と録音を保存し、参加終了の手続きをしています。";
     this.message.hidden = false;
-    this.setTaskStatus("通信が完了すると、安全に閉じられることをお知らせします。");
+    this.setTaskStatus("「このページは閉じて構いません」と表示されるまで、画面を閉じないでください。");
   }
 
   interrupted(mode, { partialData = false } = {}) {
@@ -674,24 +725,45 @@ export class ExperimentUi {
       mode === "pause" ? "一時中断を保存済み" : "参加終了を受付済み",
     );
     this.progressDetail.textContent = partialData
-      ? "一部の送信待ち録音を確認できませんでした。研究用サーバーが受け付け済みのデータだけが保持されます。"
-      : "研究用サーバーが受け付けた回答と録音は保持されます。";
-    this.saveState.textContent = partialData ? "一部未確認・参加終了受付済み" : "サーバー受付済み";
+      ? "一部の録音を保存できませんでした。すでに保存できたデータは残ります。"
+      : "ここまでの回答と録音は保存されています。";
+    this.saveState.textContent = partialData ? "一部未保存・参加終了済み" : "保存済み";
     this.saveState.classList.toggle("pending", partialData);
     this.message.textContent = mode === "pause"
-      ? "一時中断を研究用サーバーで確認しました。このページは閉じて構いません。再開するときは、担当者から届いた元の招待リンクを開いてください。"
+      ? "一時中断が完了しました。このページは閉じて構いません。再開するときは、担当者から届いた元の招待リンクを開いてください。"
       : partialData
-        ? "参加終了を研究用サーバーで確認しました。一部の録音は送信を確認できなかったため、研究用サーバーがすでに受け付けたデータだけが保持されます。ブラウザ内の送信待ちデータは削除していません。このページは閉じて構いません。"
-        : "参加終了を研究用サーバーで確認しました。研究用サーバーが受け付けたデータは保持されます。このページは閉じて構いません。参加終了後は、この招待リンクから課題を再開できません。";
+        ? "参加終了が完了しました。一部の録音は保存できませんでしたが、すでに保存できたデータは残ります。このページは閉じて構いません。"
+        : "参加終了が完了しました。ここまでのデータは保存されています。このページは閉じて構いません。参加終了後は、この招待リンクから課題を再開できません。";
     this.message.hidden = false;
     this.stage.focus();
   }
 
   async confirmTerminationWithPartialData() {
-    await this.prompt(
-      "一部の回答または録音を研究用サーバーへ送信できない、あるいはローカル録音を確認できない状態です。参加終了を確定すると、研究用サーバーがすでに受け付けたデータだけが保持されます。ブラウザ内の送信待ちデータは削除しません。",
-      "サーバー受付済みデータで参加終了を確定",
-    );
+    this.resetStage();
+    this.setInterruptionControlEnabled(false);
+    this.progressDetail.textContent = "一部の回答または録音を保存できていません。";
+    this.saveState.textContent = "一部未保存";
+    this.saveState.classList.add("pending");
+    this.interruptionChoiceTitle.textContent = "保存できていないデータがあります";
+    this.interruptionChoiceDescription.textContent = "一部の回答または録音を保存できません。この状態で参加を終了すると、すでに保存できたデータだけが残り、課題は再開できません。";
+    this.pauseParticipationButton.hidden = true;
+    this.terminateParticipationButton.textContent = "この状態で参加を終了する";
+    this.terminateParticipationButton.hidden = false;
+    this.cancelInterruptionButton.textContent = "終了せず担当者へ連絡する";
+    this.interruptionChoice.hidden = false;
+    this.cancelInterruptionButton.focus();
+    return new Promise((resolve) => {
+      const finish = (confirmed) => {
+        this.terminateParticipationButton.removeEventListener("click", onConfirm);
+        this.cancelInterruptionButton.removeEventListener("click", onCancel);
+        this.interruptionChoice.hidden = true;
+        resolve(confirmed);
+      };
+      const onConfirm = () => finish(true);
+      const onCancel = () => finish(false);
+      this.terminateParticipationButton.addEventListener("click", onConfirm);
+      this.cancelInterruptionButton.addEventListener("click", onCancel);
+    });
   }
 
   interruptionUnconfirmed(mode, requestId) {
@@ -702,15 +774,15 @@ export class ExperimentUi {
     }
     this.progressLabel.textContent = mode === "pause" ? "一時中断：未確定" : "参加終了：未確定";
     this.progressTrack.setAttribute("aria-valuetext", "中断または参加終了の確定を未確認");
-    this.progressDetail.textContent = "研究用サーバーでの確定を確認できませんでした。送信待ちデータが残っている可能性があります。";
+    this.progressDetail.textContent = "中断・終了の完了を確認できませんでした。未保存のデータが残っている可能性があります。";
     this.saveState.textContent = "保存・確定：未確認";
     this.saveState.classList.add("pending");
     this.message.textContent = [
       mode === "pause"
         ? "一時中断はまだ確定したものとして扱わないでください。"
         : "参加終了はまだ確定したものとして扱わないでください。",
-      "このページは閉じて構いません。表示された確認コードを記録し、担当者へ知らせてください。",
-      `確認コード: ${requestId}`,
+      "このページは閉じて構いません。表示された確認番号を記録し、担当者へ知らせてください。",
+      `確認番号: ${requestId}`,
     ].join("\n");
     this.message.hidden = false;
     this.stage.focus();
@@ -722,9 +794,8 @@ export class ExperimentUi {
     const objectUrl = URL.createObjectURL(blob);
     this.activeDownloadUrl = objectUrl;
     this.message.textContent = [
-      "研究用サーバーへの保存は完了しています。",
-      "Pre・直後・遅延の3セッションの回答データと録音を、1つのZIPとしてこのパソコンにも保存してください。",
-      "このZIPは研究用サーバー保存の代替ではありません。",
+      "実験の回答と録音は保存されています。",
+      "事前・直後・遅延の3回分の結果を、1つのZIPとしてこのパソコンにも保存してください。",
       "共用パソコンの場合は、他の利用者に見えない保存先を選び、担当者の案内に従って削除してください。",
     ].join("\n");
     this.message.hidden = false;
@@ -749,8 +820,8 @@ export class ExperimentUi {
   chooseParticipantCopyTarget(filename = "accentedness_results.zip") {
     this.resetStage();
     this.message.textContent = [
-      "研究用サーバーへの保存は完了しています。",
-      "Pre・直後・遅延の3セッションの回答データと録音を、このパソコンにもZIPで保存します。",
+      "実験の回答と録音は保存されています。",
+      "事前・直後・遅延の3回分の結果を、このパソコンにもZIPで保存します。",
       "共用パソコンの場合は、他の利用者に見えない保存先を選び、担当者の案内に従って削除してください。",
     ].join("\n");
     this.message.hidden = false;
@@ -801,11 +872,13 @@ export class ExperimentUi {
   }
 
   completed(message, { preserveDownload = false } = {}) {
+    document.body.classList.remove("experiment-active");
     this.stopResponseTimer();
     if (preserveDownload) {
       [
         this.fixation,
         this.image,
+        this.emoji,
         this.placeholder,
         this.audioCue,
         this.recording,
@@ -817,8 +890,8 @@ export class ExperimentUi {
     this.progressFill.style.width = "100%";
     const progressMax = this.progressTrack.getAttribute("aria-valuemax") ?? "1";
     this.progressTrack.setAttribute("aria-valuenow", progressMax);
-    this.progressTrack.setAttribute("aria-valuetext", "セッションの全試行と録音の保存完了");
-    this.progressLabel.textContent = "セッション完了";
+    this.progressTrack.setAttribute("aria-valuetext", "この課題の回答と録音を保存済み");
+    this.progressLabel.textContent = "課題完了";
     this.message.textContent = message;
     this.message.hidden = false;
     if (preserveDownload && this.activeDownloadUrl) {
@@ -828,20 +901,21 @@ export class ExperimentUi {
       this.continueButton.hidden = false;
       this.continueButton.addEventListener("click", () => window.location.reload(), { once: true });
     }
-    this.progressDetail.textContent = "全試行・録音の保存完了を研究用サーバーで確認しました。";
-    this.saveState.textContent = "全試行・録音の保存完了";
+    this.progressDetail.textContent = "この課題の回答と録音は保存されています。";
+    this.saveState.textContent = "保存済み";
     this.saveState.classList.remove("pending");
   }
 
   fatal(error, { interruptionRequested = false } = {}) {
+    document.body.classList.remove("experiment-active");
     this.stopResponseTimer();
     this.welcome.hidden = true;
     this.task.hidden = true;
     this.fatalPanel.hidden = false;
-    const code = error?.code ? `（${error.code}）` : "";
+    const supportCode = participantSupportCode(error);
     this.fatalMessage.textContent = `${fatalErrorMessage(error, {
       interruptionRequested,
-    })} ${code}`.trim();
+    })}\n\nお問い合わせ番号: ${supportCode}`;
     this.fatalPanel.focus();
   }
 }

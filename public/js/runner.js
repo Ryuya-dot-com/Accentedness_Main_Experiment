@@ -274,7 +274,8 @@ export class ExperimentRunner {
         this.pendingInterruption = candidate;
       }
       partialData = true;
-      await this.ui.confirmTerminationWithPartialData();
+      const confirmed = await this.ui.confirmTerminationWithPartialData();
+      if (confirmed === false) this.leaveInterruptionUnconfirmed(mode, requestId);
     }
     this.ui.showInterruptionWorking?.(mode);
     const finalized = await this.retryInterruptionStep(
@@ -416,14 +417,14 @@ export class ExperimentRunner {
           if (!(error instanceof TypeError) && !retryableStatus) throw error;
           if (interruptionMode) {
             const retry = await this.ui.retryInterruptionOrShowCloseGuidance(
-              "送信待ちデータをまだ研究用サーバーへ送信できていません。ネットワーク接続を確認してください。",
-              "データ送信を再試行",
+              "一部のデータをまだ保存できていません。ネットワーク接続を確認してください。",
+              "保存を再試行",
             );
             if (!retry) this.leaveInterruptionUnconfirmed(interruptionMode, requestId);
             this.ui.showInterruptionWorking?.(interruptionMode);
           } else {
             await this.ui.prompt(
-              `データをまだ送信できていません。ネットワーク接続を確認してください。\n\n${error.message}`,
+              "データをまだ保存できていません。ネットワーク接続を確認してから再送してください。",
               "再送する",
             );
           }
@@ -448,7 +449,7 @@ export class ExperimentRunner {
           || Number(error.status) >= 500;
         if (!(error instanceof TypeError) && !retryableStatus) throw error;
         await this.ui.prompt(
-          `この試行の回答をまだ送信できていません。ネットワーク接続を確認してください。\n\n${error.message}`,
+          "この回の回答をまだ保存できていません。ネットワーク接続を確認してから再送してください。",
           "回答を再送する",
         );
       }
@@ -464,7 +465,7 @@ export class ExperimentRunner {
           || Number(error.status) >= 500;
         if (!(error instanceof TypeError) && !retryableStatus) throw error;
         await this.ui.prompt(
-          `完了確認をまだ受信できていません。ネットワーク接続を確認してください。\n\n${error.message}`,
+          "課題の完了をまだ保存できていません。ネットワーク接続を確認してから再送してください。",
           "完了確認を再送する",
         );
       }
@@ -494,7 +495,7 @@ export class ExperimentRunner {
           || Number(error.status) >= 500;
         if (!(error instanceof TypeError) && !retryableStatus) throw error;
         await this.ui.prompt(
-          `研究用サーバーへの保存は完了していますが、このパソコン向けZIPをまだ準備できません。ネットワーク接続を確認してください。\n\n${error.message}`,
+          "実験データは保存されていますが、このパソコン向けZIPをまだ準備できません。ネットワーク接続を確認してください。",
           "ZIPを再準備する",
         );
       }
@@ -535,7 +536,7 @@ export class ExperimentRunner {
 
   stopIfVisibilityInterrupted(interrupted) {
     if (interrupted) {
-      throw new Error("試行中に画面が非表示になりました。この試行は記録済みです。続行せず担当者に知らせてください。");
+      throw new Error("絵や音声が出ている間に画面が非表示になりました。この回は記録済みです。続行せず担当者に知らせてください。");
     }
   }
 
@@ -592,9 +593,11 @@ export class ExperimentRunner {
       image.src = imageUrl;
       try {
         await image.decode();
-      } catch (error) {
+      } catch {
         URL.revokeObjectURL(imageUrl);
-        throw new Error(`刺激画像をデコードできませんでした: ${error.message}`);
+        const imageError = new Error("刺激画像を表示できませんでした。担当者に知らせてください。");
+        imageError.code = "stimulus_image_unreadable";
+        throw imageError;
       }
       loaded.imageUrl = imageUrl;
     }
@@ -650,7 +653,9 @@ export class ExperimentRunner {
     if (!loaded.cueBuffer) throw new Error("学習音声を読み込めませんでした。");
     const protocol = trial.protocol.timing;
     this.ui.showFixation();
-    this.ui.setTaskStatus("中央の＋を見て、次の絵と英単語に備えてください。");
+    this.ui.setTaskStatus(trial.practice
+      ? "中央の＋を見て、次の絵文字と英単語に備えてください。"
+      : "中央の＋を見て、次の絵と英単語に備えてください。");
     if (loaded.cueBuffer.duration * 1000 + protocol.audioOnsetMs > protocol.visualDurationMs) {
       throw new Error("学習音声が5秒の提示窓に収まりません。刺激担当者へ連絡してください。");
     }
@@ -666,7 +671,9 @@ export class ExperimentRunner {
       () => this.ui.showVisual(trial, loaded.imageUrl),
       this.audio,
     );
-    this.ui.setTaskStatus("絵と英単語を覚えてください。5秒後に自動で次へ進みます。");
+    this.ui.setTaskStatus(trial.practice
+      ? "絵文字を見ながら英単語を聞いて覚えてください。自動で次に進みます。"
+      : "絵と英単語の組み合わせを覚えてください。自動で次に進みます。");
     const onsetLateMs = this.reportOnsetLateness(
       targetOnsetPerfMs,
       onset.performance_time_ms,
@@ -751,7 +758,7 @@ export class ExperimentRunner {
     );
     const responseDeadlinePerfMs = onset.performance_time_ms + protocol.responseWindowMs;
     const responseDeadlineContextS = onset.context_time_s + protocol.responseWindowMs / 1000;
-    this.ui.setTaskStatus("英単語を10秒以内に話してください。答えた後も自動で切り替わるまでお待ちください。");
+    this.ui.setTaskStatus("前置きを付けず、英単語だけを1回話してください。分からなければ無言で待ってください。");
     this.ui.startResponseTimer(responseDeadlinePerfMs, protocol.responseWindowMs);
     const analysisStartSeconds = Math.max(0, onset.context_time_s - captureStart.start_context_s);
     const recordingPromise = this.audio.stopCaptureAt(responseDeadlineContextS, analysisStartSeconds);
@@ -841,7 +848,7 @@ export class ExperimentRunner {
     });
     const playbackEndPromise = playback.ended.then(async (ended) => {
       await audioCueOnsetPromise;
-      this.ui.setTaskStatus("日本語で答えてください。回答時間は10秒です。");
+      this.ui.setTaskStatus("前置きを付けず、日本語の答えだけを1回話してください。分からなければ無言で待ってください。");
       this.ui.startResponseTimer(
         responseDeadlinePerfMs,
         protocol.responseWindowAfterAudioMs,
@@ -883,18 +890,4 @@ export class ExperimentRunner {
     return recording;
   }
 
-  async reviewPracticeRecording(recording) {
-    const quality = recording.quality;
-    const warning = quality.rms_amplitude < 0.008
-      ? "録音音量が小さい可能性があります。マイクに少し近づいてください。"
-      : quality.clipping_ratio > 0.01
-        ? "録音音量が大きすぎる可能性があります。マイクから少し離れてください。"
-        : "録音音量を確認できました。";
-    await this.ui.prompt(`練習録音を再生して確認します。\n${warning}`, "録音を再生");
-    await this.handleParticipantExit();
-    await this.audio.playBlob(recording.blob);
-    await this.handleParticipantExit();
-    await this.ui.prompt("自分の声が聞こえたら続けてください。聞こえない場合は担当者に知らせてください。");
-    await this.handleParticipantExit();
-  }
 }

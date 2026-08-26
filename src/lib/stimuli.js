@@ -25,15 +25,31 @@ export const MAIN_STIMULI = Object.freeze([
   { id: 24, word: "treadmill", gloss: "ランニングマシン", list: 2, listRank: 11 },
 ]);
 
+// Learning-only familiarization items. They use English words that never enter
+// the 24-word experimental pool; the emoji, rather than the written word, is
+// shown to participants.
+export const LEARNING_PRACTICE_STIMULI = Object.freeze([
+  { id: 906, word: "apple", gloss: "りんご", emoji: "🍎" },
+  { id: 907, word: "orange", gloss: "オレンジ", emoji: "🍊" },
+]);
+
+// These talkers are dedicated to familiarization. They must not be one of the
+// six learning talkers or one of the three fixed female test talkers.
+export const LEARNING_PRACTICE_TALKERS = Object.freeze({
+  english: "e_practice_f1",
+  chinese: "c_practice_f1",
+  japanese: "j_practice_f1",
+});
+
 export const PICTURE_NAMING_PRACTICE_STIMULI = Object.freeze([
-  { id: 901, word: "abacus", gloss: "そろばん" },
-  { id: 902, word: "binoculars", gloss: "双眼鏡" },
+  { id: 901, word: "dog", gloss: "犬" },
+  { id: 902, word: "chair", gloss: "椅子" },
 ]);
 
 export const L2_TO_L1_PRACTICE_STIMULI = Object.freeze([
-  { id: 903, word: "thermometer", gloss: "温度計" },
-  { id: 904, word: "xylophone", gloss: "木琴" },
-  { id: 905, word: "detergent", gloss: "洗剤" },
+  { id: 903, word: "book", gloss: "本" },
+  { id: 904, word: "water", gloss: "水" },
+  { id: 905, word: "car", gloss: "車" },
 ]);
 
 export const ACCENTS = Object.freeze(["english", "chinese", "japanese"]);

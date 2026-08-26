@@ -247,7 +247,7 @@ export class ExperimentApi {
       throw new ApiClientError(
         0,
         "session_storage_unavailable",
-        "このブラウザではセッションを安全に一時保存できません。通常モードのGoogle Chromeで開き直し、担当者に知らせてください。",
+        "このブラウザでは回答を一時保存できません。通常モードのGoogle Chromeで開き直し、担当者に知らせてください。",
       );
     }
   }

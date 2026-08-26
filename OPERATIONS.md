@@ -16,7 +16,7 @@
 
 24語slotはプレースホルダーのまま進めます。top-level設定を非本番pilotとして使い、新しい`env.pilot`は追加しません。`ENVIRONMENT=development`、`ALLOW_PLACEHOLDER_ASSETS=true`、`TEST_TOKEN_POLICY=undecided`の組合せは意図したpilot設定です。
 
-現行実装は、参加者ID・3 visit・24 item割当・6 segment・276 trial・監査記録を311文のD1 batchで原子的に保存します。参加者がPreで確認した平文氏名は、visit・session・redeem回数・auditと同じ別batchで保存します。2026-08-26時点のWorkers上限では、D1など内部serviceへのsubrequestはFreeで1 Worker invocationあたり1,000、Paidの既定値は10,000であり、311文だけを理由にPaidを必須としません。planは本番相当pilotのCPU時間、traffic、support要件を含めて決めます。Cloudflare公式の [D1 limits](https://developers.cloudflare.com/d1/platform/limits/) と [Workers limits](https://developers.cloudflare.com/workers/platform/limits/) は配備直前にも確認します。
+現行実装は、参加者ID・3 visit・24 item割当・6 segment・278 trial・監査記録を313文のD1 batchで原子的に保存します。参加者がPreで確認した平文氏名は、visit・session・redeem回数・auditと同じ別batchで保存します。2026-08-26時点のWorkers上限では、D1など内部serviceへのsubrequestはFreeで1 Worker invocationあたり1,000、Paidの既定値は10,000であり、313文だけを理由にPaidを必須としません。planは本番相当pilotのCPU時間、traffic、support要件を含めて決めます。Cloudflare公式の [D1 limits](https://developers.cloudflare.com/d1/platform/limits/) と [Workers limits](https://developers.cloudflare.com/workers/platform/limits/) は配備直前にも確認します。
 
 resourceを変更する前に、Wranglerの認証先、採用plan、主担当・代替担当を確認し、exact nameの衝突をread-onlyで再点検します。
 
@@ -72,7 +72,7 @@ npx wrangler secret list --env=""
 
 2026-08-26以降、非本番`ADMIN_TOKEN`の暫定正本はrepository外の親directoryにある`.env`です。file modeは`0600`とし、この単一keyだけを標準入力経由でWranglerへ渡します。`.env`全体またはtoken値を表示・記録しません。rotation後に新tokenでHTTP 200、旧tokenでHTTP 403を確認し、bootstrap用の一時handoff directoryは削除済みです。この`.env`はDropbox同期対象なので、現時点の非本番運用にだけ用い、production secretの恒久正本とはみなしません。`RANDOMIZATION_SECRET`、production resource、production secretはこのrotationで変更していません。
 
-`0006`適用後の非本番`GET /api/health`の期待値は、`environment=development`、`placeholder_assets=true`、`test_token_policy=undecided`、`test_token_policy_ready=false`、`admin_authentication_ready=true`、`randomization_ready=true`、`secrets_independent=true`、`collection_ready=false`です。これは`ADMIN_TOKEN`と`RANDOMIZATION_SECRET`を分離した正常なplaceholder pilot状態です。未使用IDでparticipantを1名作成し、311文batch、作成直後の`participant_names` 0件、Preの確認済みredeem後1件、後続linkでの表示確認、確認前離脱・ID不一致・競合時の部分状態0件、氏名が限定された確認用API応答以外へ出ないこと、管理token拒否、R2非公開を確認します。2026-08-26に旧実装で確認した311文batchは旧契約の履歴証拠であり、現行ID-only作成batchの証拠には流用しません。現在の非本番URLは`https://accentedness-main-experiment.komuro-4121.workers.dev`です。
+`0006`適用後の非本番`GET /api/health`の期待値は、`environment=development`、`placeholder_assets=true`、`test_token_policy=undecided`、`test_token_policy_ready=false`、`admin_authentication_ready=true`、`randomization_ready=true`、`secrets_independent=true`、`collection_ready=false`です。これは`ADMIN_TOKEN`と`RANDOMIZATION_SECRET`を分離した正常なplaceholder pilot状態です。未使用IDでparticipantを1名作成し、313文batch、作成直後の`participant_names` 0件、Preの確認済みredeem後1件、後続linkでの表示確認、確認前離脱・ID不一致・競合時の部分状態0件、氏名が限定された確認用API応答以外へ出ないこと、管理token拒否、R2非公開を確認します。2026-08-26に旧実装で確認した311文batchは旧契約の履歴証拠であり、現行ID-only作成batchの証拠には流用しません。現在の非本番URLは`https://accentedness-main-experiment.komuro-4121.workers.dev`です。
 
 ## 3. productionの初回セットアップ
 
@@ -118,11 +118,11 @@ npm run dev
 
 実刺激をR2へ配置し、[STIMULUS_REPLACEMENT.md](./STIMULUS_REPLACEMENT.md) のチェックを完了してから、`wrangler.jsonc` の `env.production.vars` だけを次のように変更します。
 
-練習刺激も本番24語の流用ではありません。Picture NamingはID 901 `abacus`・902 `binoculars`の専用画像、L2-to-L1はID 903 `thermometer`・904 `xylophone`・905 `detergent`について3 accents分、計9個の`practice`専用WAVを配置します。ID、word、image/audio keyが本番刺激と非重複で、practice/main間に同一SHA-256の画像・音声がなく、全練習trialが`practice=1`かつ`exclude_from_analysis=1`であることを本番相当pilotで確認します。
+練習刺激も本番24語の流用ではありません。LearningはID 906 `apple`（りんご／🍎）・907 `orange`（オレンジ／🍊）について、割当学習accent別の専用練習話者による計6個のWAVを配置します。Picture NamingはID 901 `dog`・902 `chair`の専用画像、L2-to-L1はID 903 `book`・904 `water`・905 `car`について3 accents分、計9個の`practice`専用WAVを配置します。ID、word、image/audio keyが本番刺激と非重複で、practice/main間に同一SHA-256の画像・音声がなく、全練習trialが`practice=1`かつ`exclude_from_analysis=1`であることを本番相当pilotで確認します。開発用の`apple.wav` / `orange.wav` / `book.wav` / `water.wav` / `car.wav` はすべてAmerican-English TTSの共通fallbackであり、Chinese/Japanese群の本番音声としては使いません。
 
 ```jsonc
 "ENVIRONMENT": "production",
-"ASSIGNMENT_VERSION": "main-v3-real-assets",
+"ASSIGNMENT_VERSION": "main-v5-real-assets",
 "ASSET_VERSION": "main-assets-v1",
 "ALLOW_PLACEHOLDER_ASSETS": "false",
 "TEST_TOKEN_POLICY": "same_token"
@@ -140,7 +140,7 @@ npx wrangler deploy --env production --strict --no-x-provision
 
 `GET /api/health` の `collection_ready` が `true` であることを確認します。さらに、非本番IDで全導線を実施し、D1応答数、R2録音数、音声内容、Immediate最終L2-to-L1行動応答のserver受理時刻から遅延目標時刻までが正確に5日であることを確認します。
 
-participant-facing UIを変更した後は、変更前のvisitを同じclean-path証拠へ混ぜません。新しい未使用IDを使い、desktop Chrome 1366×768・zoom 100%を最低基準として、各試行前の注視点、練習から本番へのprogress reset、現在試行と完了数、Picture Naming画像onset後の10秒表示、L2音声終了後の10秒表示、部分保存と「全試行・録音の保存完了」の区別を実画面で確認します。countdownは表示だけを担い、録音停止・刺激順・manifest timingを変更しないことを自動testでも固定します。
+participant-facing UIを変更した後は、変更前のvisitを同じclean-path証拠へ混ぜません。特にv3/v4でPre作成済みのmanifestをv5英語練習の証拠へ転用せず、新しい未使用IDをv5のPreから開始します。実効viewport 900×600以上・desktop Chrome・zoom 100%を最低基準として、各試行前の注視点、最長の日本語説明、中断・終了dialog、練習から本番へのprogress reset、現在位置と完了数、完了数だけを表すbar、Picture Naming画像onset後の10秒表示、L2再生buffer末尾後の10秒表示、部分保存と「全試行・録音の保存完了」の区別を実画面で確認します。900×600未満では開始前検査が停止し、ウィンドウ拡大またはzoom 100%を案内します。page scrollがなくても内容が欠けないことを実測し、対応外のviewportやzoomを黙って開始させません。L2 latency分析ではQA済み音響語末へ補正し、画面のcountdownは表示だけを担って録音停止・刺激順・manifest timingを変更しないことを自動testでも固定します。
 
 参加者向け結果ZIPは3 visit分のWAVをR2から直接streamします。通常の48 kHz mono PCMでは概算130 MiB前後、各録音の上限4 MiBを単純合計した保守的上限では約520 MiBになり得ます。対応するdesktop ChromeではFile System Access APIで選択済みfileへ直接書き、browser memoryへ全量保持しません。転送中に進捗しているZIPを固定15分で切る上限は設けず、response headerの受信開始だけを30秒でtimeoutします。未対応時だけBlob downloadへfallbackするため、本番相当データで直接保存が使われること、生成時間、memory、再試行をpilotしてください。ZIP失敗はすでに完了したvisitやD1/R2正本を取り消しません。
 
@@ -242,7 +242,7 @@ curl -fL "https://EXPERIMENT.example/api/admin/participants/1/results.zip" \
   --output accentedness_p1_results.zip
 ```
 
-研究者APIは収集済みcanonical応答と、その時点でR2に存在するWAVを返します。研究者版filenameには研究用participant IDを含め、台帳との取り違えを防ぎます。参加者版filenameはIDを含まない固定名です。WAV entry名はvisit/segment/ordinalだけのopaque名ですが、研究者版`responses.json`には採点・照合に必要な刺激、条件、trial/attempt ID、再提示flag、R2 key、録音QCとの対応を含めます。参加者版にはこれらの研究用metadataを含めません。派生ZIPをCloudflareに保存するQueue・専用R2・export tableはありません。
+研究者APIはcanonical応答が0件でも割付と全Learning計画を出力し、その時点で収集済みのcanonical応答とR2に存在するWAVだけを併記します。研究者版filenameには研究用participant IDを含め、台帳との取り違えを防ぎます。参加者版filenameはIDを含まない固定名です。WAV entry名はvisit/segment/ordinalだけのopaque名ですが、研究者版`responses.json`には採点・照合に必要な刺激、条件、trial/attempt ID、再提示flag、R2 key、録音QC・latency基準との対応を含めます。研究者版だけに`design.json`と、全planned行・canonical runtime・attempt数を分けた`learning_trials.csv`を含め、参加者版には研究用metadataを含めません。派生ZIPをCloudflareに保存するQueue・専用R2・export tableはありません。
 
 参加者にはPre・直後でZIPを提示しません。Delayed visitを先に完了確定し、3 visitの全応答・録音が揃うことをserverが再検査した場合だけ、完了画面で保存操作を提示します。対応Chromeでは本人が保存先を選んだ後にfileへ直接streamし、全bytesの書込と`Content-Length`一致を確認してから完了表示にします。12時間のsession有効中なら完了画面の「もう一度保存」から再取得できます。未対応browserのBlob fallbackではdownload開始後にChromeのdownload一覧を本人に確認してもらいます。session失効後に再取得が必要なら研究担当者が管理APIから渡します。共用PCに音声を残すriskと削除方法は、PIが管理するリポジトリ外の参加者向け手順に記載します。これはコード完成の技術ゲートではありません。
 
@@ -257,7 +257,7 @@ curl -fL "https://EXPERIMENT.example/api/admin/participants/1/results.zip" \
 - finalize時にもserverがcanonical responseに対応する録音待ち0件を再検査します。1件でも残ればpauseは`requested`のままHTTP 409で拒否し、sessionを閉じません。成功後も参加者・visitはactive/startedのままで、completion timestampを設定せず、同じ招待をactiveに保ちます。再開用の別linkを発行しません。
 - 再開時は同じ元の招待linkを開き、IDを入力して保存済み氏名を確認します。新session epochが発行され、accepted canonical trialの直後から再開します。旧sessionはclosedです。
 - request後・finalize前にtabを失った場合は、同じlinkで再認証してもpauseを自動resumeしません。新trialを禁止したまま送信待ちを再送し、pauseのfinalizeを先に終えます。`paused`確認後にもう一度同じlinkを開いた時点を`resumed`とします。
-- 回答または録音を回復不能な理由で送れず安全な再開を保証できない場合、画面は「参加終了へ切り替える」と「切り替えず案内を見る」を分けます。前者は同じrequest UUIDの`pause/requested`を`terminate/requested`へ一方向に変更し、server受理済み範囲での終了を再確認します。後者はpauseを未確定のまま残すため、確認コードを記録します。
+- 回答または録音を回復不能な理由で送れず安全な再開を保証できない場合、画面は「参加終了へ切り替える」と「切り替えず案内を見る」を分けます。前者は同じrequest UUIDの`pause/requested`を`terminate/requested`へ一方向に変更し、server受理済み範囲での終了を再確認します。後者はpauseを未確定のまま残すため、確認番号を記録します。
 - 開始済みだが未受理だったtrialを再提示する場合、旧attemptとその録音slotは`superseded_on_resume`でabandoned・非canonicalになり、新attemptに`repeated_after_interruption=1`を付けます。学習trialなら`extra_exposure=1`も付きます。
 
 ### 永続的な参加終了
@@ -274,7 +274,7 @@ curl -fL "https://EXPERIMENT.example/api/admin/participants/1/results.zip" \
 - 別タブで通常redeemすると新しいsession epochが発行され、古いタブはsupersededになります。同じlinkを複数タブで開かないよう案内します。
 - 試行onset後のreloadは再提示として記録され、`repeated_after_interruption`が立ちます。
 - 応答PUTの一時失敗は同じ冪等keyで再送します。応答と録音はIndexedDB outboxに保持します。再訪時にoutboxの欠損・破損・読出不能または確定的4xxを検出した場合は次試行やpauseへ進めず、server受理済み範囲での参加終了か、終了せず担当者へ連絡するかを明示選択します。
-- 試行中に「中断・終了」を押した後、その試行自体のerrorで中断requestまで進めなかった場合、fatal画面は通常完了・中断確定・server受理範囲をいずれも断定しません。参加者には同じactive招待linkを開き直してIDを入力し、保存済み氏名を確認してから、新trialを始める前に「中断・終了」を選ぶよう案内します。linkを開けない、または状態が不明ならerror codeとともに担当者へ連絡してもらいます。
+- 試行中に「中断・終了」を押した後、その試行自体のerrorで中断requestまで進めなかった場合、fatal画面は通常完了・中断確定・server受理範囲をいずれも断定しません。参加者には同じactive招待linkを開き直してIDを入力し、保存済み氏名を確認してから、新trialを始める前に「中断・終了」を選ぶよう案内します。linkを開けない、または状態が不明なら、内部error codeや任意の実装文言ではなく、画面のopaqueなお問い合わせ番号と状況を担当者へ連絡してもらいます。
 - IndexedDBはserver保存前のcrash recovery専用です。D1の応答受理とR2の録音受理を両方確認したrecordは、visitを問わず次回flushまでに削除し、参加者端末を第二の恒久保存先にしません。
 - 中断・終了時に送れなかったWAVを自動削除する実装はありません。D1側のabandoned記録とbrowser内Blobを混同せず、回収・破棄方針に従います。
 

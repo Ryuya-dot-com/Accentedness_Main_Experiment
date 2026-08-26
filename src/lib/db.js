@@ -327,7 +327,15 @@ export async function getVisitState(db, session) {
       has_image: Boolean(row.image_key),
       audio_endpoint: row.audio_key ? `/api/stimuli/${row.trial_uuid}/audio` : null,
       image_endpoint: row.image_key ? `/api/stimuli/${row.trial_uuid}/image` : null,
-      protocol: { timing: full.protocol?.timing ?? {} },
+      protocol: {
+        timing: full.protocol?.timing ?? {},
+        ...(full.protocol?.visualEmoji
+          ? {
+              visualEmoji: full.protocol.visualEmoji,
+              visualLabel: full.protocol?.visualLabel ?? "",
+            }
+          : {}),
+      },
       current: row.trial_uuid === nextManifestRow?.trial_uuid,
     };
   });

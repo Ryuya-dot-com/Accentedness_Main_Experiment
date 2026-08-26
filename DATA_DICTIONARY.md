@@ -88,7 +88,7 @@ accent×counterbalance cellごとに、`assigned_count`と各visit prefix（`pre
 
 ### 練習trial
 
-専用練習項目は、Picture NamingのID 901 `abacus`、902 `binoculars`と、L2-to-L1のID 903 `thermometer`、904 `xylophone`、905 `detergent`です。全練習trialは`practice=1`かつ`exclude_from_analysis=1`です。これらのID・word、Picture Naming画像key、L2-to-L1の`practice` category音声keyは、本番24語のID・word・画像・音声keyと非重複です。Picture Naming練習とL2-to-L1練習も互いに別語です。
+専用練習項目は、LearningのID 906 `apple`（りんご／🍎）、907 `orange`（オレンジ／🍊）、Picture NamingのID 901 `dog`、902 `chair`、L2-to-L1のID 903 `book`、904 `water`、905 `car`です。全練習trialは`practice=1`かつ`exclude_from_analysis=1`です。Learning練習は固定順で、割り当てられた学習accentと同じaccentの専用練習話者を使い、録音せずplanned manifestとruntime timingだけを残します。これらのID・word、非nullの画像key・音声keyは、本番24語および他課題の練習poolと非重複です。
 
 明示操作なしのtab・browser closeは`participation_interruptions`へ推測記録せず、visitも`completed`や`withdrawn`へ変更しません。最後にserverが受理したcanonical trialまでの未完了状態として、invitationのredeem・trial・visit funnelに残ります。terminateの`requested`状態で閉じた場合だけは、同じ招待linkで再認証したsessionから同じrequestをfinalizeできます。`requested_session_uuid`は要求を最初に受理したsessionの監査情報であり、再認証sessionへ書き換えません。
 
@@ -100,7 +100,7 @@ accent×counterbalance cellごとに、`assigned_count`と各visit prefix（`pre
 
 - visual onset/deadline
 - audio scheduled onset/end、実duration
-- imageかplaceholderか
+- image、emoji、placeholderのどれか
 - trial end
 
 ### picture_naming
@@ -115,12 +115,14 @@ accent×counterbalance cellごとに、`assigned_count`と各visit prefix（`pre
 
 - capture start
 - audio scheduled/actual end
-- audio offsetから10秒のresponse deadline
+- Web Audioの再生buffer末尾から10秒のresponse deadline（latency分析基準はQA済みの音響的語末）
 - sample rate、sample count、analysis開始位置・sample数、QC
 
 ## 5. 録音
 
 clientは正規形44-byte headerのPCM mono 16-bit WAVを生成し、応答をcanonical化する前にRIFF長、sample rate、sample count、durationと応答metadataの一致を検査します。serverは最大4 MiB、正規形RIFF/WAVE chunk順、PCM、mono、16-bit、sample rate、data chunk、taskに応じたdurationを再検証します。さらにWAVから実測したsample rate/count/durationを受理済み応答と照合し、自己申告SHA-256と実bytesのSHA-256も照合します。RMS、peak、clipping ratioはPCM本体からserver側でも再計算し、client値との不一致を拒否します。canonical attemptの録音だけをR2へ条件付きPUTし、server実測値をD1とR2 metadataへ保存します。分析では`recordings`のserver算出QCを正本とし、応答JSON内のclient算出QCは検証・監査用とします。
+
+録音はsession全体の長尺ファイルではなく、Picture Naming／L2-to-L1の各trialにつき1個のWAVです。ただし、回答語だけへspeech-trimした派生ファイルではありません。Picture Namingは画像直前から10秒窓の終端まで、L2-to-L1はcue開始150 ms前からbuffer末尾後10秒までを含めます。発話開始前の文脈とlatency anchorを失わないためraw trial WAVを切り詰めず、派生 onset annotationを別表に保存します。
 
 R2 key:
 
@@ -130,11 +132,15 @@ recordings/{participant_uuid}/{visit_type}/{segment}/{trial_uuid}/{attempt_uuid}
 
 raw録音は声紋・発話内容を含み得るため、匿名化済みの表データより厳しいアクセス制御と保管期間を適用します。
 
-ZIPは保存済みのcanonical responseをD1から、対応するWAVをR2から読み、圧縮なしでresponseへ直接streamします。派生ZIPをR2やD1へ保存しません。entry名は `recordings/{visit_type}/{segment}/recording_NNN.wav` とし、刺激語、訳語、accent、話者、内部UUIDを含めません。参加者版`responses.json`にも内部UUIDや条件labelを含めず、試行順、応答payload、WAVのSHA-256等だけを記録します。研究者版は採点・正本照合のため、同じopaque WAV entryへ刺激、条件、trial/attempt ID、再提示flag、R2 key、server算出QCを対応づけます。
+ZIPは保存済みのcanonical responseをD1から、対応するWAVをR2から読み、圧縮なしでresponseへ直接streamします。派生ZIPをR2やD1へ保存しません。entry名は `recordings/{visit_type}/{segment}/recording_NNN.wav` とし、刺激語、訳語、accent、話者、内部UUIDを含めません。参加者版`responses.json`にも内部UUIDや条件labelを含めず、試行順、応答payload、WAVのSHA-256等だけを記録します。研究者版は採点・正本照合のため、同じopaque WAV entryへ刺激、条件、trial/attempt ID、再提示flag、R2 key、server算出QCを対応づけます。研究者版だけに、割付・version・visit別manifest hashをまとめた`design.json`と、保存済みmanifestの全Learning計画行を出す`learning_trials.csv`も含めます。CSVはplanned列とcanonical runtime timing列を分け、未実施runtimeは空欄、開始・中断・再提示はtotal/noncanonical attempt countで監査できます。raw root seedと氏名は含めません。
+
+研究者版`responses.json`の`research.recording_storage.latency_reference`は、Picture Namingでは`picture_onset`、L2-to-L1では`test_audio_buffer_end`を示し、WAV内の秒位置を明示します。後者には`acoustic_offset_correction_required=true`を付け、buffer末尾を未検査の音響語末と誤認しないようにします。
+
+これらはbrowser/software clock上の基準であり、光学的pixel onset、実ヘッドホン出力、マイク入力の外部loopback校正値ではありません。QA台帳で補正できるのはL2刺激buffer末尾と音響語末の差です。機材latencyを校正しないremote実施では、算出RTをhardware補正済みの絶対latencyと表現しません。
 
 どちらのZIPにも氏名を含めません。研究者版filenameに入るのは研究用数値IDだけです。
 
-参加者APIはDelayed visitの完了後だけ利用でき、pre・immediate・delayedの3 visitがすべてcompletedで、全canonical応答と録音が揃うことを再検査します。研究者API `GET /api/admin/participants/{numeric_id}/results.zip` はADMIN_TOKENを要求し、その時点の収集済みcanonical応答と利用可能なWAVを返します。対応Chromeでは選択済みfileへresponse bodyを直接streamし、書込closeと`Content-Length`一致を成功条件にします。未対応browserのBlob fallbackでは検知できるのはZIP受信とdownload開始までで、disk保存完了とはみなしません。
+参加者APIはDelayed visitの完了後だけ利用でき、pre・immediate・delayedの3 visitがすべてcompletedで、全canonical応答と録音が揃うことを再検査します。研究者API `GET /api/admin/participants/{numeric_id}/results.zip` はADMIN_TOKENを要求し、canonical応答が0件でも`design.json`と全Learning計画CSVを返し、その時点で存在するcanonical応答と利用可能なWAVだけを併記します。対応Chromeでは選択済みfileへresponse bodyを直接streamし、書込closeと`Content-Length`一致を成功条件にします。未対応browserのBlob fallbackでは検知できるのはZIP受信とdownload開始までで、disk保存完了とはみなしません。
 
 ## 6. 中断・参加終了データ
 
@@ -187,11 +193,12 @@ canonical responseとcanonical recordingを結合し、orphan attempt、abandone
 
 ## 9. 採点データ
 
-現行アプリは発話を収集しますが、自動採点は行いません。研究チームは別工程で次を定義します。
+現行アプリは発話を収集しますが、browser内VADや自動採点は行いません。cue bleed、咳、前置き、低振幅語頭をリアルタイム閾値で誤判定しないため、生WAVを保持したオフライン工程で半自動onset候補と人手確認を行います。研究チームは別工程で次を定義します。
 
 - Picture Namingの正答、許容語形、言い直し、無応答。
 - L2-to-L1の正答、日本語同義語、部分正答、無応答。
 - 複数評定者、盲検化、評定者間一致、disagreement解消。
-- latencyを分析する場合のacoustic onset測定法。
+- acoustic onsetのsample index、無応答、cue bleed、anticipatory response、onset不確実性の判定法。
+- L2-to-L1刺激ごとのQA済み`acoustic_word_offset_ms`と、buffer末尾との差の補正。
 
-採点表には最低限 `attempt_uuid`、`trial_uuid`、`rater_id`、`score`、`decision_code`、`scoring_version` を持たせ、raw D1/R2を上書きしません。
+採点表には最低限 `attempt_uuid`、`trial_uuid`、`rater_id`、`score`、`decision_code`、`speech_onset_sample`、`reference_sample`、`latency_ms`、`onset_method`、`onset_qc`、`scoring_version` を持たせ、raw D1/R2を上書きしません。Picture Namingは画像onset、L2-to-L1はQA済み音響語末を`reference_sample`とします。負のlatencyを0へ丸めず、anticipatory／cue bleed候補としてflagします。

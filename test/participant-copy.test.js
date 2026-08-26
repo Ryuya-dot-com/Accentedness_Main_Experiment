@@ -45,6 +45,34 @@ async function redeem(invitationUrl, visitType) {
   return result.json;
 }
 
+function seededLearningPayload(segmentOrdinal) {
+  const visualOnsetPerfMs = 1_000 + segmentOrdinal * 10;
+  const visualOnsetContextS = 10 + segmentOrdinal;
+  return {
+    task: "learning",
+    client_response_saved_perf_ms: visualOnsetPerfMs + 5_100,
+    visual_mode: "image",
+    visual_onset_perf_ms: visualOnsetPerfMs,
+    visual_onset_context_s: visualOnsetContextS,
+    clock_anchor: {
+      context_time_s: visualOnsetContextS,
+      performance_time_ms: visualOnsetPerfMs,
+      performance_time_origin_ms: 1_000_000,
+    },
+    target_onset_perf_ms: visualOnsetPerfMs - 2,
+    onset_late_ms: 2,
+    visual_deadline_perf_ms: visualOnsetPerfMs + 5_000,
+    visual_hidden_perf_ms: visualOnsetPerfMs + 5_001,
+    audio_scheduled_context_s: visualOnsetContextS + 0.75,
+    audio_scheduled_end_context_s: visualOnsetContextS + 1.25,
+    audio_duration_s: 0.5,
+    audio_ended_perf_ms: visualOnsetPerfMs + 1_251,
+    trial_end_perf_ms: visualOnsetPerfMs + 5_001,
+    visibility_interrupted: false,
+    page_visibility_at_end: "visible",
+  };
+}
+
 async function seedVisit(visitUuid, sessionUuid, visitType, { skipTrialUuid = null } = {}) {
   const trialResult = await env.DB.prepare(`
     SELECT trial_uuid, segment, segment_ordinal, expects_recording
@@ -54,7 +82,9 @@ async function seedVisit(visitUuid, sessionUuid, visitType, { skipTrialUuid = nu
   for (const trial of trialResult.results) {
     if (trial.trial_uuid === skipTrialUuid) continue;
     const attemptUuid = crypto.randomUUID();
-    const payload = JSON.stringify({ task: trial.segment, timing_marker: `${visitType}-${trial.segment_ordinal}` });
+    const payload = JSON.stringify(trial.segment === "learning"
+      ? seededLearningPayload(Number(trial.segment_ordinal))
+      : { task: trial.segment, timing_marker: `${visitType}-${trial.segment_ordinal}` });
     const payloadHash = await sha256Hex(payload);
     statements.push(
       env.DB.prepare(`
@@ -90,8 +120,9 @@ async function seedVisit(visitUuid, sessionUuid, visitType, { skipTrialUuid = nu
         INSERT INTO recordings (
           attempt_uuid, r2_key, state, sha256, etag, byte_count, mime_type,
           sample_rate_hz, sample_count, duration_seconds, crc32,
-          received_at_ms, uploaded_at_ms, updated_at_ms
-        ) VALUES (?, ?, 'uploaded', ?, ?, ?, 'audio/wav', 48000, 1, 0.00002, ?, ?, ?, ?)
+          analysis_start_seconds, analyzed_sample_count, rms_amplitude,
+          peak_amplitude, clipping_ratio, received_at_ms, uploaded_at_ms, updated_at_ms
+        ) VALUES (?, ?, 'uploaded', ?, ?, ?, 'audio/wav', 48000, 1, 0.00002, ?, 0, 1, 0, 0, 0, ?, ?, ?)
       `).bind(
         attemptUuid,
         r2Key,
@@ -359,6 +390,8 @@ describe("on-demand result ZIP", () => {
     );
     expect(responses.copy_purpose).toBe("participant_local_copy");
     expect(responses.responses.every((row) => row.research === undefined)).toBe(true);
+    expect(entries.has("design.json")).toBe(false);
+    expect(entries.has("learning_trials.csv")).toBe(false);
     expect([...entries.keys()]).toContain("recordings/pre/picture_naming/recording_001.wav");
     expect([...entries.keys()]).toContain("recordings/immediate/l2_to_l1/recording_001.wav");
     expect([...entries.keys()]).toContain("recordings/delayed/l2_to_l1/recording_001.wav");
@@ -405,9 +438,132 @@ describe("on-demand result ZIP", () => {
       .toMatchObject({
         r2_key: expect.any(String),
         crc32: expect.any(Number),
+        latency_reference: {
+          event: "picture_onset",
+          seconds_in_recording: expect.any(Number),
+          acoustic_offset_correction_required: false,
+        },
         received_at_ms: expect.any(Number),
       });
+    expect(adminResponses.responses.find(
+      (row) => row.segment === "l2_to_l1" && row.recording,
+    ).research.recording_storage.latency_reference).toMatchObject({
+      event: "test_audio_buffer_end",
+      seconds_in_recording: expect.any(Number),
+      acoustic_offset_correction_required: true,
+    });
+
+    const design = JSON.parse(new TextDecoder().decode(adminEntries.get("design.json")));
+    const storedParticipantDesign = await env.DB.prepare(`
+      SELECT numeric_id, training_accent, within_accent_q, counterbalance_cycle,
+        counterbalance_cell, list_cell, order_cell, talker_cell,
+        assignment_version, seed_algorithm_version, asset_version
+      FROM participants WHERE numeric_id = 901
+    `).first();
+    const storedVisitDesign = await env.DB.prepare(`
+      SELECT visit_type, manifest_hash FROM visits
+      WHERE participant_uuid = (SELECT participant_uuid FROM participants WHERE numeric_id = 901)
+      ORDER BY CASE visit_type WHEN 'pre' THEN 1 WHEN 'immediate' THEN 2 ELSE 3 END
+    `).all();
+    expect(design).toEqual({
+      design_export_version: 1,
+      participant: {
+        participant_id: Number(storedParticipantDesign.numeric_id),
+        training_accent: storedParticipantDesign.training_accent,
+        counterbalance: {
+          within_accent_q: Number(storedParticipantDesign.within_accent_q),
+          cycle: Number(storedParticipantDesign.counterbalance_cycle),
+          cell: Number(storedParticipantDesign.counterbalance_cell),
+          list_cell: Number(storedParticipantDesign.list_cell),
+          order_cell: Number(storedParticipantDesign.order_cell),
+          talker_cell: Number(storedParticipantDesign.talker_cell),
+        },
+        assignment_version: storedParticipantDesign.assignment_version,
+        seed_algorithm_version: storedParticipantDesign.seed_algorithm_version,
+        asset_version: storedParticipantDesign.asset_version,
+      },
+      visits: storedVisitDesign.results,
+    });
+    expect(JSON.stringify(design)).not.toMatch(/participant_name|root_seed/iu);
+
+    const learningCsvBytes = adminEntries.get("learning_trials.csv");
+    expect([...learningCsvBytes.slice(0, 3)]).toEqual([0xef, 0xbb, 0xbf]);
+    const learningCsv = new TextDecoder().decode(learningCsvBytes);
+    const learningLines = learningCsv.trimEnd().split("\r\n");
+    const learningHeaders = learningLines[0].split(",");
+    expect(learningLines).toHaveLength(
+      adminResponses.responses.filter((row) => row.segment === "learning").length + 1,
+    );
+    expect(learningHeaders).toContain("planned_variability");
+    expect(learningHeaders).toContain("planned_talker_id");
+    expect(learningHeaders).toContain("planned_visual_duration_ms");
+    expect(learningHeaders).toContain("runtime_canonical_response_state");
+    expect(learningHeaders).toContain("runtime_total_attempt_count");
+    expect(learningHeaders).toContain("runtime_noncanonical_attempt_count");
+    expect(learningHeaders).toContain("runtime_server_trial_start_accepted_at_ms");
+    expect(learningHeaders).toContain("runtime_client_response_saved_perf_ms");
+    expect(learningHeaders).toContain("runtime_visual_onset_perf_ms");
+    expect(learningHeaders).toContain("runtime_audio_scheduled_context_s");
+    const learningRecords = learningLines.slice(1).map((line) => {
+      const values = line.split(",");
+      return Object.fromEntries(
+        learningHeaders.map((header, index) => [header, values[index]]),
+      );
+    });
+    const firstLearning = learningRecords.find((record) => record.planned_practice === "false");
+    expect(firstLearning).toMatchObject({
+      csv_version: "1",
+      participant_id: "901",
+      visit_type: "immediate",
+      planned_practice: "false",
+      planned_exclude_from_analysis: "false",
+      planned_visual_duration_ms: "5000",
+      planned_audio_onset_ms: "750",
+      planned_inter_trial_ms: "650",
+      runtime_canonical_response_state: "response_saved",
+      runtime_total_attempt_count: "1",
+      runtime_noncanonical_attempt_count: "0",
+      runtime_client_response_saved_perf_ms: "6130",
+      runtime_target_visual_onset_perf_ms: "1028",
+      runtime_visual_onset_perf_ms: "1030",
+      runtime_onset_late_ms: "2",
+      runtime_visibility_interrupted: "false",
+    });
+    expect(learningCsv).not.toMatch(/participant_name|root_seed|Test Participant/iu);
   }, 60_000);
+
+  it("exports every planned learning trial before responses and leaves canonical runtime fields blank", async () => {
+    const createdResult = await jsonRequest("/api/admin/participants", {
+      method: "POST",
+      token: ADMIN_TOKEN,
+      body: { participant_id: 902 },
+    });
+    expect(createdResult.response.status).toBe(201);
+
+    const adminDownload = await request(
+      "/api/admin/participants/902/results.zip",
+      { token: ADMIN_TOKEN },
+    );
+    expect(adminDownload.status).toBe(200);
+    const entries = parseStoredEntries(await adminDownload.arrayBuffer());
+    const responses = JSON.parse(new TextDecoder().decode(entries.get("responses.json")));
+    expect(responses.responses).toEqual([]);
+
+    const learningCsv = new TextDecoder().decode(entries.get("learning_trials.csv"));
+    const learningLines = learningCsv.trimEnd().split("\r\n");
+    const headers = learningLines[0].split(",");
+    const records = learningLines.slice(1).map((line) => {
+      const values = line.split(",");
+      return Object.fromEntries(headers.map((header, index) => [header, values[index]]));
+    });
+    expect(records).toHaveLength(146);
+    expect(records.filter((record) => record.planned_practice === "true")).toHaveLength(2);
+    expect(records.every((record) => record.runtime_canonical_attempt_id === "")).toBe(true);
+    expect(records.every((record) => record.runtime_canonical_response_state === "")).toBe(true);
+    expect(records.every((record) => record.runtime_attempt_no === "")).toBe(true);
+    expect(records.every((record) => record.runtime_total_attempt_count === "0")).toBe(true);
+    expect(records.every((record) => record.runtime_noncanonical_attempt_count === "0")).toBe(true);
+  });
 
   it("requires admin authentication for researcher downloads", async () => {
     const response = await request("/api/admin/participants/901/results.zip");

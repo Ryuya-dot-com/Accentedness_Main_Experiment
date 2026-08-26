@@ -11,6 +11,7 @@ import {
   ExperimentUi,
   PARTICIPANT_COPY_DELIVERY,
   participantCopyCompletionMessage,
+  participantGuidanceError,
   validateBrowserEnvironment,
 } from "./ui.js";
 
@@ -30,13 +31,13 @@ let runner = null;
 
 const copy = {
   picture_naming: {
-    title: "Picture Naming",
-    instruction: "練習2試行の後、本番24試行を行います。中央の＋に続いて絵が出たら、対応する英単語を10秒以内に声に出してください。画面下のタイマーが回答時間を示し、答えた後も10秒が終わると自動で次へ進みます。",
+    title: "絵を見て英単語を答える課題",
+    responseRule: "絵が出たら、答えが分かった時点ですぐに、英単語だけを1回はっきり答えてください。\n「えーと」「うーんと」「あっ」などの前置きや言い直しはしないでください。分からないときは、何も言わずに待ってください。\n10秒後に自動で次へ進みます。",
     fixationStatus: "中央の＋を見て、次の絵に備えてください。",
   },
   l2_to_l1: {
-    title: "L2-to-L1",
-    instruction: "練習3試行の後、本番24試行を行います。中央の＋に続いて英語音声が流れます。音声が終わってから10秒以内に日本語訳を声に出してください。回答時間は画面下のタイマーで示します。",
+    title: "英語を聞いて日本語で答える課題",
+    responseRule: "英語を最後まで聞き、意味が分かった時点ですぐに、日本語の答えだけを1回はっきり答えてください。\n「えーと」「うーんと」「あっ」などの前置きや言い直しはしないでください。分からないときは、何も言わずに待ってください。\n音声が終わってから10秒後に自動で次へ進みます。",
     fixationStatus: "中央の＋を見て、次の英語音声に備えてください。",
   },
 }[expectedSegment];
@@ -126,7 +127,7 @@ async function finalizeAlreadyCompleted(state) {
     : null;
   if (state.visit.visit_type !== "delayed") api.clearSession();
   ui.completed(state.visit.visit_type === "pre"
-    ? "Pre Picture Namingは保存済みです。Main Experimentのリンクは担当者から別途お送りします。"
+    ? "事前テストは終了し、回答と録音は保存済みです。単語学習のリンクは担当者から別途お送りします。"
     : state.visit.visit_type === "immediate"
       ? "直後テストは保存済みです。遅延テストの案内をお待ちください。"
       : participantCopyCompletionMessage(participantCopy.delivery, {
@@ -141,7 +142,7 @@ async function main() {
   api = new ExperimentApi(expectedVisit);
   audio = new ExperimentAudio(api);
   const failures = validateBrowserEnvironment({ microphone: true });
-  if (failures.length) throw new Error(failures.join(" "));
+  if (failures.length) throw participantGuidanceError(failures.join(" "));
   let state = await bootstrapWithParticipantAccess(api, ui);
   if (redirectToCanonical(state)) return;
   ui.setConnected(true);
@@ -180,6 +181,8 @@ async function main() {
   const accepted = runner.acceptedTrialIds();
   const segmentTrials = state.manifest.filter((trial) => trial.segment === expectedSegment);
   const remaining = segmentTrials.filter((trial) => !accepted.has(trial.trial_id));
+  const practiceTrials = segmentTrials.filter((trial) => trial.practice);
+  const mainTrials = segmentTrials.filter((trial) => !trial.practice);
   let announcedPractice = false;
   let announcedMain = false;
 
@@ -193,17 +196,23 @@ async function main() {
     if (trial.practice && !announcedPractice) {
       announcedPractice = true;
       runner.resetInterTrialClock();
-      await ui.prompt(`${copy.title}\n\n${copy.instruction}`, "練習を開始");
+      const completedPractice = practiceTrials.filter((candidate) => accepted.has(candidate.trial_id)).length;
+      const practiceLead = completedPractice > 0
+        ? `練習は ${completedPractice}/${practiceTrials.length} 回まで終わっています。残り ${practiceTrials.length - completedPractice} 回を再開します。`
+        : `最初に、やさしい英単語で${practiceTrials.length}回練習します。`;
+      await ui.prompt(`${practiceLead}\n\n${copy.responseRule}`, completedPractice > 0 ? "練習を再開" : "練習を開始");
       await runner.handleParticipantExit();
     }
     if (!trial.practice && !announcedMain) {
       announcedMain = true;
       runner.resetInterTrialClock();
+      const completedMain = mainTrials.filter((candidate) => accepted.has(candidate.trial_id)).length;
+      const mainLead = completedMain > 0
+        ? `本番は ${completedMain}/${mainTrials.length} 回まで終わっています。残り ${mainTrials.length - completedMain} 回を再開します。`
+        : `練習は終了です。これから本番を${mainTrials.length}回行います。`;
       await ui.prompt(
-        announcedPractice
-          ? `${copy.title} の練習は終了です。\nこれから本番24試行を行います。`
-          : `${copy.title}\n\n${copy.instruction}\n\n保存済みの位置から本番を再開します。`,
-        announcedPractice ? "本番を開始" : "本番を再開",
+        `${mainLead}\n\n${copy.responseRule}`,
+        completedMain > 0 ? "本番を再開" : "本番を開始",
       );
       await runner.handleParticipantExit();
     }
@@ -212,9 +221,11 @@ async function main() {
     await runner.handleParticipantExit();
     const loaded = await runner.preloadTrial(trial);
     await runner.handleParticipantExit();
-    const recording = expectedSegment === "picture_naming"
-      ? await runner.runPictureNamingTrial(trial, loaded, nextWithinSegment)
-      : await runner.runL2Trial(trial, loaded, nextWithinSegment);
+    if (expectedSegment === "picture_naming") {
+      await runner.runPictureNamingTrial(trial, loaded, nextWithinSegment);
+    } else {
+      await runner.runL2Trial(trial, loaded, nextWithinSegment);
+    }
     accepted.add(trial.trial_id);
     ui.updateProgress(
       progressLabel,
@@ -222,10 +233,6 @@ async function main() {
       phaseTrials.length,
     );
     await runner.handleParticipantExit();
-    if (trial.practice) {
-      await runner.reviewPracticeRecording(recording);
-      runner.resetInterTrialClock();
-    }
   }
 
   await runner.flushWithRetry();
@@ -233,7 +240,7 @@ async function main() {
   state = await api.state();
   await runner.handleParticipantExit();
   if (state.next_route) {
-    await ui.prompt("この課題は保存されました。続けて次の課題へ進みます。", "次の課題を開く");
+    await ui.prompt("この課題は終わり、ここまでの記録は保存されました。続けて次の課題へ進みます。", "次の課題を開く");
     await runner.handleParticipantExit();
     ui.setInterruptionControlEnabled(false);
     runner.stopMonitoring();
@@ -250,9 +257,9 @@ async function main() {
     : null;
   if (expectedVisit !== "delayed") api.clearSession();
   ui.completed(expectedVisit === "pre"
-    ? "Pre Picture Namingは終了しました。Main Experimentのリンクは担当者から別途お送りします。"
+    ? "事前テストは終了し、回答と録音は保存されました。単語学習のリンクは担当者から別途お送りします。"
     : expectedVisit === "immediate"
-      ? "直後テストは終了しました。すべての回答と録音が研究用サーバーに保存されました。遅延テストの案内をお待ちください。"
+      ? "直後テストは終了し、回答と録音は保存されました。遅延テストの案内をお待ちください。"
       : participantCopyCompletionMessage(participantCopy.delivery, {
         filename: participantCopy.filename,
       }), {

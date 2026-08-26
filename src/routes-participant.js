@@ -286,7 +286,11 @@ function validateResponsePayload(payload, attempt, nowMs) {
     if (Object.hasOwn(clockAnchor, key)) nullableFiniteField(clockAnchor, key, { minimum: 0 });
   }
   if (Object.hasOwn(clockAnchor, "visualMode")) {
-    enumField(clockAnchor, "visualMode", ["image", "placeholder"]);
+    enumField(
+      clockAnchor,
+      "visualMode",
+      expectedTask === "learning" ? ["image", "emoji", "placeholder"] : ["image", "placeholder"],
+    );
   }
   booleanField(payload, "visibility_interrupted");
   const targetOnsetPerfMs = finiteField(payload, "target_onset_perf_ms", { minimum: 0 });
@@ -298,7 +302,7 @@ function validateResponsePayload(payload, attempt, nowMs) {
       "audio_scheduled_context_s", "audio_scheduled_end_context_s", "audio_duration_s",
       "audio_ended_perf_ms", "visual_hidden_perf_ms", "trial_end_perf_ms",
     ]) finiteField(payload, key, { minimum: 0 });
-    enumField(payload, "visual_mode", ["image", "placeholder"]);
+    enumField(payload, "visual_mode", ["image", "emoji", "placeholder"]);
     enumField(payload, "page_visibility_at_end", ["visible", "hidden"]);
     assertNear(
       payload.visual_deadline_perf_ms - payload.visual_onset_perf_ms,
@@ -2068,7 +2072,10 @@ function validateEventPayload(eventType, value) {
   }
   if (eventType === "learning_visual_onset"
       || eventType === "picture_naming_visual_onset") {
-    if (!new Set(["image", "placeholder"]).has(value.visual_mode)) {
+    const visualModes = eventType === "learning_visual_onset"
+      ? new Set(["image", "emoji", "placeholder"])
+      : new Set(["image", "placeholder"]);
+    if (!visualModes.has(value.visual_mode)) {
       throw new ApiError(422, "invalid_event_payload", "visual_mode has an invalid value");
     }
   }

@@ -5,9 +5,9 @@ import { maxRun } from "../src/lib/randomization.js";
 
 const MAX_ID = 2_160;
 const DESIGN_INPUT = Object.freeze({
-  assignmentVersion: "main-v3-placeholder-assets",
+  assignmentVersion: "main-v5-english-learning-practice-placeholder",
   seedAlgorithmVersion: "hmac-sha256+xoshiro128ss-v1",
-  assetVersion: "placeholder-v1",
+  assetVersion: "placeholder-v2",
 });
 const AUDIT_SECRETS = Object.freeze([
   Object.freeze({

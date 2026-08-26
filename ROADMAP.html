@@ -15,14 +15,15 @@
 
   <h3>現在の到達状態</h3>
   <ul>
-    <li><label><input type="checkbox" checked> G1 Program-ready: 平文氏名契約を含むimplementation commit <code>079c889</code>のfull <code>npm run verify</code>とcommit evidenceを固定した</label></li>
+    <li><label><input type="checkbox"> G1 Program-ready: Learning練習・Space限定UX・latency metadata・研究者用設計logを含む現行working treeをimplementation commitとして固定し、そのcommitへfull <code>npm run verify</code>の証拠を結び付けた</label></li>
     <li><label><input type="checkbox"> G2 Live-pilot-ready: Pre平文氏名登録・後続表示確認・中断対応を含む現行buildをCloudflare非本番へ配備し、実URLでD1/R2保存を確認した</label></li>
     <li><label><input type="checkbox"> G3 Operationally-ready: 敵対的E2E pilotと手動運用rehearsalを完了した</label></li>
     <li><label><input type="checkbox"> G4 Main-data-ready: 収集用bundleとproduction環境を固定し、soft launchを通過した</label></li>
   </ul>
   <p><strong>Gate依存:</strong> G2 = G1＋第5節、G3 = G2＋第6–7節、G4 = G3＋trigger済み第8節＋第9–10節。下位gateを飛ばして上位だけをcheckedにしない。</p>
-  <p><strong>現在の単一next action:</strong> 変更直前のremote migration listでも<code>0006</code>が未適用であることを再確認し、平文氏名tableへ改訂したD1 migration <code>0006</code> → implementation commit <code>079c889</code>を含む現行build deployの順で非本番へ反映する。その後、旧氏名登録契約で発行したID 3を使わず、次の未使用連番ID 4を新規作成して実Chrome・実microphoneのPre pilotを行う。ID 1はsynthetic API smoke、ID 2はUX discovery、ID 3は旧契約確認用として、いずれもclean-pathへ再利用しない。</p>
-  <p><strong>現行平文氏名契約のG1 evidence（2026-08-26）:</strong> implementation commit <code>079c889</code>のtreeに対してfull <code>npm run verify</code>を実行し、types check、16 files / 128 tests、2 randomization secrets × ID 1–2160の4,320 design監査（failure 0）、development/production deploy dry-runが成功した。改訂版migration <code>0001</code>–<code>0006</code>も空の使い捨てlocal D1へ順番に適用できた。これはG1の証拠であり、remote D1への<code>0006</code>適用、現行Worker deploy、実Chrome/R2/D1 pilotの証拠には流用しない。</p>
+  <p><strong>現在の単一next action:</strong> 現行working treeをreviewしてimplementation commitへ固定し、下記の検証結果をそのcommitへ結び付ける。G1確定後に、remote migration listで<code>0006</code>未適用を再確認し、migration <code>0006</code> → 現行build deploy → 未使用連番ID 4による実Chrome・実microphone pilotの順でG2へ進む。ID 1はsynthetic API smoke、ID 2はUX discovery、ID 3は旧契約確認用として、いずれもclean-pathへ再利用しない。</p>
+  <p><strong>現行working treeの検証結果（2026-08-26、未commit）:</strong> assignment version <code>main-v5-english-learning-practice-placeholder</code>、asset version <code>placeholder-v2</code>に対し、full <code>npm run verify</code>でtypes check、17 files / 145 tests、2 randomization secrets × ID 1–2160の4,320 design監査（failure 0）、development/production deploy dry-run（Static Assets 90 files）が成功した。900×600の隔離headless ChromeでLearning練習・Learning本番・Picture Naming練習・L2-to-L1練習・Learning注視点・Learning絵文字・部分データ終了dialogの7状態を再表示し、document scroll、stage clipping、viewport overflowが0であることと、長文・Space案内の非重複を目視確認した。L2練習の開発用3 WAVは認可済みstimulus endpointから取得し、PCM形式・振幅・SHA-256も固定した。これは実装候補の検証結果であり、commit evidence、remote D1への<code>0006</code>適用、現行Worker deploy、実Chrome・実microphone/R2/D1の全導線pilotの証拠には流用しない。</p>
+  <p><strong>直前baselineのG1 evidence（2026-08-26、履歴）:</strong> 平文氏名契約を含むimplementation commit <code>079c889</code>のtreeに対してfull <code>npm run verify</code>を実行し、types check、16 files / 128 tests、2 randomization secrets × ID 1–2160の4,320 design監査（failure 0）、development/production deploy dry-runが成功した。改訂版migration <code>0001</code>–<code>0006</code>も空の使い捨てlocal D1へ順番に適用できた。この履歴はLearning練習・Space限定UX・latency metadata・研究者用設計logを含む現行working treeのcommit evidenceには流用しない。</p>
   <p><strong>旧HMAC契約のG1 evidence（2026-08-26、履歴）:</strong> 管理者のID-only登録、参加者による初回氏名HMAC binding、新しい招待での後続照合、強制同時claim、専用練習刺激、中断・参加終了を含むimplementation commit <code>56b080c</code>に対し<code>npm run verify</code>を実行し、types check、16 files / 114 tests、2 randomization secrets × ID 1–2160の4,320 design監査（failure 0）、development/production deploy dry-runが成功した。migration <code>0001</code>–<code>0006</code>も空の使い捨てlocal D1へ順番に適用できた。この履歴は平文氏名契約の現行buildや、その非本番deployと実Chrome/R2/D1 pilotの証拠には流用しない。</p>
 
   <h2>1. 固定済みの実験契約</h2>
@@ -58,8 +59,11 @@
     <li><label><input type="checkbox" checked> participant作成時のmanifestをD1へ固定し、同じIDの再登録・再開時に再抽選しない</label></li>
     <li><label><input type="checkbox" checked> ID 1–2160を2つのsecretで生成する4,320 design監査で不変条件を検証する</label></li>
     <li><label><input type="checkbox" checked> accentごと固定女性1名のためaccentと話者identityは分離不能であり、結果の対象は選定された3名の音声に限られる固定設計として扱う</label></li>
-    <li><label><input type="checkbox" checked> Picture Naming練習2語・2画像とL2-to-L1練習3語・9 WAV（3語×3 accents）は、本番24語・画像・音声および相互の練習poolから完全に分離する</label></li>
-    <li><label><input type="checkbox" checked> 練習刺激ID 901–905を明示し、practice・exclude-from-analysisとしてmanifest不変条件と自動testで固定する</label></li>
+    <li><label><input type="checkbox" checked> Learning練習2語・6 WAV（2語×3学習accents）、Picture Naming練習2語・2画像、L2-to-L1練習3語・9 WAV（3語×3 accents）は、本番24語・画像・音声および相互の練習poolから完全に分離する</label></li>
+    <li><label><input type="checkbox" checked> 練習刺激ID 901–907を明示し、practice・exclude-from-analysisとしてmanifest不変条件と自動testで固定する</label></li>
+    <li><label><input type="checkbox" checked> Learning練習は全群共通の `apple`／🍎・`orange`／🍊を固定順で提示し、音声は割当学習accentに一致する専用練習話者を使い、mainのseed系列を消費しない</label></li>
+    <li><label><input type="checkbox" checked> Picture Naming練習は `dog` / `chair`、L2-to-L1練習は `book` / `water` / `car` の高頻度語を使い、手順練習と低頻度語彙知識を混同しない</label></li>
+    <li><label><input type="checkbox" checked> L2-to-L1練習は本番と同じ固定3話者を各1回提示するため、本番成績を「3話者への共通馴化後」と解釈し、話者noveltyの測定とは主張しない</label></li>
   </ul>
 
   <h2>3. 参加者journey</h2>
@@ -71,12 +75,19 @@
     <li><label><input type="checkbox" checked> reload後の再提示を記録し、黙って新しいtrialとして扱わない</label></li>
     <li><label><input type="checkbox" checked> 同じvisitのlink再発行時は旧linkとactive sessionをsupersedeする</label></li>
     <li><label><input type="checkbox" checked> 5日未満のDelayedを拒否し、5日以降は遅れても受付する</label></li>
+    <li><label><input type="checkbox" checked> Learning、Picture Naming、L2-to-L1の参加者向け表示からexact onset timing、seed、manifest、保存基盤などの研究者情報を除き、行動に必要な回数・休憩・10秒deadlineだけを示す</label></li>
+    <li><label><input type="checkbox" checked> Picture NamingはPre・Immediate・Delayedで各2回、L2-to-L1はImmediate・Delayedで各3回の練習を本番前に行い、途中再開時は完了済み練習を再案内しない</label></li>
     <li><label><input type="checkbox" checked> exact 5-day境界と400日後の受付を自動testし、上限なしを実時間で待ち続けて検証しない</label></li>
-    <li><label><input type="checkbox" checked> participant-facingのエラーは、再試行可能・担当者連絡・進行停止を区別して表示する</label></li>
+    <li><label><input type="checkbox" checked> participant-facingのエラーは、再試行可能・担当者連絡・進行停止を区別し、内部codeや任意の実装文言を出さず固定文言とopaqueなお問い合わせ番号だけを表示する</label></li>
     <li><label><input type="checkbox" checked> 各試行前の既存準備・試行間時間内に高contrastの注視点<code>+</code>を表示し、L2-to-L1でも音声前に表示する</label></li>
-    <li><label><input type="checkbox" checked> 練習・本番を分け、現在試行と完了試行を明記したsticky progress barを常時表示する</label></li>
-    <li><label><input type="checkbox" checked> Picture Namingは画像onset、L2-to-L1は音声offsetを起点とする既存10秒deadlineから、表示専用countdownを算出する</label></li>
+    <li><label><input type="checkbox" checked> 練習・本番を分け、現在位置は見出し、完了数は詳細とsticky progress barで表示し、0/2完了時に50%と誤表示しない</label></li>
+    <li><label><input type="checkbox" checked> Picture Namingは画像onset、L2-to-L1はWeb Audioの再生buffer末尾を起点とする既存10秒deadlineから表示専用countdownを算出し、L2 latency分析ではQA済み音響語末へ補正する</label></li>
     <li><label><input type="checkbox" checked> countdownは録音停止を制御せず、background throttlingや描画遅延でも回答窓を延長しない</label></li>
+    <li><label><input type="checkbox" checked> 課題画面をviewport内に固定してpage scrollを無効にし、通常の説明画面はfreshなSpace押下だけで進める。クリック・Enter・長押しrepeatでは進めない</label></li>
+    <li><label><input type="checkbox" checked> 実効viewport 900×600未満は課題開始前に停止し、ウィンドウ拡大またはChrome zoom 100%を案内する</label></li>
+    <li><label><input type="checkbox" checked> timed trialはSpaceで短縮せず自動進行とし、中断・終了・氏名入力・ZIP保存は明示操作を維持する</label></li>
+    <li><label><input type="checkbox" checked> 部分データを失う可能性がある参加終了dialogでは、安全側の「終了せず担当者へ連絡」を先頭・初期focusにし、不可逆な終了は後置する</label></li>
+    <li><label><input type="checkbox" checked> Picture NamingとL2-to-L1の練習前・本番前に、前置き・言い直しを避け答えだけを最初から1回発話し、分からなければ無言で待つ指示を表示する</label></li>
     <li><label><input type="checkbox" checked> 部分保存を「この時点まで保存」、visit完了を「全試行・録音の保存完了」と表示し、同一表現を使わない</label></li>
     <li><label><input type="checkbox" checked> 担当者はparticipant IDだけを登録し、氏名を管理画面へ転記・表示しない。参加者がPreのfresh invitationでID・氏名を入力し、氏名から条件を割り付けない</label></li>
     <li><label><input type="checkbox" checked> アクセス資格は手動配布したraw招待token＋一致するIDとし、Pre氏名入力と後続表示確認を本人認証と表現しない。低entropyな連番IDは秘密情報でも第二認証要素でもない</label></li>
@@ -104,6 +115,8 @@
     <li><label><input type="checkbox" checked> Delayed完了画面から直ちに保存導線を提示するが、browser制約上必要な保存先選択等のparticipant操作を「自動保存済み」と誤認しない</label></li>
     <li><label><input type="checkbox" checked> 対応ChromeではZIPを全量Blob化せず選択済みfileへstreamし、再保存も可能にする</label></li>
     <li><label><input type="checkbox" checked> 管理者は参加者IDから採点・照合用metadataを含むcanonical結果ZIPをオンデマンド取得できる</label></li>
+    <li><label><input type="checkbox" checked> 管理者ZIPに氏名・raw root seedを含めず、割付・version・manifest hashの<code>design.json</code>と、全Learning計画行・canonical runtime・total/noncanonical attempt数を分けた<code>learning_trials.csv</code>を含める。canonical応答0件でも取得可能にする</label></li>
+    <li><label><input type="checkbox" checked> 録音課題はtrialごとのraw WAVとして保存し、Picture Namingは画像onset、L2はbuffer末尾のWAV内基準位置を明示する。L2の音響語末補正が必要なことをmetadataでflagする</label></li>
     <li><label><input type="checkbox" checked> production placeholder、未確定token policy、欠損刺激ではfail closedにする</label></li>
     <li><label><input type="checkbox" checked> 中断requestを冪等化し、新規trial開始・visit完了・招待変更との競合をAPIとD1制約の両方で拒否する</label></li>
     <li><label><input type="checkbox" checked> 永久終了後もserver受理済み回答・WAVを削除せず、canonical pendingとabandoned/noncanonicalを分析・運用上区別する</label></li>
@@ -132,7 +145,7 @@
     <li><label><input type="checkbox" checked> remote migration listで非本番D1へ<code>0006</code>が未適用であることを確認した</label></li>
     <li><label><input type="checkbox"> 平文氏名用<code>participant_names</code>を含む改訂版migration <code>0006_identity_and_participation_interruptions.sql</code>を非本番D1へ適用する</label></li>
     <li><label><input type="checkbox"> 現行commitを非本番へdeployし、healthの<code>admin_authentication_ready=true</code>、<code>randomization_ready=true</code>、<code>secrets_independent=true</code>を確認する</label></li>
-    <li><label><input type="checkbox"> 新規participantのID-only 311-statement atomic batchと作成直後の氏名0件、Pre確認済みredeem後の平文氏名1件、後続表示確認、競合時の部分状態0件を実URLで確認する</label></li>
+    <li><label><input type="checkbox"> 新規participantのID-only 313-statement atomic batchと作成直後の氏名0件、Pre確認済みredeem後の平文氏名1件、後続表示確認、競合時の部分状態0件を実URLで確認する</label></li>
     <li><label><input type="checkbox"> アプリケーション論理層で平文氏名が<code>participant_names</code>と確認用API応答だけに存在し、管理API・log・audit detail・R2・browser storage・ZIPへ出ないことを実URLで確認する</label></li>
     <li><label><input type="checkbox"> D1のbackup・Time Travel等の管理コピーにも平文氏名が含まれ得ることを確認し、D1権限・保存期間・削除範囲へ明示的に含める</label></li>
   </ul>
@@ -140,7 +153,7 @@
   <p>上記が終わるまで、既存G2 evidenceは旧baselineの履歴であり、平文氏名表示確認・中断対応buildがlive-pilot-readyである証拠には使わない。productionは対象外とする。</p>
 
   <h2>6. 敵対的E2E pilot — プレースホルダーで実施</h2>
-  <p>UIの完了表示ではなく、D1/R2/ZIPの実体で成功を判定する。ID 2はUX discovery pilot、ID 3は旧氏名登録契約の準備用へ再分類する。平文氏名表示確認・中断対応buildのclean-pathは次の未使用連番ID 4から開始し、障害注入用IDと分ける。Delayedの実時計pilotは5日以上を要するが、その待機中に他の項目を並行する。</p>
+  <p>UIの完了表示ではなく、D1/R2/ZIPの実体で成功を判定する。ID 2はUX discovery pilot、ID 3は旧氏名登録契約の準備用へ再分類する。v3/v4で作成済みのparticipantは英語Learning練習へ途中変換されないため、v5 clean-pathは次の未使用連番ID 4をPreから新規作成して開始し、障害注入用IDと分ける。Delayedの実時計pilotは5日以上を要するが、その待機中に他の項目を並行する。</p>
   <p><strong>UX discovery evidence（2026-08-26、ID 2）:</strong> 参加者はPre完了と認識したが、D1正本はvisit <code>started</code>、canonical response / uploaded WAV各1/26、第2練習試行はstimulus onset後・response未保存・recording <code>pending</code>だった。第1WAVは48 kHz、10.037秒、RMS 0.0234、clipping 0で正常であり、内部参照矛盾は0件だった。Immediate招待はserver gateにより未発行のまま維持した。この乖離を、注視点の知覚性、progressの意味、10秒窓、部分保存とvisit完了の区別が不十分なUX defectとして扱う。ID 2を修正前後混在のclean-path証拠へ転用しない。</p>
   <p><strong>UX修正版pilot準備（2026-08-26、ID 3）:</strong> 未使用連番ID 3を非本番に作成し、training accent <code>japanese</code>、counterbalance cell 1、3 visits、24 item assignments、6 segments、276 manifest trialsを確認した。Pre invitationは1件だけ発行し、未redeemのためsession / attempt / recordingは各0件である。raw tokenは文書・chatへ記録せず、mode <code>0600</code>の一時local handoffだけに保持する。</p>
   <p><strong>ID 3の扱い:</strong> ID 3は管理者が氏名を事前登録する旧契約で準備されたため、新契約のclean-pathには使わず、ID 1–3を再利用もしない。現行契約では、有効なPre招待で参加者が入力・確認した表示用氏名を最初の正常redeemで平文保存する。</p>
@@ -150,7 +163,7 @@
     <li><label><input type="checkbox"> 実時計で5日以上経過した同じactive linkからDelayedを開始し、5日間の運用継続性を1回確認する</label></li>
     <li><label><input type="checkbox"> fault-injection専用ID群でreload、タブ重複、session期限切れ、link再発行後の旧tabを試し、再開・再提示・supersedeと放棄attemptの期待状態を照合する</label></li>
     <li><label><input type="checkbox"> fault-injection専用IDで応答送信中とWAV送信中に通信を切り、IndexedDB outboxからcanonical dataが重複なく再送されることを確認する</label></li>
-    <li><label><input type="checkbox"> clean-path完遂者1名についてD1 response 276件、R2 WAV 132件、pending録音0件と、各WAVのbyte count・hashを照合する</label></li>
+    <li><label><input type="checkbox"> clean-path完遂者1名についてD1 response 278件、R2 WAV 132件、pending録音0件と、各WAVのbyte count・hashを照合する</label></li>
     <li><label><input type="checkbox"> 保存WAVを実際に再生し、Picture Namingの語頭欠落、L2刺激と録音開始・応答窓のずれ、無音、channel、sample rate、duration、RMS、clippingを確認する</label></li>
     <li><label><input type="checkbox"> 通常WAVと上限4 MiB WAVをuploadし、HTTP/R2/D1 ACK一致とWorker resource-limit error 0件を確認する</label></li>
     <li><label><input type="checkbox"> 想定同時実施数が未確定の間は2–3名の同時操作だけを試し、D1 overload、R2 429、5xx、欠損、重複が0件であることを確認する</label></li>
@@ -158,6 +171,7 @@
     <li><label><input type="checkbox"> Delayed完了前に参加者ZIPを取得できず、完了後には取得できることを確認する</label></li>
     <li><label><input type="checkbox"> clean-pathの3 visit分ZIPを参加者端末へ保存し、再保存・展開・134 entries・hashを確認する</label></li>
     <li><label><input type="checkbox"> 管理者ZIPを取得し、D1/R2とresponses metadataの対応を確認する</label></li>
+    <li><label><input type="checkbox"> 管理者ZIPの<code>design.json</code>・<code>learning_trials.csv</code>、参加者ZIP134 entries、管理者ZIP136 entriesを照合する</label></li>
     <li><label><input type="checkbox"> 管理者がIDだけでparticipantを作成し、Preの入力確認前は氏名0件、確認済みredeem後は平文氏名1件、後続linkではIDだけで同じ保存氏名が表示されることを実URLで確認する</label></li>
     <li><label><input type="checkbox"> 誤IDでは氏名を返さず、初回同時登録は1件だけ成功し、競合敗者・確認前離脱・保存途中失敗が部分状態を残さないことを実URLで確認する</label></li>
     <li><label><input type="checkbox"> raw招待token単独・ID単独では氏名を返さず、token＋route＋ID一致では氏名が返る境界を確認する。漏えいlinkは氏名previewの有無を推定せずrevoke・再発行する</label></li>
@@ -173,7 +187,7 @@
   <ul>
     <li><label><input type="checkbox" checked> 非本番ADMIN_TOKENの暫定正本をrepository外の親directory <code>.env</code>へ置き、mode <code>0600</code>、<code>source</code>後の実効tokenでHTTP 200を確認した。Dropbox同期対象のためproduction恒久正本には流用しない</label></li>
     <li><label><input type="checkbox"> <code>.env</code>内で重複している3件の<code>ADMIN_TOKEN</code>定義を、値をchat・logへ出さず実効値1件へ整理し、次回rotation時の取り違えを防ぐ</label></li>
-    <li><label><input type="checkbox"> Cloudflare DashboardでWorkers plan名とbilling担当を確認し、旧契約と現行ID-only契約の311-statement実測を区別して併記する。Pre平文氏名保存は初回redeemの別batchであることを明記し、plan選定はCPU・traffic・supportも含めて判断する</label></li>
+    <li><label><input type="checkbox"> Cloudflare DashboardでWorkers plan名とbilling担当を確認し、旧311-statement契約と現行ID-only 313-statement契約の実測を区別して併記する。Pre平文氏名保存は初回redeemの別batchであることを明記し、plan選定はCPU・traffic・supportも含めて判断する</label></li>
     <li><label><input type="checkbox"> participant ID台帳の主担当と代替担当を定め、共有台帳から次の未使用正整数を発行する</label></li>
     <li><label><input type="checkbox"> IDを再利用せず、accentやcellを見て都合のよいIDを選ばない手順を確認する</label></li>
     <li><label><input type="checkbox"> pre完了後にImmediate link、Immediate最終応答＋5日以降にDelayed linkを手動発行する手順を通す</label></li>
@@ -192,6 +206,7 @@
     <li><label><input type="checkbox" disabled> [trigger後] 24個のslot数と既存key契約を維持できるか確認する</label></li>
     <li><label><input type="checkbox" disabled> [trigger後] 同一WAVならasset差し替えだけを行い、別takeならtimepoint key・manifest・testだけを限定変更する</label></li>
     <li><label><input type="checkbox" disabled> [trigger後] 全期待key、SHA-256、WAV形式・duration・level、画像形式を機械検査し、practice/main間の同一SHA-256を0件にする</label></li>
+    <li><label><input type="checkbox" disabled> [trigger後] 全test/practice音声の音響的語末を人手確認し、<code>acoustic_word_offset_ms</code>とbuffer末尾との差をaudio key単位でQA台帳へ固定する</label></li>
     <li><label><input type="checkbox" disabled> [trigger後] 別担当者がpractice/mainの画像・音声内容を実際に見聞きし、別encode・別crop等でSHAが異なる実質同一刺激も0件であることを確認する</label></li>
     <li><label><input type="checkbox" disabled> [trigger後] 指定されたbundleを新しいASSET_VERSIONへ配置し、既存versionのobjectを上書きしない</label></li>
     <li><label><input type="checkbox" disabled> [trigger後] 割付・話者roster・key契約が変わる場合だけASSIGNMENT_VERSIONを更新する</label></li>
@@ -222,6 +237,10 @@
     <li><label><input type="checkbox"> 欠損WAV、D1/R2不一致、広範な5xx時のlink発行停止・調査・再開権限を定める</label></li>
     <li><label><input type="checkbox"> runtime・割付・保存形式の変更時にscope、version、再pilot範囲を記録する手順を定める</label></li>
     <li><label><input type="checkbox"> assigned・redeemed・started・paused・terminated・completedを分母とともに別集計し、離脱を完遂者だけの集計から消さない手順を定める</label></li>
+    <li><label><input type="checkbox"> latencyを、同一管理機材＋外部loopbackで補正した指標にするか、remote異種端末のbrowser/software基準の近似指標にするかを固定し、後者をhardware補正済み絶対RTと表現しない</label></li>
+    <li><label><input type="checkbox"> pilot WAVでspeech onset・filler・咳・言い直し・無応答を二重評定し、<code>acoustic_word_offset_ms</code>から<code>latency_ms</code>まで再現できる採点表とversionを1回通す</label></li>
+    <li><label><input type="checkbox"> 最低対応viewport・zoomを固定し、最長説明と中断dialogを含む全課題で内容欠け・page scrollが0であることを実Chromeで確認する</label></li>
+    <li><label><input type="checkbox"> Learning練習の `apple` / `orange` を3 accentの専用練習話者で録音し、6 WAVのaccent妥当性・語の取り違え・不自然な無音・音量異常をhashとともに別担当者が確認する</label></li>
   </ul>
 
   <h2>11. Scope driftを防ぐ「やらないこと」</h2>
