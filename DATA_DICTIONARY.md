@@ -80,7 +80,7 @@ accent×counterbalance cellごとに、`assigned_count`と各visit prefix（`pre
 
 ### 保存氏名と表示確認
 
-以下は改訂版migration `0006`のschema契約です。`0006`は現時点でremote D1へ未適用であり、現行の非本番deployにこのtableが存在するとはみなしません。
+以下はmigration `0006`のschema契約です。`0006`は2026-08-26に非本番D1へ適用済みで、現行の非本番deployにこのtableが存在します。
 
 `participant_names`は管理者によるparticipant作成時には存在せず、参加者が有効なPre招待でIDを入力し、正規化後の表示内容を確認して正常redeemした同じD1 batch内で作成します。`participant_name`はNFKC・Unicode空白collapse・trim後の表示用平文で、Roman文字のcaseは保持します。`registered_visit_uuid`は同じ参加者のPre visitだけを許し、`registered_at_ms`は初回登録時刻です。以後の新しい招待linkでは保存値を表示するだけで、氏名を上書きしません。確認前離脱、氏名不足、ID不一致、初回登録競合では行を作成・変更しません。
 

@@ -34,7 +34,7 @@ Picture Matching は行いません。preではPicture Namingだけを行い、L
 
 IDは秘密情報ではなく、研究用連番の低entropyな値なので第二認証要素でもありません。ID単独では氏名を返さず、確認用APIはraw招待token、route、IDの一致を要求しますが、現行APIにはrate limitや本人認証がなく、漏れたraw tokenに対するIDの総当たり耐性を保証しません。raw tokenと一致するIDを得た第三者も保存氏名を見て確認操作まで進めます。`no-store`はcache制御であって、暗号化・匿名化・本人認証ではありません。さらに平文はD1のbackup・Time Travel等の管理コピーにも含まれ得ます。したがってlinkの秘匿と漏えい時のrevoke・再発行をアクセス境界とし、D1権限を限定して、管理コピーを含む保存・削除範囲を運用で固定します。この露出を、参加者が保存値を読める利点との意図的なtradeoffとして受け入れます。
 
-学習時アクセント、24-cell、manifest seedは引き続き数値IDだけから決まり、氏名は割付へ影響しません。氏名表示用の`IDENTITY_SECRET`は不要で、healthとproduction gateが要求するsecretは独立した`ADMIN_TOKEN`と`RANDOMIZATION_SECRET`だけです。このschemaを追加する改訂版migration `0006`は現時点でremote D1へ未適用であり、適用済みとはみなしません。
+学習時アクセント、24-cell、manifest seedは引き続き数値IDだけから決まり、氏名は割付へ影響しません。氏名表示用の`IDENTITY_SECRET`は不要で、healthとproduction gateが要求するsecretは独立した`ADMIN_TOKEN`と`RANDOMIZATION_SECRET`だけです。このschemaを追加するmigration `0006`は、2026-08-26に非本番D1へ適用済みです。
 
 ## 3. 語、専用練習刺激、変動性
 

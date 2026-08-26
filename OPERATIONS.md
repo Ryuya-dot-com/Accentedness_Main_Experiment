@@ -42,13 +42,7 @@ locationを指定しない場合、D1とR2は作成要求元に近いregionを�
 
 D1作成時の`database_id`を`wrangler.jsonc`のtop-level `DB` bindingだけへ追記し、差分とresource名を照合します。
 
-既存の非本番へ改訂後の`0006_identity_and_participation_interruptions.sql`をrolloutするときは、順序を変えません。2026-08-26のread-only remote migration listで`0006`未適用を確認済みですが、実際の変更直前にも再確認し、それまでは適用済みと扱いません。
-
-1. remote migration listで`0006`が未適用であることを確認する。
-2. 平文氏名tableと中断tableを追加する改訂版`0006`をD1へ適用する。
-3. `0006`を前提にするWorkerをdeployする。
-
-新コードを先にdeployすると`participant_names` table不在で失敗します。現行の旧Workerは追加tableを参照しないため、migrationを先に適用してから新コードをdeployします。適用済みmigrationを後から書き換えて再適用してはいけません。remoteで`0006`適用済みと判明した場合は作業を止め、forward-onlyの追加migrationへ切り替えます。
+`0006_identity_and_participation_interruptions.sql`は2026-08-26に非本番D1へ適用済みで、remote migrationのpendingが0件であることを確認しています。現行Workerも`0006`を前提に配備済みです。新しい環境ではmigration `0001`から`0006`までを順に適用してからWorkerをdeployします。適用済みmigrationは書き換えず、今後のschema変更はforward-onlyの追加migrationにします。
 
 ```bash
 npx wrangler d1 migrations list DB --remote --env="" --no-x-provision
