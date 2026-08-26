@@ -4,7 +4,7 @@ Barcroft and Sommers (2005) の Experiment 2 を基礎に、学習時アクセ�
 
 ## 現在の状態
 
-Learning練習・Space限定UX・latency metadata・研究者用設計logを含む現行working treeはfull `npm run verify`を通過していますが、まだimplementation commitへ固定していません。直前baselineのcommitは`079c889`です。また、改訂版migration `0006`はremote D1へ未適用で、現行working treeも非本番へ未deployです。したがって、現在の非本番deployを現行buildの実証や本番収集可能状態とはみなしません。さらに収集用の画像・学習音声・本番テスト音声・話者と音響的語末offsetも未確定で、latencyを校正済み絶対RTとするかbrowser基準の近似値とするかも未決定のため、現時点では本番データを収集できません。production環境では、プレースホルダーが残る、直後・遅延のtoken方針が未確定、または`ADMIN_TOKEN`と`RANDOMIZATION_SECRET`のいずれかが未設定・短すぎる・相互流用されている場合、参加者作成・招待発行・招待redeem・新規trial開始をサーバーが拒否します。
+Learning練習・Space限定UX・latency metadata・研究者用設計logを含む実装はcommit `34c8e86f0233bcd7bde36cb7516a5d47efacb6ea`へ固定し、そのcommitでfull `npm run verify`（17 files / 145 tests、4,320 randomization designs、development/production dry-run）を通過しています。一方、改訂版migration `0006`はremote D1へ未適用で、この実装も非本番へ未deployです。したがって、現在の非本番deployを現行buildの実証や本番収集可能状態とはみなしません。さらに収集用の画像・学習音声・本番テスト音声・話者と音響的語末offsetも未確定で、latencyを校正済み絶対RTとするかbrowser基準の近似値とするかも未決定のため、現時点では本番データを収集できません。production環境では、プレースホルダーが残る、直後・遅延のtoken方針が未確定、または`ADMIN_TOKEN`と`RANDOMIZATION_SECRET`のいずれかが未設定・短すぎる・相互流用されている場合、参加者作成・招待発行・招待redeem・新規trial開始をサーバーが拒否します。
 
 本番収集前の技術的な配備条件は次のとおりです。これらはリポジトリのコード完成判定とは分けて扱います。
 
