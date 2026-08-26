@@ -1,11 +1,12 @@
 import { ExperimentApi } from "./api.js";
 import { ExperimentAudio } from "./audio-engine.js";
 import {
-  bootstrapWithParticipantAccess,
+  bootstrapTaskAccess,
   redirectToCanonical,
   waitForStartOrParticipantExit,
 } from "./flow-guards.js";
 import { ExperimentRunner, ParticipantExitRequested } from "./runner.js";
+import { ResearcherTestRunner } from "./test-mode.js";
 import { ExperimentUi, participantGuidanceError, validateBrowserEnvironment } from "./ui.js";
 
 const ui = new ExperimentUi();
@@ -14,18 +15,32 @@ let audio = null;
 let runner = null;
 
 async function main() {
-  api = new ExperimentApi("immediate");
-  audio = new ExperimentAudio(api);
-  const failures = validateBrowserEnvironment({ microphone: false });
+  const realApi = new ExperimentApi("immediate");
+  const persistentStorage = realApi.hasInvitationToken() || realApi.hasStoredSession();
+  const failures = validateBrowserEnvironment({
+    microphone: false,
+    persistentStorage,
+  });
   if (failures.length) throw participantGuidanceError(failures.join(" "));
-  let state = await bootstrapWithParticipantAccess(api, ui);
+  const access = await bootstrapTaskAccess(realApi, ui, {
+    expectedVisitType: "immediate",
+    expectedSegment: "learning",
+  });
+  api = access.api;
+  let state = access.state;
+  const testMode = access.testMode;
+  audio = new ExperimentAudio(api);
   if (redirectToCanonical(state)) return;
   ui.setConnected(true);
   ui.setParticipant(state.participant.id, state.visit.visit_type);
-  ui.welcomeStatus.textContent = state.accepted.length
-    ? "保存済みの位置から再開できます。"
-    : "招待情報を確認しました。";
-  runner = new ExperimentRunner(api, ui, audio, state);
+  ui.welcomeStatus.textContent = testMode
+    ? "研究者用テストモードです。回答と音声は保存・送信されません。"
+    : state.accepted.length
+      ? "保存済みの位置から再開できます。"
+      : "招待情報を確認しました。";
+  runner = testMode
+    ? new ResearcherTestRunner(api, ui, audio, state)
+    : new ExperimentRunner(api, ui, audio, state);
   if (state.participation_control?.interruption?.state === "requested") {
     ui.beginTask();
     runner.startMonitoring();
@@ -130,7 +145,9 @@ async function main() {
     await runner.handleParticipantExit();
     if (learningCompleted % 24 === 0 && learningCompleted < mainTrials.length) {
       await ui.prompt(
-        `ここで休憩してください。\n${learningCompleted}/${mainTrials.length} 回まで終わり、ここまでの記録は保存されています。\n準備ができたらスペースキーを1回押してください。`,
+        testMode
+          ? `ここで休憩してください。\n${learningCompleted}/${mainTrials.length} 回まで終わりました。このテストの記録は保存されません。\n準備ができたらスペースキーを1回押してください。`
+          : `ここで休憩してください。\n${learningCompleted}/${mainTrials.length} 回まで終わり、ここまでの記録は保存されています。\n準備ができたらスペースキーを1回押してください。`,
         "学習を再開",
       );
       await runner.handleParticipantExit();
@@ -141,6 +158,14 @@ async function main() {
   await runner.handleParticipantExit();
   ui.updateProgress("単語学習 本番", mainTrials.length, mainTrials.length);
   ui.setSaveState("saved");
+  if (testMode) {
+    ui.setInterruptionControlEnabled(false);
+    runner.stopMonitoring();
+    audio.close();
+    await runner.completeVisitWithRetry();
+    ui.completed("単語学習の動作確認が終了しました。回答や音声は保存・送信されていません。別の画面を確認する場合は、そのURLを開いて参加者IDに「test」と入力してください。");
+    return;
+  }
   await ui.prompt("単語学習が終わり、ここまでの記録は保存されました。\n続けて、絵を見て英単語を答える直後テストを行います。", "直後テストを開く");
   await runner.handleParticipantExit();
   ui.setInterruptionControlEnabled(false);

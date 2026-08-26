@@ -23,6 +23,7 @@ import {
   downloadAdminParticipantCopy,
   downloadParticipantCopy,
 } from "./routes-participant-copy.js";
+import { bootstrapTestMode } from "./routes-test-mode.js";
 import { ApiError, errorResponse, jsonResponse } from "./lib/http.js";
 import { collectionConfiguration } from "./lib/config.js";
 
@@ -67,6 +68,13 @@ async function routeApi(request, env) {
       randomization_ready: collection.randomizationReady,
       secrets_independent: collection.secretsIndependent,
       server_now_ms: Date.now(),
+    });
+  }
+  if (path === "/api/test/bootstrap") {
+    return bootstrapTestMode(request, {
+      enabled: String(env.ENVIRONMENT ?? "").toLowerCase() === "development",
+      assignmentVersion: env.ASSIGNMENT_VERSION,
+      seedAlgorithmVersion: env.SEED_ALGORITHM_VERSION,
     });
   }
   if (path === "/api/admin/participants") return createParticipant(request, env);

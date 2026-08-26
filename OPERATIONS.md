@@ -74,6 +74,12 @@ npx wrangler secret list --env=""
 
 `0006`適用後の非本番`GET /api/health`の期待値は、`environment=development`、`placeholder_assets=true`、`test_token_policy=undecided`、`test_token_policy_ready=false`、`admin_authentication_ready=true`、`randomization_ready=true`、`secrets_independent=true`、`collection_ready=false`です。これは`ADMIN_TOKEN`と`RANDOMIZATION_SECRET`を分離した正常なplaceholder pilot状態です。未使用IDでparticipantを1名作成し、313文batch、作成直後の`participant_names` 0件、Preの確認済みredeem後1件、後続linkでの表示確認、確認前離脱・ID不一致・競合時の部分状態0件、氏名が限定された確認用API応答以外へ出ないこと、管理token拒否、R2非公開を確認します。2026-08-26に旧実装で確認した311文batchは旧契約の履歴証拠であり、現行ID-only作成batchの証拠には流用しません。現在の非本番URLは`https://accentedness-main-experiment.komuro-4121.workers.dev`です。
 
+### 研究者用の非保存test
+
+この導線は`ENVIRONMENT=development`の非本番だけで有効です。productionでは入口を表示せず、`POST /api/test/bootstrap`も404で拒否します。6つのcanonical URLを、招待tokenも通常参加者の保存済みsessionもない隔離Chrome profileで開き、既存の参加者ID欄へ半角小文字`test`を入力します。既存sessionは参加者の安全な再開を優先し、testのために自動削除しません。別のtest用フォーム、氏名入力、管理者側の事前登録はありません。各pageはfresh random manifestと静的プレースホルダーで独立して動作し、回答・録音をD1、R2、IndexedDBへ書きません。画面上部のbadgeが「研究者用テスト」、課題中の保存状態が「保存・送信なし」であることを確認します。
+
+この導線で確認できるのは、そのpageの説明、練習、注視点、画像・音声、録音、時間表示、進捗、終了UIです。通常の招待・氏名表示、page間session、D1/R2 ACK、再開、Immediateから5日以上のDelayed gate、参加者ZIPは確認できません。それらのpilotを`test`で代替しません。配備後QAでは実施前後のD1 13 application table件数とRECORDINGS R2 object数を照合し、増加があればtest成功と扱わず停止します。Cloudflare側の通常のrequest metadata logまで存在しないという意味ではありません。
+
 ## 3. productionの初回セットアップ
 
 非本番pilotを通過するまでproduction resourceは作成しません。productionへ進む場合は採用planを確定し、非本番と同じread-only衝突監査を繰り返します。

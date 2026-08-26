@@ -34,7 +34,7 @@ document.getElementById("app").innerHTML = `
             name="participant_id"
             type="text"
             inputmode="numeric"
-            pattern="[0-9]+"
+            pattern="test|[1-9][0-9]*"
             maxlength="32"
             autocomplete="off"
             required

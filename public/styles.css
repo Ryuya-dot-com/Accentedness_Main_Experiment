@@ -353,6 +353,10 @@ h2 {
   color: var(--warn);
 }
 
+.save-state.test-mode {
+  color: #7d3f00;
+}
+
 .progress-track {
   height: 16px;
   overflow: hidden;
@@ -704,6 +708,45 @@ button.secondary-button:hover:not(:disabled) {
     right: 12px;
     bottom: 12px;
     left: 12px;
+  }
+}
+
+@media (min-width: 900px) and (min-height: 600px) and (max-height: 700px) {
+  body:not(.experiment-active) .shell {
+    padding: 12px 0;
+  }
+
+  body:not(.experiment-active) .card {
+    padding: 18px 28px;
+  }
+
+  body:not(.experiment-active) h1 {
+    font-size: 2.2rem;
+  }
+
+  body:not(.experiment-active) .lead {
+    margin: 8px 0;
+    line-height: 1.5;
+  }
+
+  body:not(.experiment-active) .summary,
+  body:not(.experiment-active) .checklist {
+    margin: 9px 0;
+    padding: 9px 13px;
+    line-height: 1.45;
+  }
+
+  body:not(.experiment-active) .checklist li + li {
+    margin-top: 2px;
+  }
+
+  body:not(.experiment-active) .consent-row,
+  body:not(.experiment-active) .actions {
+    margin-top: 9px;
+  }
+
+  body:not(.experiment-active) .status {
+    margin-top: 7px;
   }
 }
 

@@ -1,24 +1,36 @@
 import {
+  ApiClientError,
   isCorrectableParticipantAccessError,
   isCorrectableParticipantNameError,
   ParticipantNameValidationError,
   validateParticipantNameForRegistration,
 } from "./api.js";
+import {
+  ResearcherTestApi,
+  researcherTestModeAvailable,
+} from "./test-mode.js";
 
 function normalizedPath(path) {
   return String(path ?? "").replace(/\/+$/u, "") || "/";
 }
 
-export async function bootstrapWithParticipantAccess(api, ui) {
+export async function bootstrapWithParticipantAccess(
+  api,
+  ui,
+  { initialParticipantId = null } = {},
+) {
   if (!api.hasInvitationToken()) {
     const state = await api.bootstrap();
     ui.showParticipationSetup();
     return state;
   }
   let retryMessage = "";
+  let pendingParticipantId = initialParticipantId;
   participantAccessLoop:
   while (true) {
-    const participantId = await ui.requestParticipantId(retryMessage);
+    const participantId = pendingParticipantId
+      ?? await ui.requestParticipantId(retryMessage);
+    pendingParticipantId = null;
     let preview;
     try {
       preview = await api.previewParticipantName(participantId);
@@ -88,6 +100,60 @@ export async function bootstrapWithParticipantAccess(api, ui) {
       retryMessage = "参加者情報を確定できませんでした。参加者IDを確認して、もう一度お試しください。";
     }
   }
+}
+
+export async function bootstrapTaskAccess(
+  realApi,
+  ui,
+  { expectedVisitType, expectedSegment },
+) {
+  if (realApi.hasStoredSession()) {
+    try {
+      return {
+        api: realApi,
+        state: await bootstrapWithParticipantAccess(realApi, ui),
+        testMode: false,
+      };
+    } catch (error) {
+      if (!(error instanceof ApiClientError) || error.code !== "invalid_session") throw error;
+      realApi.clearSession();
+    }
+  }
+
+  const hasInvitationToken = realApi.hasInvitationToken();
+  const researcherTest = !hasInvitationToken
+    && await researcherTestModeAvailable();
+  if (!hasInvitationToken && !researcherTest) {
+    throw new ApiClientError(
+      401,
+      "invitation_required",
+      "担当者から送られた招待リンクを開いてください。",
+    );
+  }
+  const participantId = await ui.requestParticipantId("", { researcherTest });
+
+  if (participantId === "test" && researcherTest) {
+    const testApi = new ResearcherTestApi(expectedVisitType, expectedSegment);
+    ui.activateResearcherTestMode(null, expectedVisitType);
+    const state = await testApi.bootstrap("test");
+    ui.showParticipationSetup();
+    return { api: testApi, state, testMode: true };
+  }
+
+  if (!hasInvitationToken) {
+    throw new ApiClientError(
+      401,
+      "invitation_required",
+      "数値の参加者IDで実施する場合は、担当者から送られた招待リンクを開いてください。",
+    );
+  }
+  return {
+    api: realApi,
+    state: await bootstrapWithParticipantAccess(realApi, ui, {
+      initialParticipantId: participantId,
+    }),
+    testMode: false,
+  };
 }
 
 export async function waitForStartOrParticipantExit(ui, runner) {

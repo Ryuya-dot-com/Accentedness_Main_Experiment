@@ -1,12 +1,13 @@
 import { ExperimentApi } from "./api.js";
 import { ExperimentAudio } from "./audio-engine.js";
 import {
-  bootstrapWithParticipantAccess,
+  bootstrapTaskAccess,
   microphoneCheckStorageKey,
   redirectToCanonical,
   waitForStartOrParticipantExit,
 } from "./flow-guards.js";
 import { ExperimentRunner, ParticipantExitRequested } from "./runner.js";
+import { ResearcherTestRunner } from "./test-mode.js";
 import {
   ExperimentUi,
   PARTICIPANT_COPY_DELIVERY,
@@ -81,8 +82,10 @@ async function saveParticipantCopy() {
 }
 
 async function runMicrophoneCheck(state) {
-  const checkKey = microphoneCheckStorageKey(state, expectedSegment);
-  if (sessionStorage.getItem(checkKey) === "yes") return;
+  const checkKey = api.isTestMode
+    ? null
+    : microphoneCheckStorageKey(state, expectedSegment);
+  if (checkKey && sessionStorage.getItem(checkKey) === "yes") return;
   for (let attempt = 1; attempt <= 2; attempt += 1) {
     await ui.prompt("マイク確認を行います。次の画面で「テスト」と普段の声で話してください。", "録音を開始");
     await runner.handleParticipantExit();
@@ -106,7 +109,7 @@ async function runMicrophoneCheck(state) {
     if (!tooQuiet && !clipped) {
       await ui.prompt("自分の声が聞こえたら続けてください。聞こえない場合は担当者に知らせてください。");
       await runner.handleParticipantExit();
-      sessionStorage.setItem(checkKey, "yes");
+      if (checkKey) sessionStorage.setItem(checkKey, "yes");
       return;
     }
     if (attempt === 1) {
@@ -139,18 +142,32 @@ async function finalizeAlreadyCompleted(state) {
 }
 
 async function main() {
-  api = new ExperimentApi(expectedVisit);
-  audio = new ExperimentAudio(api);
-  const failures = validateBrowserEnvironment({ microphone: true });
+  const realApi = new ExperimentApi(expectedVisit);
+  const persistentStorage = realApi.hasInvitationToken() || realApi.hasStoredSession();
+  const failures = validateBrowserEnvironment({
+    microphone: true,
+    persistentStorage,
+  });
   if (failures.length) throw participantGuidanceError(failures.join(" "));
-  let state = await bootstrapWithParticipantAccess(api, ui);
+  const access = await bootstrapTaskAccess(realApi, ui, {
+    expectedVisitType: expectedVisit,
+    expectedSegment,
+  });
+  api = access.api;
+  let state = access.state;
+  const testMode = access.testMode;
+  audio = new ExperimentAudio(api);
   if (redirectToCanonical(state)) return;
   ui.setConnected(true);
   ui.setParticipant(state.participant.id, state.visit.visit_type);
-  ui.welcomeStatus.textContent = state.accepted.length
-    ? "保存済みの位置から再開できます。"
-    : "招待情報を確認しました。";
-  runner = new ExperimentRunner(api, ui, audio, state);
+  ui.welcomeStatus.textContent = testMode
+    ? "研究者用テストモードです。回答と録音は保存・送信されません。"
+    : state.accepted.length
+      ? "保存済みの位置から再開できます。"
+      : "招待情報を確認しました。";
+  runner = testMode
+    ? new ResearcherTestRunner(api, ui, audio, state)
+    : new ExperimentRunner(api, ui, audio, state);
   if (state.participation_control?.interruption?.state === "requested") {
     ui.beginTask();
     runner.startMonitoring();
@@ -252,6 +269,10 @@ async function main() {
   runner.stopMonitoring();
   audio.close();
   await runner.completeVisitWithRetry();
+  if (testMode) {
+    ui.completed("この画面の動作確認が終了しました。回答と録音は保存・送信されていません。別の画面を確認する場合は、そのURLを開いて参加者IDに「test」と入力してください。");
+    return;
+  }
   const participantCopy = expectedVisit === "delayed"
     ? await saveParticipantCopy()
     : null;

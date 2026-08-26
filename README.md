@@ -4,7 +4,7 @@ Barcroft and Sommers (2005) の Experiment 2 を基礎に、学習時アクセ�
 
 ## 現在の状態
 
-Learning練習・Space限定UX・latency metadata・研究者用設計logを含む実装はcommit `34c8e86f0233bcd7bde36cb7516a5d47efacb6ea`へ固定し、そのcommitでfull `npm run verify`（17 files / 145 tests、4,320 randomization designs、development/production dry-run）を通過しています。改訂版migration `0006`を非本番D1へ適用し、同じruntime実装を含むsource commit `220506d`を非本番へdeployしました。health・8 HTML routes・主要配信asset・管理認証境界を確認し、v5の連番ID 4とPre招待も準備済みです。ただし、現行buildを実Chrome・実microphoneで操作したcanonical D1 responseとR2 WAVの照合は未実施なので、G2はまだ完了していません。さらに収集用の画像・学習音声・本番テスト音声・話者と音響的語末offsetも未確定で、latencyを校正済み絶対RTとするかbrowser基準の近似値とするかも未決定のため、現時点では本番データを収集できません。production環境では、プレースホルダーが残る、直後・遅延のtoken方針が未確定、または`ADMIN_TOKEN`と`RANDOMIZATION_SECRET`のいずれかが未設定・短すぎる・相互流用されている場合、参加者作成・招待発行・招待redeem・新規trial開始をサーバーが拒否します。
+Learning練習・Space限定UX・latency metadata・研究者用設計logを含む実装は非本番へ配備済みです。2026-08-26に非本番D1 `main-experiment` の既存実験データだけをresetし、13 application tableが0件、`d1_migrations`が6件、外部キー違反が0件であることを確認しました。reset前のID 1–4と招待は現在存在しません。RECORDINGS R2の旧4 objectは削除対象外として残しています。現行buildを実Chrome・実microphoneで操作したcanonical D1 responseとR2 WAVの照合は未実施なので、G2はまだ完了していません。さらに収集用の画像・学習音声・本番テスト音声・話者と音響的語末offsetも未確定で、latencyを校正済み絶対RTとするかbrowser基準の近似値とするかも未決定のため、現時点では本番データを収集できません。production環境では、プレースホルダーが残る、直後・遅延のtoken方針が未確定、または`ADMIN_TOKEN`と`RANDOMIZATION_SECRET`のいずれかが未設定・短すぎる・相互流用されている場合、参加者作成・招待発行・招待redeem・新規trial開始をサーバーが拒否します。
 
 本番収集前の技術的な配備条件は次のとおりです。これらはリポジトリのコード完成判定とは分けて扱います。
 
@@ -30,6 +30,8 @@ Learning練習・Space限定UX・latency metadata・研究者用設計logを含�
 | delayed | L2-to-L1 | `/delayed-l2-to-l1/` |
 
 招待tokenはURLごとではなくvisitごとの3本です。pre、immediate、delayedのリンクを担当者が順に手動配布し、同一visit内の課題間では同じsessionを引き継ぎます。pre完了からimmediate開始までに上限・下限は設けず、実際の間隔を保存します。delayedはImmediate最終L2-to-L1回答のserver受理時刻から5日以上が経過し、Immediateの全応答・録音の保存が確定すると開始できます。それ以後は期限切れにしません。招待リンク自体にも年齢による自動失効はなく、visit完了、担当者によるrevoke、または再発行まで有効です。サーバーが未完了trialのordinalと未送信録音を検査するため、後続URLを直接開いても課題を飛ばせません。preにはL2-to-L1を含めません。
+
+研究者が各画面を動作確認するときは、`ENVIRONMENT=development`の非本番だけで、上表のcanonical URLを招待tokenなし・保存済みsessionのない隔離Chrome profileから開き、既存の参加者ID欄へ半角小文字で`test`と入力します。氏名画面は表示せず、そのpage用にfreshな条件と順序を抽選し、静的プレースホルダーで練習・本番の提示と録音UIを実行します。このモードは回答・録音をD1、R2、IndexedDBへ保存・送信せず、画面にも常時「保存・送信なし」と表示します。productionでは入口を表示せず、test bootstrapも404で拒否します。既存の通常参加者sessionがあるprofileでは安全な再開を優先するため、test用にsessionを自動削除しません。pageごとに独立した動作確認であり、通常参加者の招待、氏名、継続session、D1/R2保存、再開、5日gate、ZIPを検証した証拠にはなりません。
 
 管理者が入力するのは数値参加者IDだけです。参加者は有効なPreリンクでIDを入力し、氏名を入力した後、保存前の確認画面に表示された文字列を自分で確認します。確認済みの氏名は表示用に正規化した平文として、アプリケーションschemaではD1の`participant_names`だけへ保存します。以後の新しい招待linkではID入力後、serverが保存済み氏名を確認用API応答だけに返し、参加者は氏名を再入力せず表示内容を確認します。氏名はWorker log、audit detail、R2、browser storage、trial/event、参加者版・研究者版ZIP、管理API応答には出しません。初回アクセス資格を担うのは手動配布されたraw招待tokenと一致する参加者IDであり、氏名表示は本人認証ではありません。初回氏名保存、session、visit、redeem回数、auditは同じD1 batchで確定し、競合や途中失敗では全変更をrollbackします。trial responseとtelemetry eventもtask/type別field allowlistをserverで強制します。割付は数値IDだけで決まり、氏名は条件やseedに影響しません。IDは離脱・参加終了後も再利用しません。
 

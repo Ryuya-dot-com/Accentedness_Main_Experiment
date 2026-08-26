@@ -626,6 +626,10 @@ export class ExperimentRunner {
     );
   }
 
+  markTrialStimulusShown(trialId) {
+    return markTrialStimulusShown(trialId);
+  }
+
   async persistTrial(trial, authorization, payload, recordingBlob = null) {
     const responseKey = crypto.randomUUID();
     payload.client_response_saved_perf_ms = performance.now();
@@ -665,7 +669,7 @@ export class ExperimentRunner {
     const targetOnsetPerfMs = await this.prepareOnset(300);
     this.requireVisibleBeforeOnset();
     this.activeTrial = trial;
-    await markTrialStimulusShown(trial.trial_id);
+    await this.markTrialStimulusShown(trial.trial_id);
     await delayUntilPerformance(targetOnsetPerfMs);
     const onset = await revealOnAnimationFrame(
       () => this.ui.showVisual(trial, loaded.imageUrl),
@@ -742,7 +746,7 @@ export class ExperimentRunner {
     const targetOnsetPerfMs = await this.prepareOnset(350);
     this.requireVisibleBeforeOnset();
     this.activeTrial = trial;
-    await markTrialStimulusShown(trial.trial_id);
+    await this.markTrialStimulusShown(trial.trial_id);
     const captureStart = await this.audio.startCapture();
     await delayUntilPerformance(targetOnsetPerfMs);
     const onset = await revealOnAnimationFrame(
@@ -816,7 +820,7 @@ export class ExperimentRunner {
     );
     this.requireVisibleBeforeOnset();
     this.activeTrial = trial;
-    await markTrialStimulusShown(trial.trial_id);
+    await this.markTrialStimulusShown(trial.trial_id);
     await delayUntilPerformance(targetOnsetPerfMs - protocol.preAudioRecordingMs);
     const captureStart = await this.audio.startCapture();
     this.ui.setRecording(true);

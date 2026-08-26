@@ -242,7 +242,12 @@ export class ExperimentApi {
     this.invitationToken = consumeInvitationToken();
     try {
       this.sessionToken = sessionStorage.getItem(SESSION_TOKEN_KEY);
-      this.clientInstanceId = getOrCreateClientInstanceId();
+      // A plain task URL may enter the non-persistent researcher test
+      // path. Do not create browser state unless an actual invitation needs a
+      // client-instance identifier.
+      this.clientInstanceId = this.invitationToken
+        ? getOrCreateClientInstanceId()
+        : sessionStorage.getItem(CLIENT_INSTANCE_KEY);
     } catch {
       throw new ApiClientError(
         0,
@@ -274,6 +279,10 @@ export class ExperimentApi {
 
   hasInvitationToken() {
     return Boolean(this.invitationToken);
+  }
+
+  hasStoredSession() {
+    return Boolean(this.sessionToken);
   }
 
   async previewParticipantName(participantIdInput) {
