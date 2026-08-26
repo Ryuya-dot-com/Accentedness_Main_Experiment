@@ -4,7 +4,7 @@ Barcroft and Sommers (2005) の Experiment 2 を基礎に、学習時アクセ�
 
 ## 現在の状態
 
-Learning練習・Space限定UX・latency metadata・研究者用設計logを含む実装は非本番へ配備済みです。2026-08-26に非本番D1 `main-experiment` の既存実験データだけをresetし、13 application tableが0件、`d1_migrations`が6件、外部キー違反が0件であることを確認しました。reset前のID 1–4と招待は現在存在しません。RECORDINGS R2の旧4 objectは削除対象外として残しています。現行buildを実Chrome・実microphoneで操作したcanonical D1 responseとR2 WAVの照合は未実施なので、G2はまだ完了していません。さらに収集用の画像・学習音声・本番テスト音声・話者と音響的語末offsetも未確定で、latencyを校正済み絶対RTとするかbrowser基準の近似値とするかも未決定のため、現時点では本番データを収集できません。production環境では、プレースホルダーが残る、直後・遅延のtoken方針が未確定、または`ADMIN_TOKEN`と`RANDOMIZATION_SECRET`のいずれかが未設定・短すぎる・相互流用されている場合、参加者作成・招待発行・招待redeem・新規trial開始をサーバーが拒否します。
+Learning練習・Space限定UX・latency metadata・研究者用設計log・非保存の研究者testモードを含む実装は非本番へ配備済みです。2026-08-26に非本番D1 `main-experiment` の既存実験データだけをresetし、13 application tableが0件、`d1_migrations`が6件、外部キー違反が0件であることを確認しました。reset前のID 1–4と招待は現在存在しません。RECORDINGS R2の旧4 objectは削除対象外として残しています。現行buildを実Chrome・実microphoneで操作したcanonical D1 responseとR2 WAVの照合は未実施なので、G2はまだ完了していません。さらに収集用の画像・学習音声・本番テスト音声・話者と音響的語末offsetも未確定で、latencyを校正済み絶対RTとするかbrowser基準の近似値とするかも未決定のため、現時点では本番データを収集できません。production環境では、プレースホルダーが残る、直後・遅延のtoken方針が未確定、または`ADMIN_TOKEN`と`RANDOMIZATION_SECRET`のいずれかが未設定・短すぎる・相互流用されている場合、参加者作成・招待発行・招待redeem・新規trial開始をサーバーが拒否します。
 
 本番収集前の技術的な配備条件は次のとおりです。これらはリポジトリのコード完成判定とは分けて扱います。
 
