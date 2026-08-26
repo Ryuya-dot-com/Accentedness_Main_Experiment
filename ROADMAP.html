@@ -16,8 +16,8 @@
     <thead><tr><th>尺度</th><th>現在値</th><th>意味</th></tr></thead>
     <tbody>
       <tr><td>参加者側の運用ready度</td><td><strong>62%</strong></td><td>招待からDelayed後ZIPまでを100点として、通常導線の未実証分を減点</td></tr>
-      <tr><td>実施者側の運用ready度</td><td><strong>55%</strong></td><td>登録・配布・進捗把握・障害対応・データ回収を100点として採点</td></tr>
-      <tr><td>総合進捗</td><td><strong>約60%</strong></td><td>科学設計20%×85、参加者25%×62、data/timing 20%×60、実施者20%×55、live受入10%×30、文書現行性5%×25 = 59.75。小数点の精密さは主張しない</td></tr>
+      <tr><td>実施者側の運用ready度</td><td><strong>65%</strong></td><td>liveの登録・配布・D1/R2照合・個人ZIPは実証。個人進捗・障害対応・cohort回収は未完了</td></tr>
+      <tr><td>総合進捗</td><td><strong>約65%</strong></td><td>live保存経路の実証分だけ更新。実ブラウザ・実マイク、Delayed、実刺激が未完了なので大幅加点しない</td></tr>
       <tr><td>Main data collection</td><td><strong>NO-GO</strong></td><td>hard gateが1件でも未完了なら、平均点にかかわらず開始しない</td></tr>
     </tbody>
   </table>
@@ -42,7 +42,7 @@
   <table border="1" cellpadding="6">
     <thead><tr><th>必須成果</th><th>実装状態</th><th>live-ready</th><th>現在の判断</th></tr></thead>
     <tbody>
-      <tr><td>3 visit link、6 canonical URL、ID入力、Pre氏名入力、後続の保存氏名確認</td><td>実装・自動test済み</td><td><input type="checkbox"></td><td>現行buildの通常参加者pilotは未完了</td></tr>
+      <tr><td>3 visit link、6 canonical URL、ID入力、Pre氏名入力、後続の保存氏名確認</td><td>実装・live API済み</td><td><input type="checkbox"></td><td>実ブラウザでの通常参加者pilotは未完了</td></tr>
       <tr><td>各課題の練習、本番、注視点、進捗、Space限定、scrollなし。録音課題では10秒の回答時間を表示する</td><td>実装・一部画面確認済み</td><td><input type="checkbox"></td><td>参加者による理解可能性は未確認</td></tr>
       <tr><td>Pre → Learning → Immediate 2課題 → 5日以上後のDelayed 2課題</td><td>実装・自動test済み</td><td><input type="checkbox"></td><td>全導線E2Eは未完了</td></tr>
       <tr><td>trial別WAV、無言・前置きなしの指示、Picture Naming画像onset／L2音声offsetからのlatency基準</td><td>実装・自動test済み</td><td><input type="checkbox"></td><td>実マイク・語頭・音響offsetは未確認</td></tr>
@@ -67,19 +67,17 @@
   </table>
 
   <h2>4. 測定妥当性gate</h2>
-  <p>発話はAudioWorkletのsample frameでtrial別に録音し、欠落frameを検出する実装になっている。</p>
-  <ul>
-    <li><label><input type="checkbox"> 10秒の測定区間中にheartbeat、onset event送信、次刺激fetch、前trial WAV uploadが走らない設計にするか、干渉が無視できる実測根拠を得る</label></li>
-  </ul>
+  <p>発話はAudioWorkletのsample frameでtrial別に録音し、欠落frameを検出する実装になっている。10秒の測定区間中にheartbeat、onset event送信、次刺激fetch、前trial WAV uploadが走る影響の判定は、重複gateを作らずG3へ統合する。</p>
 
-  <h2>5. 収集開始までの4 gate</h2>
+  <h2>5. 収集開始までのgate</h2>
   <ol>
-    <li><label><input type="checkbox"> G1 Measurement-safe / operator-minimum: 測定区間を静かにし、参加者文言、個人状態表示、link安全操作、問い合わせ照合、cohort data経路を最小構成で整える</label></li>
-    <li><label><input type="checkbox"> G2 Normal pilot through Immediate: 新しい数値ID・氏名・通常招待・実Chrome・実マイクでPreからImmediateまで通し、D1 responseとR2 WAVを直接照合する</label></li>
-    <li><label><input type="checkbox"> G3 Delayed / recovery pilot: G2完了から5日以上後にDelayed・参加者ZIPを完遂し、中断再開を1回、保存失敗を1回だけ実地確認する</label></li>
+    <li><label><input type="checkbox" checked> G0 Live storage proof through Immediate: 技術検証ID 5を通常招待APIでPreからImmediateまで通し、D1 225 response・R2 79 WAV・admin ZIP 83 entryを直接照合した</label></li>
+    <li><label><input type="checkbox"> G1 Human pilot through Immediate: 新しい数値ID・氏名・通常招待・実Chrome・実マイクでPreからImmediateまで通し、指示理解・操作・実音声・再取得を確認する</label></li>
+    <li><label><input type="checkbox"> G2 Delayed / recovery pilot on the same build: G1後もbuildを変えず、5日以上後にDelayed・参加者端末ZIPを完遂し、中断再開を1回、保存失敗を1回だけ実地確認する</label></li>
+    <li><label><input type="checkbox"> G3 Measurement-safe / operator-minimum: G0–G2で観測した失敗だけを修正し、測定区間のnetwork干渉と、実施者が次の行動を判断するための最小表示を解決する</label></li>
     <li><label><input type="checkbox"> G4 Main-data-ready: 共同研究者から受領した刺激・固定女性3話者・音響offsetをQAし、productionへ固定してsoft launchを通す</label></li>
   </ol>
-  <p><strong>次に行うこと:</strong> G1だけに集中する。新しい機能群や基盤は追加しない。</p>
+  <p><strong>次に行うこと:</strong> コードを増やさず、ID 6を使ってG1の実ブラウザ・実マイクpilotを行う。失敗が観測されるまではGitHub Pages移行、管理dashboard、Queue、cronを追加しない。</p>
 
   <h2>6. KEEP / SIMPLIFY / REMOVE</h2>
   <h3>KEEP</h3>
@@ -87,7 +85,7 @@
   <h3>SIMPLIFY</h3>
   <p>response中のnetwork処理は区間外へ移す。adminは商用dashboardにせず、1つの参加者状態表と安全な次操作だけにする。中断UIはこれ以上分岐を増やさず、pilotで理解不能な分岐を縮約する。分析dataの取得経路は1つにする。</p>
   <h3>REMOVE</h3>
-  <p>active roadmapから過去commit・旧ID・旧deployの履歴を除く。raw JSONを主要な運用画面にしない。participant ZIPはWAVとvisit / trialの対応に必要な最小metadataをKEEPし、参加者に不要な内部timing等の冗長fieldだけをREMOVE候補とする。日常admin画面のaccent / cell、Queue・cron・常時生成ZIP・独自backup基盤は、明示要件を壊さない範囲で持ち込まない。</p>
+  <p>active roadmapから過去commit・旧deployの履歴を除く。GitHub Pagesへの移行は、D1/R2 backendを別に残してcross-origin・deploy管理を増やすだけなのでREMOVEする。raw JSONを主要な運用画面にしない。participant ZIPはWAVとvisit / trialの対応に必要な最小metadataをKEEPし、参加者に不要な内部timing等の冗長fieldだけをREMOVE候補とする。日常admin画面のaccent / cell、Queue・cron・常時生成ZIP・独自backup基盤は、明示要件を壊さない範囲で持ち込まない。</p>
 
   <h2>7. 外部入力待ち</h2>
   <ul>
@@ -96,6 +94,6 @@
   </ul>
 
   <h2>8. 現在の証拠</h2>
-  <p>非本番buildは配備済み。full verifyは21 files / 172 tests、2 secrets×ID 1–2160の4,320 designでfailure 0。非本番D1の13実験tableはreset後0件、migration 6件、外部キー違反0件。6画面の研究者test入口とLearning練習はisolated Chromeで確認済み。ただし研究者testはno-writeであり、通常招待・実マイク・D1/R2保存・再開・5日gate・ZIPの証拠には流用しない。R2にはreset対象外の旧4 objectが残るため、次の通常pilotは実施前後の直接件数照合を必須とする。</p>
+  <p>非本番buildは配備済み。full verifyは21 files / 172 tests、2 secrets×ID 1–2160の4,320 designでfailure 0。2026-08-26、技術検証専用ID 5（分析対象外）をliveの通常招待APIで実時間実行した。Preは26 response / 26 WAV、Immediateは199 response / 53 WAVで完了し、合計225 canonical response / 225 attempt / 79 uploaded WAV、pending 0、abandoned 0、noncanonical 0、外部キー違反0だった。Delayed targetはImmediate最終response受理から432,000,000 ms後の2026-08-31 18:33:47 JST。管理者ZIPは83 entry / 79,155,496 bytesで全CRCが合格し、氏名を含まず、learning_trials.csvはheader込み147行。抽出した1 WAVはZIP記載SHA-256、ZIP実体、R2正本が一致した。これはlive backendの証拠であり、実ブラウザ・実マイク・参加者理解・再開・参加者端末ZIPの証拠には流用しない。</p>
 </body>
 </html>
