@@ -74,6 +74,8 @@ const PARTICIPANT_ERROR_MESSAGES = Object.freeze({
   invalid_invitation: "招待リンクの形式を確認できません。担当者から届いたリンクを開き直してください。",
   invitation_not_found: "この招待リンクは無効または再発行済みです。担当者へ新しいリンクを依頼してください。",
   wrong_visit_route: "このリンクと開いている課題が一致しません。ページを閉じ、担当者から届いたリンクを開き直してください。",
+  participant_name_not_registered: "Preで氏名登録が完了していません。このまま進まず担当者へ連絡してください。",
+  invalid_name_preview: "氏名確認情報を読み込めませんでした。このまま進まず担当者へ連絡してください。",
   visit_closed: "このセッションはすでに終了しています。担当者に知らせてください。",
   visit_not_available: "このセッションはまだ受付時刻に達していません。担当者の案内後に開き直してください。",
   invalid_session: "セッション情報を確認できません。担当者から届いたリンクを開き直してください。",
@@ -105,7 +107,7 @@ export function fatalErrorMessage(error, { interruptionRequested = false } = {})
   return [
     "「中断・終了」を押した後、課題を安全に続行できない問題が発生しました。",
     "この画面では、通常完了、一時中断、参加終了のいずれも確認できていません。研究用サーバーがこの試行の回答・録音をどこまで受け付けたかも確認できていません。",
-    "担当者から届いた同じ有効な招待リンクを開き直し、参加者IDと氏名を再入力してください。画面が開いたら、新しい試行を始める前に「中断・終了」を選んでください。",
+    "担当者から届いた同じ有効な招待リンクを開き直し、参加者IDを入力して表示される氏名を確認してください。画面が開いたら、新しい試行を始める前に「中断・終了」を選んでください。",
     "同じリンクを開けない場合や状態が分からない場合は、表示されたコードとともに担当者へ連絡してください。",
   ].join("\n\n");
 }
@@ -117,11 +119,22 @@ export class ExperimentUi {
     this.fatalPanel = document.getElementById("fatal");
     this.fatalMessage = document.getElementById("fatal-message");
     this.badge = document.getElementById("connection-badge");
-    this.identityForm = document.getElementById("participant-identity-form");
-    this.identityParticipantId = document.getElementById("participant-id-input");
-    this.identityParticipantName = document.getElementById("participant-name-input");
-    this.identitySubmit = document.getElementById("participant-identity-submit");
-    this.identityStatus = document.getElementById("participant-identity-status");
+    this.participantIdForm = document.getElementById("participant-id-form");
+    this.participantIdInput = document.getElementById("participant-id-input");
+    this.participantIdSubmit = document.getElementById("participant-id-submit");
+    this.participantIdStatus = document.getElementById("participant-id-status");
+    this.participantNameForm = document.getElementById("participant-name-form");
+    this.participantNameInput = document.getElementById("participant-name-input");
+    this.participantNameSubmit = document.getElementById("participant-name-submit");
+    this.participantNameStatus = document.getElementById("participant-name-status");
+    this.participantNameConfirmation = document.getElementById("participant-name-confirmation");
+    this.participantNameConfirmationHeading = document.getElementById("participant-name-confirmation-heading");
+    this.participantNameConfirmationPrompt = document.getElementById("participant-name-confirmation-prompt");
+    this.participantNameConfirmationValue = document.getElementById("participant-name-confirmation-value");
+    this.participantNameConfirm = document.getElementById("participant-name-confirm");
+    this.participantNameEdit = document.getElementById("participant-name-edit");
+    this.participantNameReject = document.getElementById("participant-name-reject");
+    this.participantNameConfirmationStatus = document.getElementById("participant-name-confirmation-status");
     this.participationSetup = document.getElementById("participation-setup");
     this.summary = document.getElementById("participant-summary");
     this.readyCheck = document.getElementById("ready-check");
@@ -172,7 +185,7 @@ export class ExperimentUi {
     }
     window.addEventListener("pagehide", () => {
       this.stopResponseTimer();
-      if (this.identityParticipantName) this.identityParticipantName.value = "";
+      this.clearParticipantAccess();
       if (this.activeDownloadUrl) URL.revokeObjectURL(this.activeDownloadUrl);
     }, { once: true });
   }
@@ -192,35 +205,120 @@ export class ExperimentUi {
     this.summary.hidden = false;
   }
 
-  requestParticipantIdentity(message = "") {
+  hideParticipantAccessSteps() {
+    this.participantIdForm.hidden = true;
+    this.participantNameForm.hidden = true;
+    this.participantNameConfirmation.hidden = true;
+  }
+
+  clearParticipantName() {
+    this.participantNameInput.value = "";
+    this.participantNameInput.setAttribute("aria-invalid", "false");
+    this.participantNameConfirmationValue.textContent = "";
+    this.participantNameConfirmationStatus.textContent = "";
+  }
+
+  clearParticipantAccess() {
+    this.participantIdInput.value = "";
+    this.clearParticipantName();
+    this.hideParticipantAccessSteps();
+  }
+
+  requestParticipantId(message = "") {
     this.participationSetup.hidden = true;
-    this.identityForm.hidden = false;
-    this.identitySubmit.disabled = false;
-    this.identityStatus.textContent = message || "参加者IDと氏名を入力してください。";
-    this.welcomeStatus.textContent = "氏名はPre初回と後続セッションの入力照合にのみ使用し、このブラウザには保存しません。";
-    this.identityParticipantName.value = "";
-    this.identityParticipantId.focus();
+    this.hideParticipantAccessSteps();
+    this.clearParticipantName();
+    this.participantIdForm.hidden = false;
+    this.participantIdSubmit.disabled = false;
+    this.participantIdStatus.textContent = message || "担当者から案内された参加者IDを入力してください。";
+    this.welcomeStatus.textContent = "氏名は参加者記録の確認に使用します。このブラウザには保存しません。";
+    this.participantIdInput.focus();
     return new Promise((resolve) => {
       const onSubmit = (event) => {
         event.preventDefault();
-        if (!this.identityForm.reportValidity()) return;
-        const participantId = this.identityParticipantId.value.trim();
-        const participantName = this.identityParticipantName.value.trim();
-        if (!participantId || !participantName) return;
-        this.identityForm.removeEventListener("submit", onSubmit);
-        this.identitySubmit.disabled = true;
-        this.identityStatus.textContent = "招待リンクを確認しています。";
-        this.identityParticipantName.value = "";
-        resolve({ participant_id: participantId, participant_name: participantName });
+        if (!this.participantIdForm.reportValidity()) return;
+        const participantId = this.participantIdInput.value.trim();
+        if (!participantId) return;
+        this.participantIdForm.removeEventListener("submit", onSubmit);
+        this.participantIdSubmit.disabled = true;
+        this.participantIdStatus.textContent = "招待リンクと参加者IDを確認しています。";
+        resolve(participantId);
       };
-      this.identityForm.addEventListener("submit", onSubmit);
+      this.participantIdForm.addEventListener("submit", onSubmit);
+    });
+  }
+
+  requestParticipantName(initialValue = "", message = "") {
+    this.hideParticipantAccessSteps();
+    this.clearParticipantName();
+    this.participantNameForm.hidden = false;
+    this.participantNameSubmit.disabled = false;
+    this.participantNameStatus.textContent = message
+      || "氏名は保存前に次の画面で確認できます。";
+    this.participantNameInput.value = String(initialValue ?? "");
+    this.participantNameInput.setAttribute("aria-invalid", message ? "true" : "false");
+    this.participantNameInput.focus();
+    return new Promise((resolve) => {
+      const onSubmit = (event) => {
+        event.preventDefault();
+        if (!this.participantNameForm.reportValidity()) return;
+        // Pass the raw value to the shared canonicalizer/validator. In particular,
+        // whitespace-only input must produce inline feedback instead of making the
+        // submit button appear unresponsive here.
+        const participantName = this.participantNameInput.value;
+        this.participantNameForm.removeEventListener("submit", onSubmit);
+        this.participantNameSubmit.disabled = true;
+        this.participantNameInput.setAttribute("aria-invalid", "false");
+        this.participantNameInput.value = "";
+        resolve(participantName);
+      };
+      this.participantNameForm.addEventListener("submit", onSubmit);
+    });
+  }
+
+  confirmParticipantName(participantName, { allowEdit = false } = {}) {
+    this.hideParticipantAccessSteps();
+    this.participantNameInput.value = "";
+    this.participantNameConfirmation.hidden = false;
+    this.participantNameConfirmationPrompt.textContent = allowEdit
+      ? "この氏名をPreの参加者記録として保存します。誤りがないか確認してください。"
+      : "Preで記録された氏名です。ご自身の氏名であることを確認してください。";
+    this.participantNameConfirmationValue.textContent = String(participantName ?? "");
+    this.participantNameConfirmationStatus.textContent = allowEdit
+      ? "誤りがある場合は「氏名を修正」を選んでください。"
+      : "ご自身の氏名でない場合は「いいえ、違います」を選んでください。";
+    this.participantNameEdit.hidden = !allowEdit;
+    this.participantNameReject.hidden = allowEdit;
+    this.participantNameConfirm.disabled = false;
+    this.participantNameEdit.disabled = false;
+    this.participantNameReject.disabled = false;
+    this.participantNameConfirmationHeading.focus();
+    return new Promise((resolve) => {
+      const cleanup = () => {
+        this.participantNameConfirm.removeEventListener("click", onConfirm);
+        this.participantNameEdit.removeEventListener("click", onEdit);
+        this.participantNameReject.removeEventListener("click", onReject);
+        this.participantNameConfirmation.hidden = true;
+        this.clearParticipantName();
+      };
+      const finish = (decision) => {
+        this.participantNameConfirm.disabled = true;
+        this.participantNameEdit.disabled = true;
+        this.participantNameReject.disabled = true;
+        cleanup();
+        resolve(decision);
+      };
+      const onConfirm = () => finish("confirm");
+      const onEdit = () => finish("edit");
+      const onReject = () => finish("reject");
+      this.participantNameConfirm.addEventListener("click", onConfirm);
+      this.participantNameEdit.addEventListener("click", onEdit);
+      this.participantNameReject.addEventListener("click", onReject);
     });
   }
 
   showParticipationSetup() {
-    this.identityParticipantName.value = "";
-    this.identityParticipantId.value = "";
-    this.identityForm.hidden = true;
+    this.clearParticipantAccess();
     this.participationSetup.hidden = false;
   }
 

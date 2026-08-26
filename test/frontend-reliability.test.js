@@ -1,11 +1,21 @@
+import { exports } from "cloudflare:workers";
 import { describe, expect, it, vi } from "vitest";
 import {
   ApiClientError,
+  canonicalizeParticipantNameForDisplay,
+  consumeInvitationToken,
+  ExperimentApi,
+  invitationRedeemPayload,
+  isCorrectableParticipantAccessError,
+  isCorrectableParticipantNameError,
+  ParticipantNameValidationError,
   participantCopyFilename,
-  shouldClearInvitationFragment,
+  participantNamePreviewPayload,
+  validateParticipantNameForRegistration,
   writeResponseToFile,
 } from "../public/js/api.js";
 import {
+  bootstrapWithParticipantAccess,
   microphoneCheckStorageKey,
   redirectToCanonical,
   waitForStartOrParticipantExit,
@@ -21,6 +31,7 @@ import {
 } from "../public/js/runner.js";
 import {
   countdownState,
+  ExperimentUi,
   fatalErrorMessage,
   PARTICIPANT_COPY_DELIVERY,
   participantCopyCompletionMessage,
@@ -49,6 +60,29 @@ function runnerFor(state, apiOverrides = {}) {
   };
   const audio = { close: vi.fn() };
   return { runner: new ExperimentRunner(api, ui, audio, state), api, ui, audio };
+}
+
+function interactiveElement(overrides = {}) {
+  const listeners = new Map();
+  const attributes = new Map();
+  return {
+    hidden: false,
+    disabled: false,
+    value: "",
+    textContent: "",
+    innerHTML: "unchanged-sentinel",
+    focus: vi.fn(),
+    setAttribute: vi.fn((name, value) => attributes.set(name, value)),
+    getAttribute: vi.fn((name) => attributes.get(name) ?? null),
+    addEventListener: vi.fn((type, listener) => listeners.set(type, listener)),
+    removeEventListener: vi.fn((type, listener) => {
+      if (listeners.get(type) === listener) listeners.delete(type);
+    }),
+    dispatch(type) {
+      listeners.get(type)?.({ preventDefault: vi.fn() });
+    },
+    ...overrides,
+  };
 }
 
 describe("frontend reliability guards", () => {
@@ -140,27 +174,477 @@ describe("frontend reliability guards", () => {
     ]);
   });
 
-  it("removes a raw invitation fragment after deterministic client errors but keeps it for retryable server failures", () => {
-    expect(shouldClearInvitationFragment(
-      new ApiClientError(409, "wrong_visit_route", "wrong route"),
-    )).toBe(true);
-    expect(shouldClearInvitationFragment(
-      new ApiClientError(503, "production_collection_blocked", "temporarily blocked"),
-    )).toBe(false);
-    expect(shouldClearInvitationFragment(
-      new ApiClientError(409, "invitation_redeem_conflict", "retry redemption"),
-    )).toBe(false);
-    expect(shouldClearInvitationFragment(
-      new ApiClientError(409, "participant_binding_mismatch", "retry identity"),
-    )).toBe(false);
-    for (const status of [408, 425, 429]) {
-      expect(shouldClearInvitationFragment(
-        new ApiClientError(status, "temporarily_unavailable", "retry redemption"),
-      )).toBe(false);
+  it("captures a raw invitation token once and removes it from the visible URL immediately", () => {
+    const historyObject = { replaceState: vi.fn() };
+    const location = {
+      hash: "#t=raw-invitation-token&ignored=value",
+      pathname: "/pre-picture-naming/",
+      search: "?language=ja",
+    };
+
+    expect(consumeInvitationToken(location, historyObject)).toBe("raw-invitation-token");
+    expect(historyObject.replaceState).toHaveBeenCalledWith(
+      null,
+      "",
+      "/pre-picture-naming/?language=ja",
+    );
+
+    historyObject.replaceState.mockClear();
+    expect(consumeInvitationToken({ ...location, hash: "" }, historyObject)).toBeNull();
+    expect(historyObject.replaceState).not.toHaveBeenCalled();
+  });
+
+  it("retains the consumed invitation token only in the API instance", () => {
+    const storage = new Map();
+    const replaceState = vi.fn();
+    vi.stubGlobal("window", {
+      location: {
+        hash: "#t=memory-only-invitation-token",
+        pathname: "/pre-picture-naming/",
+        search: "",
+      },
+      history: { replaceState },
+    });
+    vi.stubGlobal("sessionStorage", {
+      getItem: vi.fn((key) => storage.get(key) ?? null),
+      setItem: vi.fn((key, value) => storage.set(key, value)),
+      removeItem: vi.fn((key) => storage.delete(key)),
+    });
+
+    try {
+      const api = new ExperimentApi("pre");
+      expect(api.hasInvitationToken()).toBe(true);
+      expect(api.invitationToken).toBe("memory-only-invitation-token");
+      expect(replaceState).toHaveBeenCalledWith(null, "", "/pre-picture-naming/");
+      expect([...storage.values()]).not.toContain("memory-only-invitation-token");
+    } finally {
+      vi.unstubAllGlobals();
     }
-    expect(shouldClearInvitationFragment(
-      new ApiClientError(403, "visit_not_available", "open after target time"),
+  });
+
+  it("retries participant access mismatches and stale name previews without treating missing Pre registration as correctable", () => {
+    for (const code of [
+      "participant_access_mismatch",
+      "participant_name_state_changed",
+    ]) {
+      expect(isCorrectableParticipantAccessError(
+        new ApiClientError(409, code, "retry participant confirmation"),
+      )).toBe(true);
+    }
+    expect(isCorrectableParticipantAccessError(
+      new ApiClientError(409, "participant_name_not_registered", "contact researcher"),
     )).toBe(false);
+  });
+
+  it("keeps plaintext names out of preview and confirm-redemption requests", () => {
+    expect(participantNamePreviewPayload({
+      invitationToken: "invite-secret",
+      participantId: " 17 ",
+      expectedVisitType: "immediate",
+    })).toEqual({
+      token: "invite-secret",
+      participant_id: "17",
+      expected_visit_type: "immediate",
+    });
+
+    const registration = invitationRedeemPayload({
+      invitationToken: "invite-secret",
+      clientInstanceId: "client-id",
+      participantId: "17",
+      expectedVisitType: "pre",
+      nameAction: "register",
+      participantName: " 山田 太郎 ",
+    });
+    expect(registration).toMatchObject({
+      name_action: "register",
+      participant_name: "山田 太郎",
+      participant_name_confirmed: true,
+    });
+
+    const confirmation = invitationRedeemPayload({
+      invitationToken: "invite-secret",
+      clientInstanceId: "client-id",
+      participantId: "17",
+      expectedVisitType: "delayed",
+      nameAction: "confirm",
+      participantName: "must-not-be-sent",
+    });
+    expect(confirmation).toMatchObject({
+      name_action: "confirm",
+      participant_name_confirmed: true,
+    });
+    expect(confirmation).not.toHaveProperty("participant_name");
+  });
+
+  it("matches the server display canonicalization for full-width forms and Unicode whitespace", () => {
+    expect(canonicalizeParticipantNameForDisplay(
+      "　ＹＡＭＡＤＡ\u00a0\u2003ＴＡＲＯ　",
+    )).toBe("YAMADA TARO");
+    expect(canonicalizeParticipantNameForDisplay(
+      "  ﾔﾏﾀﾞ　　太郎  ",
+    )).toBe("ヤマダ 太郎");
+
+    const payload = invitationRedeemPayload({
+      invitationToken: "invite-secret",
+      clientInstanceId: "client-id",
+      participantId: "17",
+      expectedVisitType: "pre",
+      nameAction: "register",
+      participantName: "　ＹＡＭＡＤＡ\u00a0\u2003ＴＡＲＯ　",
+    });
+    expect(payload.participant_name).toBe("YAMADA TARO");
+  });
+
+  it("validates canonical names with the server's code-point, UTF-8, control, surrogate, and bidi limits", () => {
+    expect(validateParticipantNameForRegistration("a".repeat(80))).toBe("a".repeat(80));
+    expect(validateParticipantNameForRegistration("😀".repeat(64))).toBe("😀".repeat(64));
+
+    expect(() => validateParticipantNameForRegistration("a".repeat(81)))
+      .toThrow("80文字以内");
+    expect(() => validateParticipantNameForRegistration("😀".repeat(65)))
+      .toThrow("256バイト以内");
+    for (const invalidName of [
+      "　　",
+      "山田\u0000太郎",
+      "山田\ud800太郎",
+      "山田\u202e太郎",
+    ]) {
+      expect(() => validateParticipantNameForRegistration(invalidName))
+        .toThrow(ParticipantNameValidationError);
+    }
+  });
+
+  it("classifies only the server's invalid-name response as an inline-correctable name error", () => {
+    expect(isCorrectableParticipantNameError(
+      new ApiClientError(422, "invalid_participant_name", "invalid name"),
+    )).toBe(true);
+    expect(isCorrectableParticipantNameError(
+      new ApiClientError(409, "participant_name_state_changed", "stale preview"),
+    )).toBe(false);
+  });
+
+  it("registers a Pre name only after local review and supports editing before redemption", async () => {
+    const state = stateWith({});
+    const api = {
+      hasInvitationToken: vi.fn().mockReturnValue(true),
+      previewParticipantName: vi.fn().mockResolvedValue({ name_action: "register" }),
+      bootstrap: vi.fn().mockResolvedValue(state),
+    };
+    const ui = {
+      requestParticipantId: vi.fn().mockResolvedValue("17"),
+      requestParticipantName: vi.fn()
+        .mockResolvedValueOnce("　ﾔﾏﾀﾞ\u00a0\u2003太郎　")
+        .mockResolvedValueOnce("　山田\u2003\u00a0花子　"),
+      confirmParticipantName: vi.fn()
+        .mockResolvedValueOnce("edit")
+        .mockResolvedValueOnce("confirm"),
+      showParticipationSetup: vi.fn(),
+    };
+
+    await expect(bootstrapWithParticipantAccess(api, ui)).resolves.toBe(state);
+    expect(api.previewParticipantName).toHaveBeenCalledWith("17");
+    expect(ui.requestParticipantName).toHaveBeenNthCalledWith(1, "", "");
+    expect(ui.requestParticipantName).toHaveBeenNthCalledWith(2, "ヤマダ 太郎", "");
+    expect(ui.confirmParticipantName).toHaveBeenNthCalledWith(
+      1,
+      "ヤマダ 太郎",
+      { allowEdit: true },
+    );
+    expect(ui.confirmParticipantName).toHaveBeenNthCalledWith(
+      2,
+      "山田 花子",
+      { allowEdit: true },
+    );
+    expect(api.bootstrap).toHaveBeenCalledWith({
+      participant_id: "17",
+      name_action: "register",
+      participant_name_confirmed: true,
+      participant_name: "山田 花子",
+    });
+    expect(ui.showParticipationSetup).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps an invalid long name on the name step and shows an inline correction message", async () => {
+    const state = stateWith({});
+    const tooLongName = "a".repeat(81);
+    const api = {
+      hasInvitationToken: vi.fn().mockReturnValue(true),
+      previewParticipantName: vi.fn().mockResolvedValue({ name_action: "register" }),
+      bootstrap: vi.fn().mockResolvedValue(state),
+    };
+    const ui = {
+      requestParticipantId: vi.fn().mockResolvedValue("17"),
+      requestParticipantName: vi.fn()
+        .mockResolvedValueOnce(tooLongName)
+        .mockResolvedValueOnce("山田 太郎"),
+      confirmParticipantName: vi.fn().mockResolvedValue("confirm"),
+      showParticipationSetup: vi.fn(),
+    };
+
+    await expect(bootstrapWithParticipantAccess(api, ui)).resolves.toBe(state);
+    expect(ui.requestParticipantId).toHaveBeenCalledTimes(1);
+    expect(api.previewParticipantName).toHaveBeenCalledTimes(1);
+    expect(ui.requestParticipantName).toHaveBeenNthCalledWith(1, "", "");
+    expect(ui.requestParticipantName).toHaveBeenNthCalledWith(
+      2,
+      tooLongName,
+      expect.stringContaining("80文字以内"),
+    );
+    expect(ui.confirmParticipantName).toHaveBeenCalledTimes(1);
+    expect(api.bootstrap).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns a server-rejected Pre name to inline name correction without repeating ID access", async () => {
+    const state = stateWith({});
+    const api = {
+      hasInvitationToken: vi.fn().mockReturnValue(true),
+      previewParticipantName: vi.fn().mockResolvedValue({ name_action: "register" }),
+      bootstrap: vi.fn()
+        .mockRejectedValueOnce(new ApiClientError(
+          422,
+          "invalid_participant_name",
+          "server rejected participant name",
+        ))
+        .mockResolvedValueOnce(state),
+    };
+    const ui = {
+      requestParticipantId: vi.fn().mockResolvedValue("17"),
+      requestParticipantName: vi.fn()
+        .mockResolvedValueOnce("山田 太郎")
+        .mockResolvedValueOnce("山田 花子"),
+      confirmParticipantName: vi.fn().mockResolvedValue("confirm"),
+      showParticipationSetup: vi.fn(),
+    };
+
+    await expect(bootstrapWithParticipantAccess(api, ui)).resolves.toBe(state);
+    expect(ui.requestParticipantId).toHaveBeenCalledTimes(1);
+    expect(api.previewParticipantName).toHaveBeenCalledTimes(1);
+    expect(ui.requestParticipantName).toHaveBeenNthCalledWith(
+      2,
+      "山田 太郎",
+      expect.stringContaining("氏名を登録できませんでした"),
+    );
+    expect(ui.confirmParticipantName).toHaveBeenCalledTimes(2);
+    expect(api.bootstrap).toHaveBeenCalledTimes(2);
+    expect(api.bootstrap).toHaveBeenLastCalledWith({
+      participant_id: "17",
+      name_action: "register",
+      participant_name_confirmed: true,
+      participant_name: "山田 花子",
+    });
+  });
+
+  it("confirms a server-provided name without sending it back during redemption", async () => {
+    const state = stateWith({});
+    const api = {
+      hasInvitationToken: vi.fn().mockReturnValue(true),
+      previewParticipantName: vi.fn().mockResolvedValue({
+        name_action: "confirm",
+        participant_name: "山田 太郎",
+      }),
+      bootstrap: vi.fn().mockResolvedValue(state),
+    };
+    const ui = {
+      requestParticipantId: vi.fn().mockResolvedValue("17"),
+      requestParticipantName: vi.fn(),
+      confirmParticipantName: vi.fn().mockResolvedValue("confirm"),
+      showParticipationSetup: vi.fn(),
+    };
+
+    await expect(bootstrapWithParticipantAccess(api, ui)).resolves.toBe(state);
+    expect(ui.confirmParticipantName).toHaveBeenCalledWith("山田 太郎");
+    expect(ui.requestParticipantName).not.toHaveBeenCalled();
+    expect(api.bootstrap).toHaveBeenCalledWith({
+      participant_id: "17",
+      name_action: "confirm",
+      participant_name_confirmed: true,
+    });
+    expect(api.bootstrap.mock.calls[0][0]).not.toHaveProperty("participant_name");
+  });
+
+  it("returns to ID entry after rejecting a displayed name without redeeming that access", async () => {
+    const state = stateWith({});
+    const api = {
+      hasInvitationToken: vi.fn().mockReturnValue(true),
+      previewParticipantName: vi.fn()
+        .mockResolvedValueOnce({ name_action: "confirm", participant_name: "別の 参加者" })
+        .mockResolvedValueOnce({ name_action: "confirm", participant_name: "山田 太郎" }),
+      bootstrap: vi.fn().mockResolvedValue(state),
+    };
+    const ui = {
+      requestParticipantId: vi.fn()
+        .mockResolvedValueOnce("16")
+        .mockResolvedValueOnce("17"),
+      requestParticipantName: vi.fn(),
+      confirmParticipantName: vi.fn()
+        .mockResolvedValueOnce("reject")
+        .mockResolvedValueOnce("confirm"),
+      showParticipationSetup: vi.fn(),
+    };
+
+    await expect(bootstrapWithParticipantAccess(api, ui)).resolves.toBe(state);
+    expect(api.previewParticipantName).toHaveBeenNthCalledWith(1, "16");
+    expect(api.previewParticipantName).toHaveBeenNthCalledWith(2, "17");
+    expect(ui.requestParticipantId.mock.calls[1][0]).toContain("担当者へ連絡");
+    expect(api.bootstrap).toHaveBeenCalledTimes(1);
+    expect(api.bootstrap).toHaveBeenCalledWith({
+      participant_id: "17",
+      name_action: "confirm",
+      participant_name_confirmed: true,
+    });
+  });
+
+  it("keeps tokenless stored-session bootstrap behavior unchanged", async () => {
+    const state = stateWith({});
+    const api = {
+      hasInvitationToken: vi.fn().mockReturnValue(false),
+      previewParticipantName: vi.fn(),
+      bootstrap: vi.fn().mockResolvedValue(state),
+    };
+    const ui = {
+      requestParticipantId: vi.fn(),
+      requestParticipantName: vi.fn(),
+      confirmParticipantName: vi.fn(),
+      showParticipationSetup: vi.fn(),
+    };
+
+    await expect(bootstrapWithParticipantAccess(api, ui)).resolves.toBe(state);
+    expect(api.bootstrap).toHaveBeenCalledWith();
+    expect(api.previewParticipantName).not.toHaveBeenCalled();
+    expect(ui.requestParticipantId).not.toHaveBeenCalled();
+    expect(ui.showParticipationSetup).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps participant-access markup IDs unique and exposes each step to assistive technology", async () => {
+    const response = await exports.default.fetch(
+      new Request("https://experiment.test/js/task-page.js"),
+    );
+    expect(response.status).toBe(200);
+    const source = await response.text();
+    const ids = [...source.matchAll(/\bid="([^"]+)"/gu)].map((match) => match[1]);
+
+    expect(ids.length).toBeGreaterThan(20);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(source).toContain('aria-labelledby="participant-id-heading"');
+    expect(source).toContain('aria-labelledby="participant-name-heading"');
+    expect(source).toContain('aria-labelledby="participant-name-confirmation-heading"');
+    expect(source).toContain('id="participant-name-confirmation-heading" tabindex="-1"');
+    expect(source).toContain('id="participant-name-confirmation-value" class="summary" aria-live="polite"');
+    expect(source).toContain('maxlength="256"');
+    expect(source).toContain('aria-describedby="participant-name-status"');
+  });
+
+  it("renders a participant name with textContent and removes it after either confirmation choice", async () => {
+    const ui = Object.create(ExperimentUi.prototype);
+    Object.assign(ui, {
+      participantIdForm: interactiveElement(),
+      participantNameForm: interactiveElement(),
+      participantNameConfirmation: interactiveElement(),
+      participantIdInput: interactiveElement({ value: "17" }),
+      participantNameInput: interactiveElement({ value: "should-be-cleared" }),
+      participantNameConfirmationHeading: interactiveElement(),
+      participantNameConfirmationPrompt: interactiveElement(),
+      participantNameConfirmationValue: interactiveElement(),
+      participantNameConfirm: interactiveElement(),
+      participantNameEdit: interactiveElement(),
+      participantNameReject: interactiveElement(),
+      participantNameConfirmationStatus: interactiveElement(),
+    });
+    const canaryName = '<img src=x onerror="throw new Error()"> 山田';
+
+    const confirmed = ui.confirmParticipantName(canaryName);
+    expect(ui.participantNameConfirmationValue.textContent).toBe(canaryName);
+    expect(ui.participantNameConfirmationValue.innerHTML).toBe("unchanged-sentinel");
+    expect(ui.participantNameConfirmationHeading.focus).toHaveBeenCalledTimes(1);
+    ui.participantNameConfirm.dispatch("click");
+    await expect(confirmed).resolves.toBe("confirm");
+    expect(ui.participantNameInput.value).toBe("");
+    expect(ui.participantNameConfirmationValue.textContent).toBe("");
+    expect(ui.participantNameConfirmation.hidden).toBe(true);
+
+    const rejected = ui.confirmParticipantName(canaryName);
+    ui.participantNameReject.dispatch("click");
+    await expect(rejected).resolves.toBe("reject");
+    expect(ui.participantNameInput.value).toBe("");
+    expect(ui.participantNameConfirmationValue.textContent).toBe("");
+    expect(ui.participantNameConfirmation.hidden).toBe(true);
+
+    ui.participantNameInput.value = canaryName;
+    ui.participantNameConfirmationValue.textContent = canaryName;
+    ui.clearParticipantAccess();
+    expect(ui.participantIdInput.value).toBe("");
+    expect(ui.participantNameInput.value).toBe("");
+    expect(ui.participantNameConfirmationValue.textContent).toBe("");
+  });
+
+  it("shows name validation feedback inline and clears aria-invalid after resubmission", async () => {
+    const ui = Object.create(ExperimentUi.prototype);
+    const participantNameForm = interactiveElement({ reportValidity: vi.fn(() => true) });
+    const participantNameInput = interactiveElement();
+    Object.assign(ui, {
+      participantIdForm: interactiveElement(),
+      participantNameForm,
+      participantNameConfirmation: interactiveElement(),
+      participantNameInput,
+      participantNameSubmit: interactiveElement(),
+      participantNameStatus: interactiveElement(),
+      participantNameConfirmationValue: interactiveElement(),
+      participantNameConfirmationStatus: interactiveElement(),
+    });
+
+    const submitted = ui.requestParticipantName(
+      "a".repeat(81),
+      "氏名は80文字以内で入力してください。",
+    );
+    expect(ui.participantNameStatus.textContent).toContain("80文字以内");
+    expect(participantNameInput.getAttribute("aria-invalid")).toBe("true");
+    participantNameInput.value = "山田 太郎";
+    participantNameForm.dispatch("submit");
+
+    await expect(submitted).resolves.toBe("山田 太郎");
+    expect(participantNameInput.getAttribute("aria-invalid")).toBe("false");
+    expect(participantNameInput.value).toBe("");
+  });
+
+  it("passes whitespace-only names to the validator instead of ignoring submit", async () => {
+    const ui = Object.create(ExperimentUi.prototype);
+    const participantNameForm = interactiveElement({ reportValidity: vi.fn(() => true) });
+    const participantNameInput = interactiveElement({ value: "\u3000  " });
+    Object.assign(ui, {
+      participantIdForm: interactiveElement(),
+      participantNameForm,
+      participantNameConfirmation: interactiveElement(),
+      participantNameInput,
+      participantNameSubmit: interactiveElement(),
+      participantNameStatus: interactiveElement(),
+      participantNameConfirmationValue: interactiveElement(),
+      participantNameConfirmationStatus: interactiveElement(),
+    });
+
+    const submitted = ui.requestParticipantName();
+    participantNameInput.value = "\u3000  ";
+    participantNameForm.dispatch("submit");
+
+    await expect(submitted).resolves.toBe("\u3000  ");
+    expect(participantNameInput.value).toBe("");
+  });
+
+  it("never writes a participant name to browser storage", async () => {
+    const [apiResponse, uiResponse] = await Promise.all([
+      exports.default.fetch(new Request("https://experiment.test/js/api.js")),
+      exports.default.fetch(new Request("https://experiment.test/js/ui.js")),
+    ]);
+    const apiSource = await apiResponse.text();
+    const uiSource = await uiResponse.text();
+    const storageWrites = apiSource
+      .split("\n")
+      .filter((line) => /(?:localStorage|sessionStorage)\.setItem/u.test(line))
+      .join("\n");
+
+    expect(storageWrites).not.toMatch(/participantName|participant_name/u);
+    expect(uiSource).not.toMatch(/localStorage|sessionStorage/u);
+    expect(uiSource).toContain("this.participantNameConfirmationValue.textContent = String(participantName ?? \"\")");
+    expect(uiSource).not.toContain("participantNameConfirmationValue.innerHTML");
   });
 
   it("shows participant-facing Japanese guidance for common server errors", () => {
@@ -202,7 +686,8 @@ describe("frontend reliability guards", () => {
     expect(message).toContain("通常完了、一時中断、参加終了のいずれも確認できていません");
     expect(message).toContain("どこまで受け付けたかも確認できていません");
     expect(message).toContain("同じ有効な招待リンクを開き直し");
-    expect(message).toContain("参加者IDと氏名を再入力");
+    expect(message).toContain("参加者IDを入力");
+    expect(message).toContain("表示される氏名を確認");
     expect(message).toContain("新しい試行を始める前に「中断・終了」");
     expect(message).toContain("担当者へ連絡");
     expect(message).not.toContain("保存は完了");

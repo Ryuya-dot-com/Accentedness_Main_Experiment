@@ -6,6 +6,11 @@ const HEARTBEAT_TIMEOUT_MS = 10_000;
 const STIMULUS_TIMEOUT_MS = 30_000;
 const RECORDING_TIMEOUT_MS = 60_000;
 const PARTICIPANT_COPY_HEADER_TIMEOUT_MS = 30_000;
+const UNICODE_WHITESPACE = /\p{White_Space}+/gu;
+const FORBIDDEN_NAME_CHARACTERS = /[\p{Cc}\p{Cs}\u0085\u2028\u2029\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/u;
+const MAX_NAME_CODE_POINTS = 80;
+const MAX_NAME_UTF8_BYTES = 256;
+const textEncoder = new TextEncoder();
 
 export class ApiClientError extends Error {
   constructor(status, code, message, details = null) {
@@ -14,6 +19,14 @@ export class ApiClientError extends Error {
     this.status = status;
     this.code = code;
     this.details = details;
+  }
+}
+
+export class ParticipantNameValidationError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "ParticipantNameValidationError";
+    this.code = "invalid_participant_name";
   }
 }
 
@@ -26,27 +39,95 @@ function getOrCreateClientInstanceId() {
   return value;
 }
 
-function invitationTokenFromFragment() {
-  return new URLSearchParams(window.location.hash.slice(1)).get("t");
+export function consumeInvitationToken(
+  location = window.location,
+  historyObject = window.history,
+) {
+  const token = new URLSearchParams(String(location.hash ?? "").slice(1)).get("t");
+  if (token) {
+    historyObject.replaceState(null, "", `${location.pathname}${location.search}`);
+  }
+  return token;
 }
 
-function clearInvitationFragment() {
-  history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
-}
-
-export function isCorrectableParticipantIdentityError(error) {
+export function isCorrectableParticipantAccessError(error) {
   return error instanceof ApiClientError
     && error.status === 409
-    && error.code === "participant_binding_mismatch";
+    && new Set([
+      "participant_access_mismatch",
+      "participant_name_state_changed",
+    ]).has(error.code);
 }
 
-export function shouldClearInvitationFragment(error) {
+export function isCorrectableParticipantNameError(error) {
   return error instanceof ApiClientError
-    && error.status >= 400
-    && error.status < 500
-    && !new Set([408, 425, 429]).has(error.status)
-    && !isCorrectableParticipantIdentityError(error)
-    && !new Set(["invitation_redeem_conflict", "visit_not_available"]).has(error.code);
+    && error.status === 422
+    && error.code === "invalid_participant_name";
+}
+
+// This mirrors only the server's stored display transformation. The server
+// remains authoritative for type, length, control-character, and bidi checks.
+export function canonicalizeParticipantNameForDisplay(value) {
+  return String(value ?? "")
+    .normalize("NFKC")
+    .replace(UNICODE_WHITESPACE, " ")
+    .trim();
+}
+
+export function validateParticipantNameForRegistration(value) {
+  const canonicalName = canonicalizeParticipantNameForDisplay(value);
+  if (!canonicalName) {
+    throw new ParticipantNameValidationError("氏名を入力してください。");
+  }
+  if (FORBIDDEN_NAME_CHARACTERS.test(canonicalName)) {
+    throw new ParticipantNameValidationError(
+      "氏名には改行、制御文字、文字方向を変更する記号を使用できません。",
+    );
+  }
+  if (Array.from(canonicalName).length > MAX_NAME_CODE_POINTS) {
+    throw new ParticipantNameValidationError("氏名は80文字以内で入力してください。");
+  }
+  if (textEncoder.encode(canonicalName).byteLength > MAX_NAME_UTF8_BYTES) {
+    throw new ParticipantNameValidationError(
+      "氏名が長すぎます。UTF-8で256バイト以内になるよう短くしてください。",
+    );
+  }
+  return canonicalName;
+}
+
+export function participantNamePreviewPayload({
+  invitationToken,
+  participantId,
+  expectedVisitType,
+}) {
+  return {
+    token: String(invitationToken ?? ""),
+    participant_id: String(participantId ?? "").trim(),
+    expected_visit_type: String(expectedVisitType ?? ""),
+  };
+}
+
+export function invitationRedeemPayload({
+  invitationToken,
+  clientInstanceId,
+  expectedVisitType,
+  participantId,
+  nameAction,
+  participantName,
+}) {
+  const action = String(nameAction ?? "");
+  const payload = {
+    token: String(invitationToken ?? ""),
+    client_instance_id: String(clientInstanceId ?? ""),
+    expected_visit_type: String(expectedVisitType ?? ""),
+    participant_id: String(participantId ?? "").trim(),
+    name_action: action,
+    participant_name_confirmed: true,
+  };
+  if (action === "register") {
+    payload.participant_name = canonicalizeParticipantNameForDisplay(participantName);
+  }
+  return payload;
 }
 
 export function participantCopyFilename(contentDisposition) {
@@ -158,6 +239,7 @@ async function fetchWithDeadline(path, options, timeoutMs, consume) {
 export class ExperimentApi {
   constructor(expectedVisitType) {
     this.expectedVisitType = expectedVisitType;
+    this.invitationToken = consumeInvitationToken();
     try {
       this.sessionToken = sessionStorage.getItem(SESSION_TOKEN_KEY);
       this.clientInstanceId = getOrCreateClientInstanceId();
@@ -191,45 +273,90 @@ export class ExperimentApi {
   }
 
   hasInvitationToken() {
-    return Boolean(invitationTokenFromFragment());
+    return Boolean(this.invitationToken);
   }
 
-  async bootstrap(participantIdentity = null) {
-    const invitationToken = invitationTokenFromFragment();
-    if (invitationToken) {
-      const participantId = String(participantIdentity?.participant_id ?? "").trim();
-      const participantName = String(participantIdentity?.participant_name ?? "").trim();
-      if (!participantId || !participantName) {
+  async previewParticipantName(participantIdInput) {
+    const participantId = String(participantIdInput ?? "").trim();
+    if (!this.invitationToken) {
+      throw new ApiClientError(
+        401,
+        "invitation_required",
+        "担当者から送られた招待リンクを開いてください。",
+      );
+    }
+    if (!participantId) {
+      throw new ApiClientError(400, "participant_id_required", "参加者IDを入力してください。");
+    }
+    const preview = await fetchWithDeadline(
+      "/api/invitations/name-preview",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(participantNamePreviewPayload({
+          invitationToken: this.invitationToken,
+          participantId,
+          expectedVisitType: this.expectedVisitType,
+        })),
+        cache: "no-store",
+      },
+      JSON_TIMEOUT_MS,
+      parseApiResponse,
+    );
+    if (preview?.name_action === "register") {
+      return { name_action: "register" };
+    }
+    if (preview?.name_action === "confirm"
+        && typeof preview.participant_name === "string"
+        && preview.participant_name.trim()) {
+      return {
+        name_action: "confirm",
+        participant_name: preview.participant_name,
+      };
+    }
+    throw new ApiClientError(
+      502,
+      "invalid_name_preview",
+      "氏名確認情報の形式を確認できません。担当者に知らせてください。",
+    );
+  }
+
+  async bootstrap(participantConfirmation = null) {
+    if (this.invitationToken) {
+      const participantId = String(participantConfirmation?.participant_id ?? "").trim();
+      const nameAction = String(participantConfirmation?.name_action ?? "");
+      const participantName = canonicalizeParticipantNameForDisplay(
+        participantConfirmation?.participant_name,
+      );
+      if (!participantId
+          || !["register", "confirm"].includes(nameAction)
+          || participantConfirmation?.participant_name_confirmed !== true
+          || (nameAction === "register" && !participantName)) {
         throw new ApiClientError(
           400,
-          "participant_identity_required",
-          "参加者IDと氏名を入力してください。",
+          "participant_name_confirmation_required",
+          "参加者IDの入力と氏名の確認を完了してください。",
         );
       }
-      let state;
-      try {
-        state = await fetchWithDeadline(
-          "/api/invitations/redeem",
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              token: invitationToken,
-              client_instance_id: this.clientInstanceId,
-              expected_visit_type: this.expectedVisitType,
-              participant_id: participantId,
-              participant_name: participantName,
-            }),
-            cache: "no-store",
-          },
-          JSON_TIMEOUT_MS,
-          parseApiResponse,
-        );
-      } catch (error) {
-        if (shouldClearInvitationFragment(error)) clearInvitationFragment();
-        throw error;
-      }
-      clearInvitationFragment();
+      const state = await fetchWithDeadline(
+        "/api/invitations/redeem",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(invitationRedeemPayload({
+            invitationToken: this.invitationToken,
+            clientInstanceId: this.clientInstanceId,
+            expectedVisitType: this.expectedVisitType,
+            participantId,
+            nameAction,
+            participantName,
+          })),
+          cache: "no-store",
+        },
+        JSON_TIMEOUT_MS,
+        parseApiResponse,
+      );
+      this.invitationToken = null;
       this.sessionToken = state.session_token;
       sessionStorage.setItem(SESSION_TOKEN_KEY, this.sessionToken);
       sessionStorage.setItem(SESSION_VISIT_KEY, state.visit.visit_type);
@@ -363,6 +490,7 @@ export class ExperimentApi {
     sessionStorage.removeItem(SESSION_TOKEN_KEY);
     sessionStorage.removeItem(SESSION_VISIT_KEY);
     this.sessionToken = null;
+    this.invitationToken = null;
   }
 }
 

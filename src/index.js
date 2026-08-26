@@ -9,6 +9,7 @@ import {
   completeVisit,
   finalizeParticipationInterruption,
   heartbeat,
+  previewParticipantName,
   redeemInvitation,
   requestParticipationInterruption,
   saveEvents,
@@ -64,7 +65,6 @@ async function routeApi(request, env) {
       test_token_policy_ready: collection.tokenPolicyReady,
       admin_authentication_ready: collection.adminAuthenticationReady,
       randomization_ready: collection.randomizationReady,
-      identity_verification_ready: collection.identityVerificationReady,
       secrets_independent: collection.secretsIndependent,
       server_now_ms: Date.now(),
     });
@@ -80,6 +80,7 @@ async function routeApi(request, env) {
   if (match) return createInvitation(request, env, match[1]);
   match = /^\/api\/admin\/invitations\/([^/]+)\/revoke$/u.exec(path);
   if (match) return revokeInvitation(request, env, match[1]);
+  if (path === "/api/invitations/name-preview") return previewParticipantName(request, env);
   if (path === "/api/invitations/redeem") return redeemInvitation(request, env);
   if (path === "/api/session") return sessionState(request, env);
   if (path === "/api/session/heartbeat") return heartbeat(request, env);

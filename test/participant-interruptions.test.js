@@ -40,17 +40,24 @@ async function createParticipant(participantId) {
     },
   });
   expect(created.response.status).toBe(201);
-  expect(created.json.participant.identity_registered).toBe(false);
+  expect(created.json.participant.participant_name_registered).toBe(false);
   return created.json;
 }
 
-async function redeem(invitationUrl, expectedVisitType, participantId) {
+async function redeem(
+  invitationUrl,
+  expectedVisitType,
+  participantId,
+  nameAction = "register",
+) {
   const redeemed = await api("/api/invitations/redeem", {
     method: "POST",
     body: {
       token: invitationToken(invitationUrl),
       participant_id: participantId,
-      participant_name: PARTICIPANT_NAME,
+      name_action: nameAction,
+      participant_name_confirmed: true,
+      ...(nameAction === "register" ? { participant_name: PARTICIPANT_NAME } : {}),
       client_instance_id: crypto.randomUUID(),
       expected_visit_type: expectedVisitType,
     },
@@ -384,7 +391,7 @@ describe("participant interruption lifecycle", () => {
     `).bind(created.invitation.invite_id).first();
     expect(invitationAfterPause.status).toBe("active");
 
-    const resumed = await redeem(invitationUrl, "pre", participantId);
+    const resumed = await redeem(invitationUrl, "pre", participantId, "confirm");
     expect(resumed.json.next_trial_id).toBe(secondTrial.trial_id);
     expect(resumed.json.manifest.find((trial) => trial.current)).toMatchObject({
       trial_id: secondTrial.trial_id,
@@ -449,7 +456,7 @@ describe("participant interruption lifecycle", () => {
       abandon_reason: null,
     });
 
-    const resumedAgain = await redeem(invitationUrl, "pre", participantId);
+    const resumedAgain = await redeem(invitationUrl, "pre", participantId, "confirm");
     expect(resumedAgain.json.next_trial_id).toBe(secondTrial.trial_id);
     const unfinishedAfterRedeem = await env.DB.prepare(`
       SELECT abandoned_at_ms FROM trial_attempts WHERE attempt_uuid = ?
@@ -577,7 +584,7 @@ describe("participant interruption lifecycle", () => {
       next_ordinal: 2,
     });
 
-    const reopened = await redeem(invitationUrl, "pre", participantId);
+    const reopened = await redeem(invitationUrl, "pre", participantId, "confirm");
     expect(reopened.json.session.session_id).not.toBe(
       firstRedemption.json.session.session_id,
     );
@@ -693,7 +700,7 @@ describe("participant interruption lifecycle", () => {
       next_ordinal: 1,
     });
 
-    const reopened = await redeem(invitationUrl, "pre", participantId);
+    const reopened = await redeem(invitationUrl, "pre", participantId, "confirm");
     expect(reopened.json.participation_control).toMatchObject({
       trial_start_allowed: false,
       interruption: {
@@ -1021,6 +1028,7 @@ describe("participant interruption lifecycle", () => {
       delayedInvitation.json.invitation.invitation_url,
       "delayed",
       participantId,
+      "confirm",
     );
     const delayedTrial = delayedRedemption.json.manifest.find((trial) => trial.ordinal === 1);
     const delayedSecondTrial = delayedRedemption.json.manifest.find((trial) => trial.ordinal === 2);

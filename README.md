@@ -4,7 +4,7 @@ Barcroft and Sommers (2005) の Experiment 2 を基礎に、学習時アクセ�
 
 ## 現在の状態
 
-現行の同一WAV token方式について、リポジトリ内に既知の未解決blockerはありません。コードとプレースホルダー刺激による検証は可能です。ただし、実刺激・話者・画像が未確定のため、現時点では本番データを収集できません。production環境では、プレースホルダーが残る、直後・遅延のtoken方針が未確定、3 secretのいずれかが未設定・短すぎる・相互流用されている、のいずれかで参加者作成・招待発行・招待redeem・新規trial開始をサーバーが拒否します。
+現行の同一WAV token方式について、コードとプレースホルダー刺激による検証は可能です。ただし、Preで平文氏名を登録し後続linkで表示確認する現行buildはfull `npm run verify`待ちで、改訂版migration `0006`もremote D1へ未適用です。したがって、現在の非本番deployを現行buildの実証や本番収集可能状態とはみなしません。さらに実刺激・話者・画像も未確定のため、現時点では本番データを収集できません。production環境では、プレースホルダーが残る、直後・遅延のtoken方針が未確定、または`ADMIN_TOKEN`と`RANDOMIZATION_SECRET`のいずれかが未設定・短すぎる・相互流用されている場合、参加者作成・招待発行・招待redeem・新規trial開始をサーバーが拒否します。
 
 本番収集前の技術的な配備条件は次のとおりです。これらはリポジトリのコード完成判定とは分けて扱います。
 
@@ -31,9 +31,11 @@ Barcroft and Sommers (2005) の Experiment 2 を基礎に、学習時アクセ�
 
 招待tokenはURLごとではなくvisitごとの3本です。pre、immediate、delayedのリンクを担当者が順に手動配布し、同一visit内の課題間では同じsessionを引き継ぎます。pre完了からimmediate開始までに上限・下限は設けず、実際の間隔を保存します。delayedはImmediate最終L2-to-L1回答のserver受理時刻から5日以上が経過し、Immediateの全応答・録音の保存が確定すると開始できます。それ以後は期限切れにしません。招待リンク自体にも年齢による自動失効はなく、visit完了、担当者によるrevoke、または再発行まで有効です。サーバーが未完了trialのordinalと未送信録音を検査するため、後続URLを直接開いても課題を飛ばせません。preにはL2-to-L1を含めません。
 
-管理者が入力するのは数値参加者IDだけです。参加者はPreリンクの初回利用時にIDと氏名を入力し、その氏名をNFKC正規化後に専用の`IDENTITY_SECRET`で参加者UUID・数値IDとHMAC結合します。以後の新しい招待linkでは同じ正規化済み氏名かを照合します。平文氏名はD1、R2、API応答、ログ、browser storage、結果ZIPのいずれにも保存・出力しません。初回アクセス資格を担うのは手動配布された招待tokenと一致する参加者IDであり、初回氏名は事前登録済み本人情報との照合ではなく、3時点で入力を一貫させるための記録です。初回binding、session、visit、redeem回数、auditは同じD1 batchで確定し、競合や途中失敗では全変更をrollbackします。trial responseとtelemetry eventもtask/type別field allowlistをserverで強制します。割付は数値IDだけで決まり、氏名は条件やseedに影響しません。IDは離脱・参加終了後も再利用しません。
+管理者が入力するのは数値参加者IDだけです。参加者は有効なPreリンクでIDを入力し、氏名を入力した後、保存前の確認画面に表示された文字列を自分で確認します。確認済みの氏名は表示用に正規化した平文として、アプリケーションschemaではD1の`participant_names`だけへ保存します。以後の新しい招待linkではID入力後、serverが保存済み氏名を確認用API応答だけに返し、参加者は氏名を再入力せず表示内容を確認します。氏名はWorker log、audit detail、R2、browser storage、trial/event、参加者版・研究者版ZIP、管理API応答には出しません。初回アクセス資格を担うのは手動配布されたraw招待tokenと一致する参加者IDであり、氏名表示は本人認証ではありません。初回氏名保存、session、visit、redeem回数、auditは同じD1 batchで確定し、競合や途中失敗では全変更をrollbackします。trial responseとtelemetry eventもtask/type別field allowlistをserverで強制します。割付は数値IDだけで決まり、氏名は条件やseedに影響しません。IDは離脱・参加終了後も再利用しません。
 
-開始前と課題画面の「中断・終了」から選ぶ「一時中断」と「参加を終了する」は、visitの通常完了や管理者による招待revokeとは別の明示的状態遷移です。一時中断は現在試行と送信待ちを安全に確定し、serverもcanonical録音待ち0件を再検査してから、同じactive招待からcanonicalな次位置へ戻せます。再開可能な状態を保証できない送信エラーではpauseを偽って確定せず、未確定のまま連絡するか、同じrequestを参加終了へ一方向に切り替えます。再訪時にローカルoutboxの欠損・破損や確定的な送信拒否が判明した場合も、通常再開やpauseへ進めず、server受理済み範囲での参加終了か担当者連絡だけを提示します。参加終了は受理済みD1/R2を保持したまま未完了visitを`withdrawn`にし、未完了データを完了扱いにしません。request後にtabを閉じても、同じlinkでID・氏名を再入力すれば新しい試行を開始せず確定処理だけを再開できます。明示操作のないtab閉鎖は完了・中断・終了へ自動変換せず、未完了として残します。
+この平文方式は参加者が保存値を読んで確認できる一方、D1への権限侵害やCloudflare側のbackup・Time Travel等の管理コピーから氏名が露出し得るtradeoffを持ちます。「`participant_names`だけ」はアプリケーション論理層の制限であり、それらの管理コピーから平文が消えるという意味ではありません。また、`Cache-Control: no-store`はcache残存を抑える指示であって、氏名の暗号化・匿名化や本人認証ではありません。ID単独では氏名を返しませんが、研究用連番IDは低entropyで第二認証要素ではなく、現行APIはrate limitや本人認証を実装していません。したがって、漏れたraw招待tokenがIDの総当たり耐性で守られるとはみなさず、raw tokenと一致するIDを得た第三者は氏名を表示して確認操作まで進めるものと扱います。linkの秘匿を保ち、誤配布・漏えい時は利用前でも招待をrevokeして再発行します。D1権限・保存期間・削除範囲には管理コピーを含めます。これは読み取り可能な自己確認を選ぶ意図的なtradeoffであり、`IDENTITY_SECRET`は不要です。
+
+開始前と課題画面の「中断・終了」から選ぶ「一時中断」と「参加を終了する」は、visitの通常完了や管理者による招待revokeとは別の明示的状態遷移です。一時中断は現在試行と送信待ちを安全に確定し、serverもcanonical録音待ち0件を再検査してから、同じactive招待からcanonicalな次位置へ戻せます。再開可能な状態を保証できない送信エラーではpauseを偽って確定せず、未確定のまま連絡するか、同じrequestを参加終了へ一方向に切り替えます。再訪時にローカルoutboxの欠損・破損や確定的な送信拒否が判明した場合も、通常再開やpauseへ進めず、server受理済み範囲での参加終了か担当者連絡だけを提示します。参加終了は受理済みD1/R2を保持したまま未完了visitを`withdrawn`にし、未完了データを完了扱いにしません。request後にtabを閉じても、同じlinkでIDを入力して保存済み氏名を確認すれば、新しい試行を開始せず確定処理だけを再開できます。明示操作のないtab閉鎖は完了・中断・終了へ自動変換せず、未完了として残します。
 
 Picture Matching は実施しません。行動データ・時刻・QCはD1、発話WAVは非公開R2を一次保存先とします。参加者browserのIndexedDBは通信障害からの再送に必要な一時outboxであり、D1・R2双方の受理確認後に削除します。Pre・直後では復習による保持成績の汚染を避けるためローカルZIPを渡しません。Delayed visitを先に完了確定した後だけ、3 visitすべてのcanonical回答とWAVを単一ZIPとして参加者が明示ボタンで保存できます。対応Chromeでは保存先を先に選び、ZIPをbrowser memoryへ全量保持せず直接fileへstreamします。ZIPはserver保存の代替ではありません。研究者は内部ページ `/admin/` で参加者IDを参照し、採点・照合用の刺激・条件・QC対応表を含む収集済み範囲のZIPをオンデマンド取得できます。
 
@@ -68,7 +70,7 @@ npm test
 npm run dev
 ```
 
-`.dev.vars` の`ADMIN_TOKEN`、`RANDOMIZATION_SECRET`、`IDENTITY_SECRET`には、それぞれ独立した24文字以上の開発用値を設定します。実値はcommitしません。
+`.dev.vars` の`ADMIN_TOKEN`と`RANDOMIZATION_SECRET`には、互いに異なる24文字以上の開発用値を設定します。実値はcommitしません。
 
 ブラウザで `http://localhost:8787` を開きます。参加者リンクは管理APIから発行します。詳細は [OPERATIONS.md](./OPERATIONS.md) にあります。
 
@@ -82,7 +84,7 @@ npm run audit:randomization
 npm run verify
 ```
 
-`npm test` は、参加者ID割当、216名周期の均衡、学習144試行、専用練習刺激と本番刺激の完全分離、pre・直後・遅延順序の独立化、アクセント連続制約、6 URL、参加者による初回氏名binding・後続照合・非漏えい・失敗時無変更、一時中断・参加終了・再開、再送、segment越境刺激の遮断、WAV/PCM品質検証、オンデマンドZIPの認可・完全性・匿名entry名などを検査します。`npm run audit:randomization` はID 1–2160を独立した2つのsecretで生成し、計4,320 designの不変条件を監査します。push時にも同じ `npm run verify` をGitHub Actionsで実行します。
+`npm test` は、参加者ID割当、216名周期の均衡、学習144試行、専用練習刺激と本番刺激の完全分離、pre・直後・遅延順序の独立化、アクセント連続制約、6 URL、Preでの平文氏名登録・後続リンクでの表示確認・限定的な出力範囲・失敗時無変更、一時中断・参加終了・再開、再送、segment越境刺激の遮断、WAV/PCM品質検証、オンデマンドZIPの認可・完全性・匿名entry名などを検査します。`npm run audit:randomization` はID 1–2160を独立した2つのsecretで生成し、計4,320 designの不変条件を監査します。push時にも同じ `npm run verify` をGitHub Actionsで実行します。
 
 ## 文書
 

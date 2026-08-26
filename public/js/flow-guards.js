@@ -1,25 +1,91 @@
-import { isCorrectableParticipantIdentityError } from "./api.js";
+import {
+  isCorrectableParticipantAccessError,
+  isCorrectableParticipantNameError,
+  ParticipantNameValidationError,
+  validateParticipantNameForRegistration,
+} from "./api.js";
 
 function normalizedPath(path) {
   return String(path ?? "").replace(/\/+$/u, "") || "/";
 }
 
-export async function bootstrapWithParticipantIdentity(api, ui) {
+export async function bootstrapWithParticipantAccess(api, ui) {
   if (!api.hasInvitationToken()) {
     const state = await api.bootstrap();
     ui.showParticipationSetup();
     return state;
   }
   let retryMessage = "";
+  participantAccessLoop:
   while (true) {
-    const identity = await ui.requestParticipantIdentity(retryMessage);
+    const participantId = await ui.requestParticipantId(retryMessage);
+    let preview;
     try {
-      const state = await api.bootstrap(identity);
+      preview = await api.previewParticipantName(participantId);
+    } catch (error) {
+      if (!isCorrectableParticipantAccessError(error)) throw error;
+      retryMessage = "参加者IDを確認できませんでした。入力内容を確認して、もう一度お試しください。";
+      continue;
+    }
+
+    if (preview.name_action === "register") {
+      let draftName = "";
+      let nameInputMessage = "";
+      while (true) {
+        const enteredName = await ui.requestParticipantName(draftName, nameInputMessage);
+        let participantName;
+        try {
+          participantName = validateParticipantNameForRegistration(enteredName);
+        } catch (error) {
+          if (!(error instanceof ParticipantNameValidationError)) throw error;
+          draftName = String(enteredName ?? "");
+          nameInputMessage = error.message;
+          continue;
+        }
+        const decision = await ui.confirmParticipantName(participantName, { allowEdit: true });
+        if (decision !== "confirm") {
+          draftName = participantName;
+          nameInputMessage = "";
+          continue;
+        }
+        try {
+          const state = await api.bootstrap({
+            participant_id: participantId,
+            name_action: "register",
+            participant_name_confirmed: true,
+            participant_name: participantName,
+          });
+          ui.showParticipationSetup();
+          return state;
+        } catch (error) {
+          if (isCorrectableParticipantNameError(error)) {
+            draftName = participantName;
+            nameInputMessage = "氏名を登録できませんでした。表示内容を修正して、もう一度確認してください。";
+            continue;
+          }
+          if (!isCorrectableParticipantAccessError(error)) throw error;
+          retryMessage = "参加者情報を確定できませんでした。参加者IDを確認して、もう一度お試しください。";
+          continue participantAccessLoop;
+        }
+      }
+    }
+
+    const decision = await ui.confirmParticipantName(preview.participant_name);
+    if (decision !== "confirm") {
+      retryMessage = "表示された氏名がご自身のものではありません。参加者IDを確認してください。正しいIDでも氏名が違う場合は、このまま進まず担当者へ連絡してください。";
+      continue;
+    }
+    try {
+      const state = await api.bootstrap({
+        participant_id: participantId,
+        name_action: "confirm",
+        participant_name_confirmed: true,
+      });
       ui.showParticipationSetup();
       return state;
     } catch (error) {
-      if (!isCorrectableParticipantIdentityError(error)) throw error;
-      retryMessage = "参加者IDと氏名の組み合わせを確認できませんでした。入力内容を確認して、もう一度お試しください。";
+      if (!isCorrectableParticipantAccessError(error)) throw error;
+      retryMessage = "参加者情報を確定できませんでした。参加者IDを確認して、もう一度お試しください。";
     }
   }
 }

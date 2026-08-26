@@ -36,6 +36,8 @@ async function createAndRedeemPre(participantId) {
     body: {
       token: invitationToken(created.invitation.invitation_url),
       participant_id: participantId,
+      name_action: "register",
+      participant_name_confirmed: true,
       participant_name: "Test Participant",
       client_instance_id: crypto.randomUUID(),
       expected_visit_type: "pre",
@@ -67,7 +69,8 @@ describe("session invalidation", () => {
       body: {
         token: invitationToken(reissued.json.invitation.invitation_url),
         participant_id: 101,
-        participant_name: "Test Participant",
+        name_action: "confirm",
+        participant_name_confirmed: true,
         client_instance_id: crypto.randomUUID(),
         expected_visit_type: "pre",
       },

@@ -20,9 +20,8 @@ import { canonicalParticipantId } from "./lib/manifest.js";
 import { DELAY_MINIMUM_MS } from "./lib/protocol.js";
 import { crc32 } from "./lib/stored-zip.js";
 import {
-  ParticipantIdentityError,
-  createParticipantIdentityBinding,
-  participantIdentityVerifierEqual,
+  ParticipantNameError,
+  normalizeParticipantName,
 } from "./lib/participant-identity.js";
 
 const VALID_VISITS = new Set(["pre", "immediate", "delayed"]);
@@ -160,7 +159,7 @@ function assertParticipantCollectionConfigured(env) {
   throw new ApiError(
     503,
     "production_collection_blocked",
-    "Production participation requires real assets, an explicit supported test-token policy, and recipient verification",
+    "Production participation requires real assets, an explicit supported test-token policy, and independent admin/randomization secrets",
     {
       asset_version: env.ASSET_VERSION,
       assignment_version: env.ASSIGNMENT_VERSION,
@@ -170,7 +169,6 @@ function assertParticipantCollectionConfigured(env) {
       test_token_policy_ready: collection.tokenPolicyReady,
       admin_authentication_ready: collection.adminAuthenticationReady,
       randomization_ready: collection.randomizationReady,
-      identity_verification_ready: collection.identityVerificationReady,
       secrets_independent: collection.secretsIndependent,
     },
   );
@@ -511,10 +509,7 @@ function validateResponsePayload(payload, attempt, nowMs) {
   return clientSavedPerfMs;
 }
 
-export async function redeemInvitation(request, env) {
-  requireMethod(request, ["POST"]);
-  assertParticipantCollectionConfigured(env);
-  const body = await readJson(request);
+async function participantInvitation(body, env) {
   const rawToken = String(body.token ?? "");
   if (!/^[A-Za-z0-9_-]{40,100}$/u.test(rawToken)) {
     throw new ApiError(400, "invalid_invitation", "Invitation token format is invalid");
@@ -523,7 +518,6 @@ export async function redeemInvitation(request, env) {
   if (!VALID_VISITS.has(expectedVisitType)) {
     throw new ApiError(400, "invalid_visit_type", "Expected visit type must be pre, immediate, or delayed");
   }
-  const clientInstanceId = requireUuid(body.client_instance_id, "client_instance_id");
   const tokenHash = await sha256Hex(rawToken);
   const invitation = await getVisitForInvitation(env.DB, tokenHash);
   if (!invitation || invitation.invitation_status !== "active") {
@@ -534,43 +528,18 @@ export async function redeemInvitation(request, env) {
       expected: invitation.visit_type,
     });
   }
-  let proposedIdentity = null;
+  let submittedParticipantId;
   try {
-    const submittedParticipantId = canonicalParticipantId(body.participant_id);
-    if (submittedParticipantId !== Number(invitation.numeric_id)) {
-      throw new ParticipantIdentityError(
-        "participant_binding_mismatch",
-        "Participant ID does not match the invitation",
-      );
-    }
-    proposedIdentity = await createParticipantIdentityBinding({
-      identitySecret: env.IDENTITY_SECRET,
-      participantUuid: invitation.participant_uuid,
-      participantId: submittedParticipantId,
-      participantName: body.participant_name,
-    });
-  } catch (error) {
-    if (error instanceof ParticipantIdentityError
-        && error.code === "identity_secret_unconfigured") {
-      throw new ApiError(503, "identity_verification_unconfigured", "Participant identity verification is not configured");
-    }
-    proposedIdentity = null;
+    submittedParticipantId = canonicalParticipantId(body.participant_id);
+  } catch {
+    submittedParticipantId = null;
   }
-  if (!proposedIdentity) {
-    throw new ApiError(409, "participant_binding_mismatch", "Participant ID or name could not be confirmed");
-  }
-  const identityAlreadyRegistered = Boolean(invitation.identity_verifier_hex);
-  if (identityAlreadyRegistered) {
-    const identityMatches = invitation.identity_normalization_version
-        === proposedIdentity.normalization_version
-      && invitation.identity_verifier_version === proposedIdentity.verifier_version
-      && await participantIdentityVerifierEqual(
-        invitation.identity_verifier_hex,
-        proposedIdentity.verifier_hex,
-      );
-    if (!identityMatches) {
-      throw new ApiError(409, "participant_binding_mismatch", "Participant ID or name could not be confirmed");
-    }
+  if (submittedParticipantId !== Number(invitation.numeric_id)) {
+    throw new ApiError(
+      409,
+      "participant_access_mismatch",
+      "The invitation link and participant ID could not be confirmed",
+    );
   }
   if (["completed", "withdrawn"].includes(invitation.visit_status)) {
     throw new ApiError(409, "visit_closed", "This visit is already closed", { status: invitation.visit_status });
@@ -582,6 +551,87 @@ export async function redeemInvitation(request, env) {
       server_now_ms: nowMs,
     });
   }
+  return { invitation, submittedParticipantId, nowMs };
+}
+
+export async function previewParticipantName(request, env) {
+  requireMethod(request, ["POST"]);
+  assertParticipantCollectionConfigured(env);
+  const body = await readJson(request);
+  const { invitation } = await participantInvitation(body, env);
+  if (typeof invitation.participant_name === "string") {
+    return jsonResponse({
+      ok: true,
+      name_action: "confirm",
+      participant_name: invitation.participant_name,
+    });
+  }
+  if (invitation.visit_type !== "pre") {
+    throw new ApiError(
+      409,
+      "participant_name_not_registered",
+      "A participant name must be registered during Pre before a later visit",
+    );
+  }
+  return jsonResponse({ ok: true, name_action: "register" });
+}
+
+export async function redeemInvitation(request, env) {
+  requireMethod(request, ["POST"]);
+  assertParticipantCollectionConfigured(env);
+  const body = await readJson(request);
+  const clientInstanceId = requireUuid(body.client_instance_id, "client_instance_id");
+  const { invitation, nowMs } = await participantInvitation(body, env);
+  const nameAction = String(body.name_action ?? "");
+  if (!new Set(["register", "confirm"]).has(nameAction)) {
+    throw new ApiError(422, "invalid_name_action", "name_action must be register or confirm");
+  }
+  if (body.participant_name_confirmed !== true) {
+    throw new ApiError(
+      422,
+      "participant_name_confirmation_required",
+      "The displayed participant name must be confirmed before the visit starts",
+    );
+  }
+  const nameAlreadyRegistered = typeof invitation.participant_name === "string";
+  let participantName = null;
+  if (nameAlreadyRegistered) {
+    if (nameAction !== "confirm") {
+      throw new ApiError(
+        409,
+        "participant_name_state_changed",
+        "The participant name state changed; preview the invitation again",
+      );
+    }
+    if (Object.hasOwn(body, "participant_name")) {
+      throw new ApiError(
+        422,
+        "participant_name_not_accepted",
+        "A registered participant name must be confirmed without resubmitting it",
+      );
+    }
+  } else {
+    if (invitation.visit_type !== "pre") {
+      throw new ApiError(
+        409,
+        "participant_name_not_registered",
+        "A participant name must be registered during Pre before a later visit",
+      );
+    }
+    if (nameAction !== "register") {
+      throw new ApiError(
+        409,
+        "participant_name_state_changed",
+        "The participant name state changed; preview the invitation again",
+      );
+    }
+    try {
+      participantName = normalizeParticipantName(body.participant_name);
+    } catch (error) {
+      if (!(error instanceof ParticipantNameError)) throw error;
+      throw new ApiError(422, error.code, error.message);
+    }
+  }
 
   const priorEpoch = Number(invitation.active_session_epoch);
   const epoch = priorEpoch + 1;
@@ -591,34 +641,30 @@ export async function redeemInvitation(request, env) {
   const expiresAtMs = nowMs + numericEnv(env, "SESSION_TTL_SECONDS", 43_200) * 1000;
   try {
     const statements = [];
-    if (!identityAlreadyRegistered) {
+    if (!nameAlreadyRegistered) {
       statements.push(
         env.DB.prepare(`
-          INSERT INTO participant_identity_bindings (
-            participant_uuid, verifier_hex, normalization_version, verifier_version,
-            created_at_ms, last_confirmed_at_ms, confirmation_count
-          ) VALUES (?, ?, ?, ?, ?, ?, 1)
+          INSERT INTO participant_names (
+            participant_uuid, registered_visit_uuid, participant_name, registered_at_ms
+          ) VALUES (?, ?, ?, ?)
         `).bind(
           invitation.participant_uuid,
-          proposedIdentity.verifier_hex,
-          proposedIdentity.normalization_version,
-          proposedIdentity.verifier_version,
-          nowMs,
+          invitation.visit_uuid,
+          participantName,
           nowMs,
         ),
         env.DB.prepare(`
           INSERT INTO audit_log (
             audit_uuid, actor_type, action, participant_uuid, visit_uuid,
             server_at_ms, details_json
-          ) VALUES (?, 'participant', 'participant_identity_registered', ?, ?, ?, ?)
+          ) VALUES (?, 'participant', 'participant_name_registered', ?, ?, ?, ?)
         `).bind(
           crypto.randomUUID(),
           invitation.participant_uuid,
           invitation.visit_uuid,
           nowMs,
           stableJson({
-            normalization_version: proposedIdentity.normalization_version,
-            source: "first_invitation_redeem",
+            source: "first_pre_invitation_redeem",
           }),
         ),
       );
@@ -672,13 +718,6 @@ export async function redeemInvitation(request, env) {
         stableJson({ epoch, client_instance_id: clientInstanceId }),
       ),
     );
-    if (identityAlreadyRegistered) {
-      statements.push(env.DB.prepare(`
-        UPDATE participant_identity_bindings
-        SET last_confirmed_at_ms = ?, confirmation_count = confirmation_count + 1
-        WHERE participant_uuid = ? AND verifier_hex = ?
-      `).bind(nowMs, invitation.participant_uuid, proposedIdentity.verifier_hex));
-    }
     statements.push(
       env.DB.prepare(`
         UPDATE participation_interruptions

@@ -32,12 +32,15 @@ function invitationToken(invitationUrl) {
 }
 
 async function redeemInvitation(invitationUrl, expectedVisitType, participantId) {
+  const nameAction = expectedVisitType === "pre" ? "register" : "confirm";
   const redeemed = await participantRequest("/api/invitations/redeem", {
     method: "POST",
     body: {
       token: invitationToken(invitationUrl),
       participant_id: participantId,
-      participant_name: "Test Participant",
+      name_action: nameAction,
+      participant_name_confirmed: true,
+      ...(nameAction === "register" ? { participant_name: "Test Participant" } : {}),
       client_instance_id: crypto.randomUUID(),
       expected_visit_type: expectedVisitType,
     },

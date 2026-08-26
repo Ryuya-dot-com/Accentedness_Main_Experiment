@@ -24,8 +24,9 @@ function safeParticipant(apiParticipant) {
   };
 }
 
-function identityRegistrationFlag(payload) {
-  const value = payload?.identity_registered ?? payload?.participant?.identity_registered;
+function nameRegistrationFlag(payload) {
+  const value = payload?.participant_name_registered
+    ?? payload?.participant?.participant_name_registered;
   return typeof value === "boolean" ? value : null;
 }
 
@@ -34,7 +35,7 @@ function safeSummaryValue(value) {
   if (!value || typeof value !== "object") return value;
   const safe = {};
   for (const [key, nested] of Object.entries(value)) {
-    if (key === "identity_registered" && typeof nested === "boolean") {
+    if (key === "participant_name_registered" && typeof nested === "boolean") {
       safe[key] = nested;
     } else if (!/name|identity/iu.test(key)) {
       safe[key] = safeSummaryValue(nested);
@@ -83,14 +84,14 @@ async function loadParticipant() {
     },
   });
   participant = safeParticipant(payload.participant);
-  const identityRegistered = identityRegistrationFlag(payload);
-  const identityStatus = identityRegistered === true
-    ? "氏名照合: 初回登録済み"
-    : identityRegistered === false
-      ? "氏名照合: 参加者の初回アクセス待ち"
-      : "氏名照合: 状態未確認";
+  const nameRegistered = nameRegistrationFlag(payload);
+  const nameStatus = nameRegistered === true
+    ? "氏名: Pre登録済み"
+    : nameRegistered === false
+      ? "氏名: 参加者のPre入力待ち"
+      : "氏名: 状態未確認";
   participantActions.hidden = false;
-  participantState.textContent = `参加者ID ${participant.participant_id}（${payload.created ? "新規登録" : "登録済み"}、${identityStatus}、学習時accent: ${participant.training_accent}、cell: ${participant.counterbalance_cell}）`;
+  participantState.textContent = `参加者ID ${participant.participant_id}（${payload.created ? "新規登録" : "登録済み"}、${nameStatus}、学習時accent: ${participant.training_accent}、cell: ${participant.counterbalance_cell}）`;
   invitationUrl.value = "";
   status.textContent = "visit情報を取得しました。必要な時点のリンクだけを発行してください。";
 }

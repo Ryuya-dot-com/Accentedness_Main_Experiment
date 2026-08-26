@@ -1,17 +1,15 @@
 import { env, exports } from "cloudflare:workers";
 import { describe, expect, it, vi } from "vitest";
 import worker from "../src/index.js";
-import {
-  createParticipantIdentityBinding,
-  verifyParticipantIdentityBinding,
-} from "../src/lib/participant-identity.js";
+import { sha256Hex } from "../src/lib/crypto.js";
+import { normalizeParticipantName } from "../src/lib/participant-identity.js";
 
 const ORIGIN = "https://experiment.test";
 const ADMIN_TOKEN = "test-admin-token-that-is-long-and-private";
-const REGISTERED_NAME = "\u3000\uff31\uff55\uff41\uff53\uff41\uff52\u3000\uff29\uff44\uff45\uff4e\uff54\uff49\uff54\uff59\u3000\uff2d\uff41\uff52\uff4b\uff45\uff52\u3000";
-const EQUIVALENT_NAME = "QUASAR   IDENTITY MARKER";
+const REGISTERED_NAME = "　Ｑｕａｓａｒ　Ｉｄｅｎｔｉｔｙ　Ｍａｒｋｅｒ　";
 const DIFFERENT_NAME = "Nebula Continuity Marker";
-const PLAINTEXT_MARKER = "quasar";
+const CANONICAL_NAME = "Quasar Identity Marker";
+const NAME_MARKERS = ["quasar identity marker", "nebula continuity marker"];
 
 async function api(
   path,
@@ -42,8 +40,9 @@ function normalizedSearchText(value) {
   return JSON.stringify(value).normalize("NFKC").toLocaleLowerCase("en-US");
 }
 
-function expectPlaintextNameAbsent(value) {
-  expect(normalizedSearchText(value)).not.toContain(PLAINTEXT_MARKER);
+function expectParticipantNameAbsent(value) {
+  const serialized = normalizedSearchText(value);
+  for (const marker of NAME_MARKERS) expect(serialized).not.toContain(marker);
 }
 
 function nestedKeys(value, output = []) {
@@ -59,17 +58,9 @@ function nestedKeys(value, output = []) {
   return output;
 }
 
-function expectNoIdentityInternalsInApi(value) {
-  const forbidden = new Set([
-    "participant_name",
-    "name",
-    "verifier_hex",
-    "identity_verifier_hex",
-    "normalization_version",
-    "verifier_version",
-  ]);
-  expect(nestedKeys(value).filter((key) => forbidden.has(key))).toEqual([]);
-  expectPlaintextNameAbsent(value);
+function expectParticipantNameFieldAbsent(value) {
+  expect(nestedKeys(value)).not.toContain("participant_name");
+  expectParticipantNameAbsent(value);
 }
 
 async function all(sql, ...bindings) {
@@ -99,8 +90,8 @@ async function redemptionSnapshot(participantUuid, visitUuid, inviteUuid) {
   return {
     visit: await first("SELECT * FROM visits WHERE visit_uuid = ?", visitUuid),
     invitation: await first("SELECT * FROM invitations WHERE invite_uuid = ?", inviteUuid),
-    identity: await first(
-      "SELECT * FROM participant_identity_bindings WHERE participant_uuid = ?",
+    participantName: await first(
+      "SELECT * FROM participant_names WHERE participant_uuid = ?",
       participantUuid,
     ),
     sessions: await all(
@@ -111,45 +102,79 @@ async function redemptionSnapshot(participantUuid, visitUuid, inviteUuid) {
   };
 }
 
-async function createIdOnlyParticipant(participantId, runtimeEnv = null) {
+async function createIdOnlyParticipant(participantId) {
   const created = await api("/api/admin/participants", {
     method: "POST",
     token: ADMIN_TOKEN,
     body: { participant_id: participantId },
-    runtimeEnv,
   });
   expect(created.response.status).toBe(201);
-  expect(created.json.participant.identity_registered).toBe(false);
-  expectNoIdentityInternalsInApi(created.json);
+  expectParticipantNameFieldAbsent(created.json);
   return created.json;
 }
 
-function redemptionBody(
-  created,
-  participantId,
-  participantName,
-  clientInstanceId = crypto.randomUUID(),
-) {
+function invitationContext(created, {
+  invitation = created.invitation,
+  visitType = "pre",
+  visitId = created.participant.pre_visit_id,
+} = {}) {
   return {
-    token: invitationToken(created.invitation.invitation_url),
-    participant_id: participantId,
-    participant_name: participantName,
-    client_instance_id: clientInstanceId,
-    expected_visit_type: "pre",
+    participant: created.participant,
+    invitation,
+    visitType,
+    visitId,
   };
 }
 
-async function redeem(created, participantId, participantName, options = {}) {
-  return api("/api/invitations/redeem", {
+function invitationBody(context, participantId, overrides = {}) {
+  return {
+    token: invitationToken(context.invitation.invitation_url),
+    participant_id: participantId,
+    expected_visit_type: context.visitType,
+    ...overrides,
+  };
+}
+
+async function previewName(context, participantId, options = {}) {
+  const body = invitationBody(context, participantId, {
+    ...(options.expectedVisitType === undefined
+      ? {}
+      : { expected_visit_type: options.expectedVisitType }),
+  });
+  if (options.token !== undefined) body.token = options.token;
+  return api("/api/invitations/name-preview", {
     method: "POST",
-    body: redemptionBody(
-      created,
-      participantId,
-      participantName,
-      options.clientInstanceId,
-    ),
+    body,
     runtimeEnv: options.runtimeEnv ?? null,
   });
+}
+
+async function redeem(context, participantId, options = {}) {
+  const body = invitationBody(context, participantId, {
+    client_instance_id: options.clientInstanceId ?? crypto.randomUUID(),
+    name_action: options.nameAction ?? "register",
+  });
+  if (!options.omitConfirmation) {
+    body.participant_name_confirmed = options.confirmed ?? true;
+  }
+  if (options.participantName !== undefined) {
+    body.participant_name = options.participantName;
+  }
+  return api("/api/invitations/redeem", {
+    method: "POST",
+    body,
+    runtimeEnv: options.runtimeEnv ?? null,
+  });
+}
+
+async function issueInvitation(visitId) {
+  const issued = await api(`/api/admin/visits/${visitId}/invitations`, {
+    method: "POST",
+    token: ADMIN_TOKEN,
+    body: {},
+  });
+  expect(issued.response.status).toBe(201);
+  return issued.json.invitation;
 }
 
 function databaseWithBatchBarrier(database, parties = 2) {
@@ -182,18 +207,26 @@ function envWithDatabase(database) {
   });
 }
 
-describe("participant-entered identity continuity", () => {
-  it("keeps admin registration ID-only and defers the name HMAC until redemption", async () => {
-    const participantId = 991_001;
-    const created = await createIdOnlyParticipant(participantId);
+describe("participant-entered plaintext name confirmation", () => {
+  it("keeps admin registration ID-only and enforces the minimal Pre-sourced name schema", async () => {
+    const created = await createIdOnlyParticipant(991_001);
+    const participant = created.participant;
     expect(await first(
-      "SELECT * FROM participant_identity_bindings WHERE participant_uuid = ?",
-      created.participant.participant_uuid,
+      "SELECT * FROM participant_names WHERE participant_uuid = ?",
+      participant.participant_uuid,
     )).toBeNull();
+
+    const columns = await all("PRAGMA table_info(participant_names)");
+    expect(columns.map((column) => column.name)).toEqual([
+      "participant_uuid",
+      "registered_visit_uuid",
+      "participant_name",
+      "registered_at_ms",
+    ]);
 
     const beforeStaleAdminRequest = {
       participants: await first("SELECT COUNT(*) AS count FROM participants"),
-      bindings: await first("SELECT COUNT(*) AS count FROM participant_identity_bindings"),
+      names: await first("SELECT COUNT(*) AS count FROM participant_names"),
       audits: await first("SELECT COUNT(*) AS count FROM audit_log"),
     };
     const staleAdminRequest = await api("/api/admin/participants", {
@@ -208,187 +241,372 @@ describe("participant-entered identity continuity", () => {
     expect(staleAdminRequest.json.error.code).toBe("participant_name_not_accepted");
     expect({
       participants: await first("SELECT COUNT(*) AS count FROM participants"),
-      bindings: await first("SELECT COUNT(*) AS count FROM participant_identity_bindings"),
+      names: await first("SELECT COUNT(*) AS count FROM participant_names"),
       audits: await first("SELECT COUNT(*) AS count FROM audit_log"),
     }).toEqual(beforeStaleAdminRequest);
 
-    const envWithoutIdentitySecret = new Proxy(env, {
-      get(target, property) {
-        if (property === "IDENTITY_SECRET") return undefined;
-        return target[property];
-      },
-    });
-    const noSecret = await createIdOnlyParticipant(991_003, envWithoutIdentitySecret);
-    const beforeRedeem = await redemptionSnapshot(
-      noSecret.participant.participant_uuid,
-      noSecret.participant.pre_visit_id,
-      noSecret.invitation.invite_id,
-    );
-    const blockedRedeem = await redeem(
-      noSecret,
-      991_003,
-      "Secret Required At Redemption",
-      { runtimeEnv: envWithoutIdentitySecret },
-    );
-    expect(blockedRedeem.response.status).toBe(503);
-    expect(blockedRedeem.json.error.code).toBe("identity_verification_unconfigured");
-    expect(await redemptionSnapshot(
-      noSecret.participant.participant_uuid,
-      noSecret.participant.pre_visit_id,
-      noSecret.invitation.invite_id,
-    )).toEqual(beforeRedeem);
+    await expect(env.DB.prepare(`
+      INSERT INTO participant_names (
+        participant_uuid, registered_visit_uuid, participant_name, registered_at_ms
+      ) VALUES (?, ?, ?, ?)
+    `).bind(
+      participant.participant_uuid,
+      participant.immediate_visit_id,
+      "Must Not Register Outside Pre",
+      Date.now(),
+    ).run()).rejects.toThrow();
+    expect(await first(
+      "SELECT * FROM participant_names WHERE participant_uuid = ?",
+      participant.participant_uuid,
+    )).toBeNull();
   });
 
-  it("rejects incomplete or wrong-ID first claims without mutation, then binds the first valid name atomically", async () => {
+  it("previews registration without mutation and rejects invalid names or missing confirmation", async () => {
     const participantId = 991_101;
     const created = await createIdOnlyParticipant(participantId);
+    const context = invitationContext(created);
     const participant = created.participant;
-    const beforeFailures = await redemptionSnapshot(
+    const before = await redemptionSnapshot(
       participant.participant_uuid,
-      participant.pre_visit_id,
-      created.invitation.invite_id,
+      context.visitId,
+      context.invitation.invite_id,
     );
-    const valid = redemptionBody(created, participantId, REGISTERED_NAME);
-    const invalidBodies = [
-      { ...valid, participant_id: undefined },
-      { ...valid, participant_id: participantId + 1 },
-      { ...valid, participant_name: undefined },
-      { ...valid, participant_name: "" },
-    ];
-    for (const invalidBody of invalidBodies) {
-      const failed = await api("/api/invitations/redeem", {
-        method: "POST",
-        body: { ...invalidBody, client_instance_id: crypto.randomUUID() },
+
+    const preview = await previewName(context, participantId);
+    expect(preview.response.status).toBe(200);
+    expect(preview.response.headers.get("Cache-Control")).toContain("no-store");
+    expect(preview.json).toMatchObject({ ok: true, name_action: "register" });
+    expect(preview.json).not.toHaveProperty("participant_name");
+    expect(await redemptionSnapshot(
+      participant.participant_uuid,
+      context.visitId,
+      context.invitation.invite_id,
+    )).toEqual(before);
+
+    for (const participantName of [
+      undefined,
+      "",
+      "Invalid\nName",
+      "a".repeat(81),
+      "😀".repeat(65),
+    ]) {
+      const failed = await redeem(context, participantId, {
+        participantName,
+        nameAction: "register",
       });
-      expect(failed.response.status).toBe(409);
-      expect(failed.json.error.code).toBe("participant_binding_mismatch");
-      expectNoIdentityInternalsInApi(failed.json);
+      expect(failed.response.status).toBe(422);
+      expectParticipantNameAbsent(failed.json);
       expect(await redemptionSnapshot(
         participant.participant_uuid,
-        participant.pre_visit_id,
-        created.invitation.invite_id,
-      )).toEqual(beforeFailures);
+        context.visitId,
+        context.invitation.invite_id,
+      )).toEqual(before);
     }
 
+    for (const confirmationOptions of [
+      { participantName: REGISTERED_NAME, confirmed: false },
+      { participantName: REGISTERED_NAME, omitConfirmation: true },
+    ]) {
+      const failed = await redeem(context, participantId, confirmationOptions);
+      expect(failed.response.status).toBe(422);
+      expectParticipantNameFieldAbsent(failed.json);
+      expect(await redemptionSnapshot(
+        participant.participant_uuid,
+        context.visitId,
+        context.invitation.invite_id,
+      )).toEqual(before);
+    }
+
+    const wrongAction = await redeem(context, participantId, {
+      nameAction: "confirm",
+    });
+    expect(wrongAction.response.status).toBe(409);
+    expectParticipantNameFieldAbsent(wrongAction.json);
+    expect(await redemptionSnapshot(
+      participant.participant_uuid,
+      context.visitId,
+      context.invitation.invite_id,
+    )).toEqual(before);
+  });
+
+  it("atomically registers the canonical plaintext only in D1 and exposes it only through preview", async () => {
+    const participantId = 991_201;
+    const created = await createIdOnlyParticipant(participantId);
+    const context = invitationContext(created);
+    const participant = created.participant;
     const successLog = vi.spyOn(console, "log").mockImplementation(() => {});
     const failureLog = vi.spyOn(console, "error").mockImplementation(() => {});
-    let redeemed;
+    let registered;
     let capturedLogs;
     try {
-      redeemed = await redeem(created, participantId, REGISTERED_NAME, { runtimeEnv: env });
+      registered = await redeem(context, participantId, {
+        participantName: REGISTERED_NAME,
+      });
       capturedLogs = [successLog.mock.calls, failureLog.mock.calls];
     } finally {
       successLog.mockRestore();
       failureLog.mockRestore();
     }
-    expect(redeemed.response.status).toBe(200);
-    expectNoIdentityInternalsInApi(redeemed.json);
-    expectPlaintextNameAbsent(capturedLogs);
+    expect(registered.response.status).toBe(200);
+    expectParticipantNameFieldAbsent(registered.json);
+    expectParticipantNameAbsent(capturedLogs);
 
-    const afterRedeem = await redemptionSnapshot(
+    const after = await redemptionSnapshot(
       participant.participant_uuid,
-      participant.pre_visit_id,
-      created.invitation.invite_id,
+      context.visitId,
+      context.invitation.invite_id,
     );
-    expect(afterRedeem.visit.status).toBe("started");
-    expect(afterRedeem.visit.active_session_epoch).toBe(1);
-    expect(afterRedeem.sessions).toHaveLength(1);
-    expect(afterRedeem.sessions[0].status).toBe("active");
-    expect(afterRedeem.invitation.redeem_count).toBe(1);
-    expect(afterRedeem.identity).toMatchObject({
+    expect(after.participantName).toEqual({
       participant_uuid: participant.participant_uuid,
-      normalization_version: "nfkc-whitespace-lower-v1",
-      verifier_version: "hmac-sha256-v1",
-      confirmation_count: 1,
+      registered_visit_uuid: participant.pre_visit_id,
+      participant_name: CANONICAL_NAME,
+      registered_at_ms: expect.any(Number),
     });
-    expect(afterRedeem.identity.verifier_hex).toMatch(/^[0-9a-f]{64}$/u);
-    expect(afterRedeem.identity.last_confirmed_at_ms).not.toBeNull();
-    expect(actionCounts(afterRedeem.audits)).toEqual({
+    expect(after.visit.status).toBe("started");
+    expect(after.visit.active_session_epoch).toBe(1);
+    expect(after.sessions).toHaveLength(1);
+    expect(after.sessions[0].status).toBe("active");
+    expect(after.invitation.redeem_count).toBe(1);
+    expect(actionCounts(after.audits)).toEqual({
       participant_created: 1,
       invitation_issued: 1,
-      participant_identity_registered: 1,
+      participant_name_registered: 1,
       invitation_redeemed: 1,
     });
-    expect(afterRedeem.audits.find(
-      (row) => row.action === "participant_identity_registered",
-    )?.actor_type).toBe("participant");
-    expectPlaintextNameAbsent(afterRedeem);
+    expectParticipantNameAbsent(after.audits);
+    expect(normalizeParticipantName(REGISTERED_NAME)).toBe(CANONICAL_NAME);
 
-    const identityColumns = await all("PRAGMA table_info(participant_identity_bindings)");
-    expect(identityColumns.map((column) => column.name)).not.toContain("participant_name");
+    const namePreview = await previewName(context, participantId);
+    expect(namePreview.response.status).toBe(200);
+    expect(namePreview.response.headers.get("Cache-Control")).toContain("no-store");
+    expect(namePreview.json).toMatchObject({
+      ok: true,
+      name_action: "confirm",
+      participant_name: CANONICAL_NAME,
+    });
+
+    const sessionState = await api("/api/session", {
+      token: registered.json.session_token,
+    });
+    expect(sessionState.response.status).toBe(200);
+    expectParticipantNameFieldAbsent(sessionState.json);
+
+    const adminLookup = await api("/api/admin/participants", {
+      method: "POST",
+      token: ADMIN_TOKEN,
+      body: { participant_id: participantId, issue_pre_invitation: false },
+    });
+    expect(adminLookup.response.status).toBe(200);
+    expectParticipantNameFieldAbsent(adminLookup.json);
+
+    const adminSummary = await api("/api/admin/summary", { token: ADMIN_TOKEN });
+    expect(adminSummary.response.status).toBe(200);
+    expectParticipantNameFieldAbsent(adminSummary.json);
+
+    const unavailableCopy = await api("/api/visit/results.zip", {
+      token: registered.json.session_token,
+    });
+    expect(unavailableCopy.response.status).toBe(403);
+    expectParticipantNameFieldAbsent(unavailableCopy.json);
   });
 
-  it("accepts a normalized-equivalent entry on a fresh invitation and rejects a different name with zero mutation", async () => {
-    const participantId = 991_201;
-    const created = await createIdOnlyParticipant(participantId);
-    const firstRedeem = await redeem(created, participantId, REGISTERED_NAME);
-    expect(firstRedeem.response.status).toBe(200);
-    const participant = created.participant;
-    const freshInvitation = await api(
-      `/api/admin/visits/${participant.pre_visit_id}/invitations`,
-      { method: "POST", token: ADMIN_TOKEN, body: {} },
-    );
-    expect(freshInvitation.response.status).toBe(201);
-    const freshCreated = {
-      ...created,
-      invitation: freshInvitation.json.invitation,
-    };
-
-    const beforeMismatch = await redemptionSnapshot(
-      participant.participant_uuid,
-      participant.pre_visit_id,
-      freshCreated.invitation.invite_id,
-    );
-    expect(beforeMismatch.invitation.redeem_count).toBe(0);
-    const mismatch = await redeem(freshCreated, participantId, DIFFERENT_NAME);
-    expect(mismatch.response.status).toBe(409);
-    expect(mismatch.json.error.code).toBe("participant_binding_mismatch");
-    expect(await redemptionSnapshot(
-      participant.participant_uuid,
-      participant.pre_visit_id,
-      freshCreated.invitation.invite_id,
-    )).toEqual(beforeMismatch);
-
-    const equivalent = await redeem(freshCreated, participantId, EQUIVALENT_NAME);
-    expect(equivalent.response.status).toBe(200);
-    const afterEquivalent = await redemptionSnapshot(
-      participant.participant_uuid,
-      participant.pre_visit_id,
-      freshCreated.invitation.invite_id,
-    );
-    expect(afterEquivalent.identity).toMatchObject({
-      verifier_hex: beforeMismatch.identity.verifier_hex,
-      normalization_version: beforeMismatch.identity.normalization_version,
-      verifier_version: beforeMismatch.identity.verifier_version,
-      created_at_ms: beforeMismatch.identity.created_at_ms,
-      confirmation_count: 2,
-    });
-    expect(afterEquivalent.sessions).toHaveLength(2);
-    expect(afterEquivalent.sessions.filter((row) => row.status === "active")).toHaveLength(1);
-    expect(afterEquivalent.sessions.filter((row) => row.status === "superseded")).toHaveLength(1);
-    expect(afterEquivalent.visit.active_session_epoch).toBe(3);
-    expect(afterEquivalent.invitation.redeem_count).toBe(1);
-    expect(beforeMismatch.invitation.first_redeemed_at_ms).toBeNull();
-    expect(afterEquivalent.invitation.first_redeemed_at_ms).not.toBeNull();
-    expect(actionCounts(afterEquivalent.audits)).toEqual({
-      participant_created: 1,
-      invitation_issued: 2,
-      participant_identity_registered: 1,
-      invitation_redeemed: 2,
-    });
-  });
-
-  it("allows exactly one atomic winner when different names race to claim an unbound invitation", async () => {
+  it("never discloses an existing name for a wrong token, ID, route, unavailable time, or closed visit", async () => {
     const participantId = 991_301;
     const created = await createIdOnlyParticipant(participantId);
+    const firstContext = invitationContext(created);
+    expect((await redeem(firstContext, participantId, {
+      participantName: REGISTERED_NAME,
+    })).response.status).toBe(200);
+    const freshInvitation = await issueInvitation(created.participant.pre_visit_id);
+    const context = invitationContext(created, { invitation: freshInvitation });
+    const participant = created.participant;
+
+    async function expectFailedPreviewWithoutMutation(options, expectedStatus) {
+      const before = await redemptionSnapshot(
+        participant.participant_uuid,
+        context.visitId,
+        context.invitation.invite_id,
+      );
+      const failed = await previewName(
+        context,
+        options.participantId ?? participantId,
+        options,
+      );
+      expect(failed.response.status).toBe(expectedStatus);
+      expectParticipantNameFieldAbsent(failed.json);
+      expect(await redemptionSnapshot(
+        participant.participant_uuid,
+        context.visitId,
+        context.invitation.invite_id,
+      )).toEqual(before);
+    }
+
+    await expectFailedPreviewWithoutMutation({ token: "A".repeat(43) }, 404);
+    await expectFailedPreviewWithoutMutation({ participantId: participantId + 1 }, 409);
+    await expectFailedPreviewWithoutMutation({ expectedVisitType: "immediate" }, 409);
+
+    await env.DB.prepare(`
+      UPDATE visits SET available_at_ms = ? WHERE visit_uuid = ?
+    `).bind(Date.now() + 86_400_000, context.visitId).run();
+    await expectFailedPreviewWithoutMutation({}, 403);
+
+    await env.DB.prepare(`
+      UPDATE visits SET available_at_ms = NULL, status = 'completed' WHERE visit_uuid = ?
+    `).bind(context.visitId).run();
+    await expectFailedPreviewWithoutMutation({}, 409);
+  });
+
+  it("blocks later invitation issuance and rejects a forged Immediate registration without a Pre name", async () => {
+    const participantId = 991_401;
+    const created = await createIdOnlyParticipant(participantId);
+    const participant = created.participant;
+    const nowMs = Date.now();
+    await env.DB.prepare(`
+      UPDATE visits
+      SET status = 'completed', behavioral_completed_at_ms = ?, finalized_at_ms = ?, updated_at_ms = ?
+      WHERE visit_uuid = ?
+    `).bind(nowMs, nowMs, nowMs, participant.pre_visit_id).run();
+    const invitationCountBefore = await first(`
+      SELECT COUNT(*) AS count FROM invitations WHERE visit_uuid = ?
+    `, participant.immediate_visit_id);
+    const refusedInvitation = await api(
+      `/api/admin/visits/${participant.immediate_visit_id}/invitations`,
+      { method: "POST", token: ADMIN_TOKEN, body: {} },
+    );
+    expect(refusedInvitation.response.status).toBe(409);
+    expect(refusedInvitation.json.error.code).toBe("participant_name_not_registered");
+    expectParticipantNameFieldAbsent(refusedInvitation.json);
+    expect(await first(`
+      SELECT COUNT(*) AS count FROM invitations WHERE visit_uuid = ?
+    `, participant.immediate_visit_id)).toEqual(invitationCountBefore);
+
+    const rawToken = "I".repeat(43);
+    const inviteUuid = crypto.randomUUID();
+    await env.DB.batch([
+      env.DB.prepare(`
+        INSERT INTO invitations (
+          invite_uuid, visit_uuid, generation, token_hash, status, issued_at_ms
+        ) VALUES (?, ?, 1, ?, 'active', ?)
+      `).bind(
+        inviteUuid,
+        participant.immediate_visit_id,
+        await sha256Hex(rawToken),
+        nowMs,
+      ),
+      env.DB.prepare(`
+        UPDATE visits SET status = 'invited', updated_at_ms = ? WHERE visit_uuid = ?
+      `).bind(nowMs, participant.immediate_visit_id),
+    ]);
+    const immediateInvitation = {
+      invite_id: inviteUuid,
+      invitation_url: `${ORIGIN}/main-experiment/#t=${rawToken}`,
+    };
+    const context = invitationContext(created, {
+      invitation: immediateInvitation,
+      visitType: "immediate",
+      visitId: participant.immediate_visit_id,
+    });
+    const before = await redemptionSnapshot(
+      participant.participant_uuid,
+      context.visitId,
+      context.invitation.invite_id,
+    );
+
+    const preview = await previewName(context, participantId);
+    expect(preview.response.status).toBe(409);
+    expectParticipantNameFieldAbsent(preview.json);
+    expect(await redemptionSnapshot(
+      participant.participant_uuid,
+      context.visitId,
+      context.invitation.invite_id,
+    )).toEqual(before);
+
+    const lateRegistration = await redeem(context, participantId, {
+      nameAction: "register",
+      participantName: REGISTERED_NAME,
+    });
+    expect(lateRegistration.response.status).toBe(409);
+    expectParticipantNameFieldAbsent(lateRegistration.json);
+    expect(await redemptionSnapshot(
+      participant.participant_uuid,
+      context.visitId,
+      context.invitation.invite_id,
+    )).toEqual(before);
+  });
+
+  it("confirms an immutable stored name on a fresh invitation and rejects stale or ambiguous payloads", async () => {
+    const participantId = 991_501;
+    const created = await createIdOnlyParticipant(participantId);
+    const firstContext = invitationContext(created);
+    expect((await redeem(firstContext, participantId, {
+      participantName: REGISTERED_NAME,
+    })).response.status).toBe(200);
+    const freshInvitation = await issueInvitation(created.participant.pre_visit_id);
+    const context = invitationContext(created, { invitation: freshInvitation });
+    const participant = created.participant;
+    const before = await redemptionSnapshot(
+      participant.participant_uuid,
+      context.visitId,
+      context.invitation.invite_id,
+    );
+
+    const preview = await previewName(context, participantId);
+    expect(preview.response.status).toBe(200);
+    expect(preview.json).toMatchObject({
+      name_action: "confirm",
+      participant_name: CANONICAL_NAME,
+    });
+    expect(await redemptionSnapshot(
+      participant.participant_uuid,
+      context.visitId,
+      context.invitation.invite_id,
+    )).toEqual(before);
+
+    const rejectedRequests = [
+      { nameAction: "register", participantName: DIFFERENT_NAME, expectedStatus: 409 },
+      { nameAction: "confirm", confirmed: false, expectedStatus: 422 },
+      { nameAction: "confirm", omitConfirmation: true, expectedStatus: 422 },
+      { nameAction: "confirm", participantName: DIFFERENT_NAME, expectedStatus: 422 },
+    ];
+    for (const { expectedStatus, ...options } of rejectedRequests) {
+      const rejected = await redeem(context, participantId, options);
+      expect(rejected.response.status).toBe(expectedStatus);
+      expectParticipantNameAbsent(rejected.json);
+      expect(await redemptionSnapshot(
+        participant.participant_uuid,
+        context.visitId,
+        context.invitation.invite_id,
+      )).toEqual(before);
+    }
+
+    const confirmed = await redeem(context, participantId, {
+      nameAction: "confirm",
+    });
+    expect(confirmed.response.status).toBe(200);
+    expectParticipantNameFieldAbsent(confirmed.json);
+    const after = await redemptionSnapshot(
+      participant.participant_uuid,
+      context.visitId,
+      context.invitation.invite_id,
+    );
+    expect(after.participantName).toEqual(before.participantName);
+    expect(after.invitation.redeem_count).toBe(1);
+    expect(after.sessions.filter((row) => row.status === "active")).toHaveLength(1);
+    expectParticipantNameAbsent(after.audits);
+  });
+
+  it("allows exactly one atomic winner when different Pre names race to register", async () => {
+    const participantId = 991_601;
+    const created = await createIdOnlyParticipant(participantId);
+    const context = invitationContext(created);
     const claims = [REGISTERED_NAME, DIFFERENT_NAME];
     const raceEnv = envWithDatabase(databaseWithBatchBarrier(env.DB));
-    const results = await Promise.all(claims.map((name, index) => redeem(
-      created,
+    const results = await Promise.all(claims.map((participantName, index) => redeem(
+      context,
       participantId,
-      name,
       {
-        clientInstanceId: `99100301-0000-4000-8000-00000000000${index + 1}`,
+        participantName,
+        clientInstanceId: `99100601-0000-4000-8000-00000000000${index + 1}`,
         runtimeEnv: raceEnv,
       },
     )));
@@ -401,17 +619,12 @@ describe("participant-entered identity continuity", () => {
     const participant = created.participant;
     const afterRace = await redemptionSnapshot(
       participant.participant_uuid,
-      participant.pre_visit_id,
-      created.invitation.invite_id,
+      context.visitId,
+      context.invitation.invite_id,
     );
-    const expectedWinnerBinding = await createParticipantIdentityBinding({
-      identitySecret: env.IDENTITY_SECRET,
-      participantUuid: participant.participant_uuid,
-      participantId,
-      participantName: claims[winnerIndex],
-    });
-    expect(afterRace.identity.verifier_hex).toBe(expectedWinnerBinding.verifier_hex);
-    expect(afterRace.identity.confirmation_count).toBe(1);
+    expect(afterRace.participantName.participant_name).toBe(
+      normalizeParticipantName(claims[winnerIndex]),
+    );
     expect(afterRace.sessions).toHaveLength(1);
     expect(afterRace.sessions[0].status).toBe("active");
     expect(afterRace.visit.active_session_epoch).toBe(1);
@@ -419,113 +632,67 @@ describe("participant-entered identity continuity", () => {
     expect(actionCounts(afterRace.audits)).toEqual({
       participant_created: 1,
       invitation_issued: 1,
-      participant_identity_registered: 1,
+      participant_name_registered: 1,
       invitation_redeemed: 1,
     });
+    expectParticipantNameAbsent(afterRace.audits);
 
     const loserRetryBefore = await redemptionSnapshot(
       participant.participant_uuid,
-      participant.pre_visit_id,
-      created.invitation.invite_id,
+      context.visitId,
+      context.invitation.invite_id,
     );
-    const loserRetry = await redeem(created, participantId, claims[loserIndex]);
+    const loserRetry = await redeem(context, participantId, {
+      participantName: claims[loserIndex],
+      nameAction: "register",
+    });
     expect(loserRetry.response.status).toBe(409);
-    expect(loserRetry.json.error.code).toBe("participant_binding_mismatch");
     expect(await redemptionSnapshot(
       participant.participant_uuid,
-      participant.pre_visit_id,
-      created.invitation.invite_id,
+      context.visitId,
+      context.invitation.invite_id,
     )).toEqual(loserRetryBefore);
+
+    const rePreview = await previewName(context, participantId);
+    expect(rePreview.json).toMatchObject({
+      name_action: "confirm",
+      participant_name: normalizeParticipantName(claims[winnerIndex]),
+    });
   });
 
-  it("preserves a pre-existing binding and never lets participant input overwrite it", async () => {
-    const participantId = 991_401;
+  it("rolls back first-name registration when a later session write in the batch fails", async () => {
+    const participantId = 991_701;
     const created = await createIdOnlyParticipant(participantId);
-    const participant = created.participant;
-    const binding = await createParticipantIdentityBinding({
-      identitySecret: env.IDENTITY_SECRET,
-      participantUuid: participant.participant_uuid,
-      participantId,
-      participantName: REGISTERED_NAME,
-    });
-    await env.DB.prepare(`
-      INSERT INTO participant_identity_bindings (
-        participant_uuid, verifier_hex, normalization_version, verifier_version,
-        created_at_ms
-      ) VALUES (?, ?, ?, ?, 123)
-    `).bind(
-      participant.participant_uuid,
-      binding.verifier_hex,
-      binding.normalization_version,
-      binding.verifier_version,
-    ).run();
-
-    const beforeMismatch = await redemptionSnapshot(
-      participant.participant_uuid,
-      participant.pre_visit_id,
-      created.invitation.invite_id,
-    );
-    const mismatch = await redeem(created, participantId, DIFFERENT_NAME);
-    expect(mismatch.response.status).toBe(409);
-    expect(await redemptionSnapshot(
-      participant.participant_uuid,
-      participant.pre_visit_id,
-      created.invitation.invite_id,
-    )).toEqual(beforeMismatch);
-
-    const accepted = await redeem(created, participantId, EQUIVALENT_NAME);
-    expect(accepted.response.status).toBe(200);
-    const afterAccepted = await redemptionSnapshot(
-      participant.participant_uuid,
-      participant.pre_visit_id,
-      created.invitation.invite_id,
-    );
-    expect(afterAccepted.identity).toMatchObject({
-      verifier_hex: binding.verifier_hex,
-      created_at_ms: 123,
-      confirmation_count: 1,
-    });
-    expect(actionCounts(afterAccepted.audits)).toEqual({
-      participant_created: 1,
-      invitation_issued: 1,
-      invitation_redeemed: 1,
-    });
-    expect(await verifyParticipantIdentityBinding({
-      identitySecret: env.IDENTITY_SECRET,
-      participantUuid: participant.participant_uuid,
-      participantId,
-      participantName: REGISTERED_NAME,
-      binding: afterAccepted.identity,
-    })).toBe(true);
-  });
-
-  it("rolls back a first name binding if a later session write in the same batch fails", async () => {
-    const participantId = 991_501;
-    const created = await createIdOnlyParticipant(participantId);
+    const context = invitationContext(created);
     const participant = created.participant;
     const beforeFailure = await redemptionSnapshot(
       participant.participant_uuid,
-      participant.pre_visit_id,
-      created.invitation.invite_id,
+      context.visitId,
+      context.invitation.invite_id,
     );
     await env.DB.prepare(`
-      CREATE TRIGGER test_reject_identity_session
+      CREATE TRIGGER test_reject_plaintext_name_session
       BEFORE INSERT ON sessions
       BEGIN
         SELECT RAISE(ABORT, 'test_session_rejected');
       END
     `).run();
-    const failed = await redeem(created, participantId, REGISTERED_NAME);
+    const failed = await redeem(context, participantId, {
+      participantName: REGISTERED_NAME,
+    });
     expect(failed.response.status).toBe(409);
     expect(failed.json.error.code).toBe("invitation_redeem_conflict");
+    expectParticipantNameFieldAbsent(failed.json);
     expect(await redemptionSnapshot(
       participant.participant_uuid,
-      participant.pre_visit_id,
-      created.invitation.invite_id,
+      context.visitId,
+      context.invitation.invite_id,
     )).toEqual(beforeFailure);
-    await env.DB.prepare("DROP TRIGGER test_reject_identity_session").run();
+    await env.DB.prepare("DROP TRIGGER test_reject_plaintext_name_session").run();
 
-    const retry = await redeem(created, participantId, REGISTERED_NAME);
+    const retry = await redeem(context, participantId, {
+      participantName: REGISTERED_NAME,
+    });
     expect(retry.response.status).toBe(200);
   });
 });

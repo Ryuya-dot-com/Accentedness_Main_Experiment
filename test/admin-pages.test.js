@@ -9,8 +9,11 @@ describe("internal admin pages", () => {
     expect(html).toContain("ADMIN_TOKEN");
     expect(html).not.toContain('id="participant-name"');
     expect(html).toContain("管理者が登録するのは参加者IDだけです");
-    expect(html).toContain("氏名は参加者がPreリンクを初めて開いたときに入力");
-    expect(html).toContain("平文氏名は実験データベースへ保存しません");
+    expect(html).toContain("氏名は参加者がPreリンクで入力内容を確認した後に実験データベースへ保存");
+    expect(html).toContain("管理画面には氏名を表示しません");
+    expect(html).toContain("この表示確認は本人認証ではありません");
+    expect(html).toContain("参加者IDは第二認証要素ではない");
+    expect(html).toContain("誤配布・漏えいが疑われる場合");
     expect(html).not.toContain("test-admin-token-that-is-long-and-private");
     expect(response.headers.get("X-Robots-Tag")).toContain("noindex");
   });
@@ -23,11 +26,11 @@ describe("internal admin pages", () => {
     const script = await response.text();
 
     expect(script).toContain('authorizedJson("/api/admin/participants"');
-    expect(script).not.toContain("participant_name");
+    expect(script).not.toMatch(/participant_name["': ]/u);
     expect(script).not.toContain("participantName");
-    expect(script).toContain("identityRegistrationFlag(payload)");
-    expect(script).toContain("氏名照合: 初回登録済み");
-    expect(script).toContain("氏名照合: 参加者の初回アクセス待ち");
+    expect(script).toContain("nameRegistrationFlag(payload)");
+    expect(script).toContain("氏名: Pre登録済み");
+    expect(script).toContain("氏名: 参加者のPre入力待ち");
     expect(script).toContain("safeSummaryValue(payload)");
     expect(script).not.toMatch(/localStorage|sessionStorage|console\./u);
   });

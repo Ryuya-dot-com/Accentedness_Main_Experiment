@@ -54,14 +54,12 @@ function trialInsertStatement(db, visitUuid, trial) {
 export async function findParticipantByNumericId(db, numericId) {
   return db.prepare(`
     SELECT p.*,
-      pib.verifier_hex AS identity_verifier_hex,
-      pib.normalization_version AS identity_normalization_version,
-      pib.verifier_version AS identity_verifier_version,
+      CASE WHEN pn.participant_uuid IS NULL THEN 0 ELSE 1 END AS participant_name_registered,
       vp.visit_uuid AS pre_visit_uuid,
       vi.visit_uuid AS immediate_visit_uuid, vd.visit_uuid AS delayed_visit_uuid
     FROM participants p
-    LEFT JOIN participant_identity_bindings pib
-      ON pib.participant_uuid = p.participant_uuid
+    LEFT JOIN participant_names pn
+      ON pn.participant_uuid = p.participant_uuid
     LEFT JOIN visits vp ON vp.participant_uuid = p.participant_uuid AND vp.visit_type = 'pre'
     LEFT JOIN visits vi ON vi.participant_uuid = p.participant_uuid AND vi.visit_type = 'immediate'
     LEFT JOIN visits vd ON vd.participant_uuid = p.participant_uuid AND vd.visit_type = 'delayed'
@@ -236,14 +234,12 @@ export async function getVisitForInvitation(db, tokenHash) {
       v.first_started_at_ms, v.behavioral_completed_at_ms, v.finalized_at_ms,
       v.active_session_epoch, v.participant_uuid, v.manifest_hash,
       p.numeric_id, p.assignment_version, p.asset_version, p.status AS participant_status,
-      pib.verifier_hex AS identity_verifier_hex,
-      pib.normalization_version AS identity_normalization_version,
-      pib.verifier_version AS identity_verifier_version
+      pn.participant_name, pn.registered_visit_uuid, pn.registered_at_ms
     FROM invitations i
     JOIN visits v ON v.visit_uuid = i.visit_uuid
     JOIN participants p ON p.participant_uuid = v.participant_uuid
-    LEFT JOIN participant_identity_bindings pib
-      ON pib.participant_uuid = p.participant_uuid
+    LEFT JOIN participant_names pn
+      ON pn.participant_uuid = p.participant_uuid
     WHERE i.token_hash = ?
     LIMIT 1
   `).bind(tokenHash).first();

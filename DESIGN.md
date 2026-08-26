@@ -14,7 +14,7 @@
 
 Picture Matching は行いません。preではPicture Namingだけを行い、L2-to-L1は行いません。直後・遅延のテスト順はPicture Naming、L2-to-L1で固定します。課題順を固定する理由は、L2-to-L1で正答語を聞くことがPicture Namingを促進するテスト効果を避けるためです。
 
-## 2. 参加者ID、氏名入力の継続照合、学習時アクセント
+## 2. 参加者ID、保存氏名の表示確認、学習時アクセント
 
 正の10進整数だけを参加者IDとして受け付けます。先頭ゼロ、文字列ラベル、0、負数、小数、JavaScriptの安全整数範囲外は拒否します。
 
@@ -26,13 +26,15 @@ Picture Matching は行いません。preではPicture Namingだけを行い、L
 
 同じIDを再登録しても、新しい条件やmanifestは生成されません。既存の不変manifestを再利用します。
 
-管理者は数値IDだけを入力して参加者を作成・参照し、氏名を転記しません。参加者はPre招待の初回redeem時にIDと氏名を入力します。serverは氏名をNFKC正規化し、Unicode空白を1個へ畳んで前後を除き、Roman textを小文字化します。制御文字・改行・bidi制御文字、80 Unicode code point超、256 UTF-8 byte超は拒否します。
+管理画面と通常の管理APIは数値IDだけで参加者を作成・参照し、氏名を入力・表示しません。これはD1権限者が平文を技術的に読めないという意味ではありません。参加者は有効なPre招待でIDを入力した後に氏名を入力し、保存前に表示された文字列を自分で確認します。serverは表示用氏名をNFKC正規化し、Unicode空白を1個へ畳んで前後を除きます。表示内容を保持するためRoman textの大文字・小文字は変えません。制御文字・改行・bidi制御文字、80 Unicode code point超、256 UTF-8 byte超は拒否します。
 
-正規化済み氏名は、専用の`IDENTITY_SECRET`をkeyとして、participant UUID、数値ID、正規化版、verifier版を含むdomain-separated HMAC-SHA-256へ変換します。初回binding、visit開始、session作成、招待redeem、auditは同じD1 batchで原子的に確定します。D1に保存するのはHMACとversion、確認回数・時刻だけで、平文氏名はD1、R2、API応答、log、browser storage、ZIPへ残しません。trial responseとtelemetry eventはtask/type別のfield allowlist以外をserverで拒否します。後続redeemで正規化後に同じ氏名なら確認回数を増やし、別氏名ならHTTP 409として既存HMACを上書きしません。
+確認済み氏名は平文で、アプリケーションschemaではD1の`participant_names`だけへ保存します。初回氏名保存、visit開始、session作成、招待redeem、auditは同じD1 batchで原子的に確定します。後続の新しい招待linkでは、参加者がIDを入力した後に、serverが保存済み氏名を`Cache-Control: no-store`の`POST /api/invitations/name-preview`応答だけに返します。参加者は氏名を再入力せず、表示された氏名が自分のものか確認してからredeemします。氏名はWorker log、audit detail、R2、browser storage、trial/event payload、session state、管理API応答、参加者版・研究者版ZIPへ出しません。trial responseとtelemetry eventはtask/type別のfield allowlist以外をserverで拒否します。
 
-初回アクセスの認可は、手動配布されたraw招待tokenと招待に一致する数値IDが担います。初回氏名は募集台帳との照合済み本人情報ではなく、その後のImmediate・Delayedで同じ入力を要求する継続確認情報です。ID不一致・氏名欠落・競合は汎用エラーとなり、binding、visit、session、招待redeem回数、確認回数、監査logを一切変更しません。binding後の氏名不一致も同じく無変更です。redeem後の同じsession内では平文氏名を保持せず、session tokenだけを使います。bindingのない既存参加者も、次の有効な招待を最初に正常redeemした時点でbindingします。参加終了・離脱後もIDは再利用しません。
+初回アクセスの認可は、手動配布されたraw招待tokenと招待に一致する数値IDが担います。Preでの氏名入力と後続時点での表示確認は、募集台帳との照合や本人認証ではありません。確認前の離脱、ID不一致、氏名欠落、初回登録競合では、氏名、visit、session、招待redeem回数、監査logを一切変更しません。初回登録競合の敗者は保存済み氏名を改めて取得・確認し、古い入力で上書きできません。redeem後はsession tokenだけを使い、browser storageに氏名を保持しません。参加終了・離脱後もIDは再利用しません。
 
-学習時アクセント、24-cell、manifest seedは引き続き数値IDだけから決まり、氏名やHMACは割付へ影響しません。`IDENTITY_SECRET`は`RANDOMIZATION_SECRET`や`ADMIN_TOKEN`と分離し、既存bindingを照合する全期間で固定します。
+IDは秘密情報ではなく、研究用連番の低entropyな値なので第二認証要素でもありません。ID単独では氏名を返さず、確認用APIはraw招待token、route、IDの一致を要求しますが、現行APIにはrate limitや本人認証がなく、漏れたraw tokenに対するIDの総当たり耐性を保証しません。raw tokenと一致するIDを得た第三者も保存氏名を見て確認操作まで進めます。`no-store`はcache制御であって、暗号化・匿名化・本人認証ではありません。さらに平文はD1のbackup・Time Travel等の管理コピーにも含まれ得ます。したがってlinkの秘匿と漏えい時のrevoke・再発行をアクセス境界とし、D1権限を限定して、管理コピーを含む保存・削除範囲を運用で固定します。この露出を、参加者が保存値を読める利点との意図的なtradeoffとして受け入れます。
+
+学習時アクセント、24-cell、manifest seedは引き続き数値IDだけから決まり、氏名は割付へ影響しません。氏名表示用の`IDENTITY_SECRET`は不要で、healthとproduction gateが要求するsecretは独立した`ADMIN_TOKEN`と`RANDOMIZATION_SECRET`だけです。このschemaを追加する改訂版migration `0006`は現時点でremote D1へ未適用であり、適用済みとはみなしません。
 
 ## 3. 語、専用練習刺激、変動性
 
@@ -174,13 +176,13 @@ Pre・直後で録音や回答を参加者へdownloadさせると、聞き返し
 
 - 試行中に中断ボタンを押した場合、通常UIはその1試行の応答受理まで待ってからinterruptionをrequestし、新しい試行へは進みません。request後は送信待ち録音をflushしてからfinalizeします。
 - requestと試行開始が競合した場合、先に開始済みの1試行だけは応答・録音をdrainできます。requestが先なら次のtrial startをAPIとD1 triggerの両方が拒否します。openなinterruption中はvisit完了、招待発行、管理者revokeも拒否します。
-- 一時中断では参加者とvisitを完了・withdraw扱いにせず、現在sessionだけを閉じ、同じactive招待を保持します。finalize時にもserverがcanonical responseに対応する録音待ち0件を再検査し、1件でも残れば`requested`のまま拒否します。同じ招待linkへID・氏名を再入力すると新sessionとなり、serverが受理したcanonical trialの直後から再開します。
+- 一時中断では参加者とvisitを完了・withdraw扱いにせず、現在sessionだけを閉じ、同じactive招待を保持します。finalize時にもserverがcanonical responseに対応する録音待ち0件を再検査し、1件でも残れば`requested`のまま拒否します。同じ招待linkでIDを入力し、保存済み氏名を確認すると新sessionとなり、serverが受理したcanonical trialの直後から再開します。
 - pause requestのfinalize前にtabを失った場合、再認証しても`requested`を自動で`resumed`へ変えず、次trialを禁止したまま送信とpause確定を続行します。pauseが`paused`まで確定した後の再認証だけを明示的な再開として`resumed`にします。
 - 回復不能な回答・録音エラーで安全な再開を保証できない場合、pauseを完了扱いにはしません。pause要求後なら、参加者は未確定の確認コードを残すか、同じrequest UUID・interruption UUIDを保持した一方向の`pause/requested`→`terminate/requested`切替を明示的に選びます。再訪時のoutbox照合で初めて判明した場合も新trialを始めず、新しいterminate requestによるserver受理済み範囲での参加終了か担当者連絡だけを提示します。逆方向やfinalize済み状態の変更は拒否します。
 - pause時に開始済みだが未受理だったattemptを再提示する場合、旧attemptと録音slotは`superseded_on_resume`でabandoned・非canonicalにし、新attemptへ`repeated_after_interruption=1`を付けます。学習なら追加曝露として`extra_exposure=1`も付けます。
 - 永続的な参加終了では、受理済みcanonical responseとupload済みR2 WAVを削除・上書きしません。未受理attemptは非canonicalのabandoned、canonical responseに対応する未upload録音は`participant_terminated`のabandonedとして区別します。完了済みvisitはそのまま保持し、未完了visitだけを`withdrawn`にします。
 - 参加終了は`behavioral_completed_at_ms`、segment完了時刻、`finalized_at_ms`を新規設定しません。部分データを通常完了に見せず、active sessionと招待を閉じ、以後の再開を拒否します。
-- terminate requestがserverへ届いた後、finalize前にtabを閉じても要求を失いません。同じactive招待linkでID・氏名を再確認すると、試行開始を禁止したまま新sessionで送信待ちを再送し、同じrequest UUIDの終了確定だけを続行できます。要求を出した旧session UUIDは監査用に保持し、finalize権限は同じparticipant・visitへ再認証されたsessionに限定します。
+- terminate requestがserverへ届いた後、finalize前にtabを閉じても要求を失いません。同じactive招待linkでIDを入力し、保存済み氏名を確認すると、試行開始を禁止したまま新sessionで送信待ちを再送し、同じrequest UUIDの終了確定だけを続行できます。要求を出した旧session UUIDは監査用に保持し、finalize権限は同じparticipant・visitへ再認証されたsessionに限定します。
 - 明示操作なしにtabやbrowserを閉じた場合は、通常完了・一時中断・参加終了のどれにも自動変換しません。server受理済み位置までの未完了visitとして残し、同じactive招待linkから再開します。
 
 interruption request/finalizeはrequest UUIDで冪等化し、D1の一意indexとtriggerをrace-conditionのbackstopにします。監査では`requested`、`paused`、`resumed`、`terminated`を通常のbehavioral completion・finalizationと別に数えます。

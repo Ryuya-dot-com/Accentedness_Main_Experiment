@@ -9,7 +9,6 @@ const REAL_ASSETS = Object.freeze({
   ALLOW_PLACEHOLDER_ASSETS: "false",
   ADMIN_TOKEN: "production-admin-token-for-test-only",
   RANDOMIZATION_SECRET: "production-randomization-secret-for-test-only",
-  IDENTITY_SECRET: "production-identity-secret-for-test-only",
 });
 
 describe("production collection gates", () => {
@@ -39,21 +38,28 @@ describe("production collection gates", () => {
     });
   });
 
-  it("keeps production closed when recipient verification is unconfigured", () => {
+  it("does not require an identity secret for plaintext participant-name confirmation", () => {
     const configuration = collectionConfiguration({
       ...REAL_ASSETS,
       TEST_TOKEN_POLICY: "same_token",
-      IDENTITY_SECRET: undefined,
     });
-    expect(configuration).toMatchObject({
-      tokenPolicyReady: true,
-      identityVerificationReady: false,
-      collectionReady: false,
-      blocked: true,
-    });
+    expect(configuration).not.toHaveProperty("identityVerificationReady");
+    expect(configuration).toMatchObject({ collectionReady: true, blocked: false });
   });
 
   it("fails closed when any production secrets are missing or reused", () => {
+    const missingAdmin = collectionConfiguration({
+      ...REAL_ASSETS,
+      TEST_TOKEN_POLICY: "same_token",
+      ADMIN_TOKEN: undefined,
+    });
+    expect(missingAdmin).toMatchObject({
+      adminAuthenticationReady: false,
+      secretsIndependent: false,
+      collectionReady: false,
+      blocked: true,
+    });
+
     const missingRandomization = collectionConfiguration({
       ...REAL_ASSETS,
       TEST_TOKEN_POLICY: "same_token",
@@ -66,13 +72,13 @@ describe("production collection gates", () => {
       blocked: true,
     });
 
-    const reusedIdentity = collectionConfiguration({
+    const reusedOperationalSecret = collectionConfiguration({
       ...REAL_ASSETS,
       TEST_TOKEN_POLICY: "same_token",
-      IDENTITY_SECRET: REAL_ASSETS.RANDOMIZATION_SECRET,
+      ADMIN_TOKEN: REAL_ASSETS.RANDOMIZATION_SECRET,
     });
-    expect(reusedIdentity).toMatchObject({
-      identityVerificationReady: true,
+    expect(reusedOperationalSecret).toMatchObject({
+      adminAuthenticationReady: true,
       randomizationReady: true,
       secretsIndependent: false,
       collectionReady: false,

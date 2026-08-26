@@ -1,7 +1,7 @@
 import { ExperimentApi } from "./api.js";
 import { ExperimentAudio } from "./audio-engine.js";
 import {
-  bootstrapWithParticipantIdentity,
+  bootstrapWithParticipantAccess,
   microphoneCheckStorageKey,
   redirectToCanonical,
   waitForStartOrParticipantExit,
@@ -142,7 +142,7 @@ async function main() {
   audio = new ExperimentAudio(api);
   const failures = validateBrowserEnvironment({ microphone: true });
   if (failures.length) throw new Error(failures.join(" "));
-  let state = await bootstrapWithParticipantIdentity(api, ui);
+  let state = await bootstrapWithParticipantAccess(api, ui);
   if (redirectToCanonical(state)) return;
   ui.setConnected(true);
   ui.setParticipant(state.participant.id, state.visit.visit_type);

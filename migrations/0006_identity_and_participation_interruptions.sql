@@ -1,19 +1,25 @@
--- The participant's first successful invitation redemption binds the name verifier.
--- Later redemptions confirm that the participant supplies the same normalized name.
--- The plaintext name is deliberately never stored: only a domain-separated HMAC
--- verifier created with IDENTITY_SECRET is persisted.
-CREATE TABLE participant_identity_bindings (
+-- The participant registers a display name during the first successful Pre
+-- invitation redemption. Later visits show this value back to the participant.
+CREATE TABLE participant_names (
   participant_uuid TEXT PRIMARY KEY REFERENCES participants(participant_uuid),
-  verifier_hex TEXT NOT NULL CHECK (
-    length(verifier_hex) = 64
-    AND verifier_hex NOT GLOB '*[^0-9a-f]*'
+  registered_visit_uuid TEXT NOT NULL UNIQUE REFERENCES visits(visit_uuid),
+  participant_name TEXT NOT NULL CHECK (
+    length(participant_name) BETWEEN 1 AND 80
   ),
-  normalization_version TEXT NOT NULL,
-  verifier_version TEXT NOT NULL,
-  created_at_ms INTEGER NOT NULL,
-  last_confirmed_at_ms INTEGER,
-  confirmation_count INTEGER NOT NULL DEFAULT 0 CHECK (confirmation_count >= 0)
+  registered_at_ms INTEGER NOT NULL
 );
+
+CREATE TRIGGER participant_names_require_pre_visit
+BEFORE INSERT ON participant_names
+WHEN NOT EXISTS (
+  SELECT 1 FROM visits v
+  WHERE v.visit_uuid = NEW.registered_visit_uuid
+    AND v.participant_uuid = NEW.participant_uuid
+    AND v.visit_type = 'pre'
+)
+BEGIN
+  SELECT RAISE(ABORT, 'participant_name_requires_matching_pre_visit');
+END;
 
 ALTER TABLE participants ADD COLUMN withdrawn_at_ms INTEGER;
 ALTER TABLE visits ADD COLUMN withdrawn_at_ms INTEGER;

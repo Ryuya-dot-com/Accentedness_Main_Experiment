@@ -16,9 +16,16 @@ document.getElementById("app").innerHTML = `
       <span id="connection-badge" class="badge">確認中</span>
     </div>
     <p id="page-description" class="lead"></p>
-    <form id="participant-identity-form" class="identity-form" autocomplete="off" hidden>
-      <h2>参加者情報の確認</h2>
-      <p>担当者から案内された参加者IDと、ご自身の氏名を入力してください。Preの初回入力を、直後・遅延セッションで同じ入力か照合するために使います。</p>
+    <form
+      id="participant-id-form"
+      class="identity-form"
+      autocomplete="off"
+      aria-labelledby="participant-id-heading"
+      aria-describedby="participant-id-guidance participant-id-status"
+      hidden
+    >
+      <h2 id="participant-id-heading">参加者情報の確認</h2>
+      <p id="participant-id-guidance">担当者から案内された参加者IDを入力してください。氏名は、正しい参加者記録であることを次の画面で確認するために使います。</p>
       <div class="identity-fields">
         <label>
           <span>参加者ID</span>
@@ -33,23 +40,59 @@ document.getElementById("app").innerHTML = `
             required
           />
         </label>
+      </div>
+      <div class="actions">
+        <button id="participant-id-submit" type="submit">参加者IDを確認</button>
+      </div>
+      <p id="participant-id-status" class="status" role="status"></p>
+    </form>
+    <form
+      id="participant-name-form"
+      class="identity-form"
+      autocomplete="off"
+      aria-labelledby="participant-name-heading"
+      aria-describedby="participant-name-guidance participant-name-status"
+      hidden
+    >
+      <h2 id="participant-name-heading">氏名の登録</h2>
+      <p id="participant-name-guidance">ご自身の氏名を入力してください。入力後、保存前に確認画面を表示します。</p>
+      <div class="identity-fields">
         <label>
           <span>氏名</span>
           <input
             id="participant-name-input"
             name="participant_name"
             type="text"
-            maxlength="80"
+            maxlength="256"
             autocomplete="off"
+            aria-describedby="participant-name-status"
             required
           />
         </label>
       </div>
       <div class="actions">
-        <button id="participant-identity-submit" type="submit">招待リンクを確認</button>
+        <button id="participant-name-submit" type="submit">入力した氏名を確認</button>
       </div>
-      <p id="participant-identity-status" class="status" role="status"></p>
+      <p id="participant-name-status" class="status" role="status"></p>
     </form>
+    <section
+      id="participant-name-confirmation"
+      class="identity-form"
+      role="region"
+      aria-labelledby="participant-name-confirmation-heading"
+      aria-describedby="participant-name-confirmation-prompt participant-name-confirmation-status"
+      hidden
+    >
+      <h2 id="participant-name-confirmation-heading" tabindex="-1">氏名の確認</h2>
+      <p id="participant-name-confirmation-prompt">次の氏名がご自身のものであることを確認してください。</p>
+      <p id="participant-name-confirmation-value" class="summary" aria-live="polite" aria-atomic="true"></p>
+      <div class="actions">
+        <button id="participant-name-confirm" type="button">はい、この氏名です</button>
+        <button id="participant-name-edit" class="secondary-button" type="button" hidden>氏名を修正</button>
+        <button id="participant-name-reject" class="secondary-button" type="button">いいえ、違います</button>
+      </div>
+      <p id="participant-name-confirmation-status" class="status" role="status"></p>
+    </section>
     <div id="participant-summary" class="summary" hidden></div>
     <div id="participation-setup" hidden>
       <div class="checklist">

@@ -25,15 +25,9 @@ export function collectionConfiguration(env) {
   const tokenPolicyReady = tokenPolicy === "same_token";
   const adminAuthenticationReady = secretReady(env.ADMIN_TOKEN);
   const randomizationReady = secretReady(env.RANDOMIZATION_SECRET);
-  const identityVerificationReady = secretReady(env.IDENTITY_SECRET);
   const secretsIndependent = adminAuthenticationReady
     && randomizationReady
-    && identityVerificationReady
-    && new Set([
-      env.ADMIN_TOKEN,
-      env.RANDOMIZATION_SECRET,
-      env.IDENTITY_SECRET,
-    ]).size === 3;
+    && env.ADMIN_TOKEN !== env.RANDOMIZATION_SECRET;
   const production = environment === "production";
   return {
     environment,
@@ -44,14 +38,12 @@ export function collectionConfiguration(env) {
     tokenPolicyReady,
     adminAuthenticationReady,
     randomizationReady,
-    identityVerificationReady,
     secretsIndependent,
     collectionReady: !placeholder
       && !placeholderAllowed
       && tokenPolicyReady
       && adminAuthenticationReady
       && randomizationReady
-      && identityVerificationReady
       && secretsIndependent,
     blocked: production && (
       placeholder
@@ -59,7 +51,6 @@ export function collectionConfiguration(env) {
       || !tokenPolicyReady
       || !adminAuthenticationReady
       || !randomizationReady
-      || !identityVerificationReady
       || !secretsIndependent
     ),
   };

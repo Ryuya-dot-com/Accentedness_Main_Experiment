@@ -31,6 +31,8 @@ describe("completed-session expiry", () => {
       body: {
         token: invitationToken,
         participant_id: 810_001,
+        name_action: "register",
+        participant_name_confirmed: true,
         participant_name: "Test Participant",
         client_instance_id: "81000001-0000-4000-8000-000000000001",
         expected_visit_type: "pre",

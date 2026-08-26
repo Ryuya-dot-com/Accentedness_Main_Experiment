@@ -29,6 +29,19 @@ async function createParticipant(id = 1, visitType = "immediate") {
   expect(result.response.status).toBe(201);
   const created = result.json;
   if (visitType === "pre") return created;
+  const registeredName = await api("/api/invitations/redeem", {
+    method: "POST",
+    body: {
+      token: tokenFromInvitation(created.invitation.invitation_url),
+      participant_id: id,
+      name_action: "register",
+      participant_name_confirmed: true,
+      participant_name: "Test Participant",
+      client_instance_id: crypto.randomUUID(),
+      expected_visit_type: "pre",
+    },
+  });
+  expect(registeredName.response.status).toBe(200);
   await env.DB.prepare(`
     UPDATE visits SET status = 'completed', finalized_at_ms = ?, updated_at_ms = ?
     WHERE visit_uuid = ?
@@ -220,6 +233,8 @@ describe("Worker API", () => {
       body: {
         token: inviteToken,
         participant_id: 1,
+        name_action: "register",
+        participant_name_confirmed: true,
         participant_name: "Test Participant",
         client_instance_id: "11111111-1111-4111-8111-111111111111",
         expected_visit_type: "pre",
@@ -272,6 +287,8 @@ describe("Worker API", () => {
       body: {
         token: firstToken,
         participant_id: 101,
+        name_action: "register",
+        participant_name_confirmed: true,
         participant_name: "Test Participant",
         client_instance_id: "10110110-1101-4101-8101-101101101101",
         expected_visit_type: "immediate",
@@ -285,6 +302,8 @@ describe("Worker API", () => {
       body: {
         token: firstToken,
         participant_id: 101,
+        name_action: "register",
+        participant_name_confirmed: true,
         participant_name: "Test Participant",
         client_instance_id: "10110110-1101-4101-8101-101101101102",
         expected_visit_type: "pre",
@@ -330,7 +349,8 @@ describe("Worker API", () => {
       body: {
         token: inviteToken,
         participant_id: 2,
-        participant_name: "Test Participant",
+        name_action: "confirm",
+        participant_name_confirmed: true,
         client_instance_id: "22222222-2222-4222-8222-222222222222",
         expected_visit_type: "immediate",
       },
@@ -486,7 +506,8 @@ describe("Worker API", () => {
       body: {
         token: inviteToken,
         participant_id: 3,
-        participant_name: "Test Participant",
+        name_action: "confirm",
+        participant_name_confirmed: true,
         client_instance_id: "55555555-5555-4555-8555-555555555555",
         expected_visit_type: "immediate",
       },
@@ -496,7 +517,8 @@ describe("Worker API", () => {
       body: {
         token: inviteToken,
         participant_id: 3,
-        participant_name: "Test Participant",
+        name_action: "confirm",
+        participant_name_confirmed: true,
         client_instance_id: "66666666-6666-4666-8666-666666666666",
         expected_visit_type: "immediate",
       },
@@ -546,7 +568,8 @@ describe("Worker API", () => {
       body: {
         token: tokenFromInvitation(created.invitation.invitation_url),
         participant_id: 40,
-        participant_name: "Test Participant",
+        name_action: "confirm",
+        participant_name_confirmed: true,
         client_instance_id: "40404040-4040-4040-8040-404040404040",
         expected_visit_type: "immediate",
       },
@@ -618,7 +641,8 @@ describe("Worker API", () => {
       body: {
         token: tokenFromInvitation(issued.json.invitation.invitation_url),
         participant_id: 5,
-        participant_name: "Test Participant",
+        name_action: "confirm",
+        participant_name_confirmed: true,
         client_instance_id: "88888888-8888-4888-8888-888888888888",
         expected_visit_type: "delayed",
       },
@@ -800,7 +824,8 @@ describe("Worker API", () => {
       body: {
         token: tokenFromInvitation(issued.json.invitation.invitation_url),
         participant_id: 7,
-        participant_name: "Test Participant",
+        name_action: "confirm",
+        participant_name_confirmed: true,
         client_instance_id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
         expected_visit_type: "delayed",
       },
@@ -857,7 +882,8 @@ describe("Worker API", () => {
       body: {
         token: tokenFromInvitation(created.invitation.invitation_url),
         participant_id: 6,
-        participant_name: "Test Participant",
+        name_action: "confirm",
+        participant_name_confirmed: true,
         client_instance_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
         expected_visit_type: "immediate",
       },
@@ -967,7 +993,8 @@ describe("Worker API", () => {
       body: {
         token: tokenFromInvitation(issued.json.invitation.invitation_url),
         participant_id: 9,
-        participant_name: "Test Participant",
+        name_action: "confirm",
+        participant_name_confirmed: true,
         client_instance_id: "abcdefab-cdef-4abc-8def-abcdefabcdef",
         expected_visit_type: "delayed",
       },

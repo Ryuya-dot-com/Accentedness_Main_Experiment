@@ -12,7 +12,7 @@ function assertProductionCollectionSafe(env) {
     throw new ApiError(
       503,
       "production_collection_blocked",
-      "Production participant creation and invitation issuance require real assets, an explicit supported test-token policy, and recipient verification",
+      "Production participant creation and invitation issuance require real assets, an explicit supported test-token policy, and independent admin/randomization secrets",
       {
         asset_version: env.ASSET_VERSION,
         assignment_version: env.ASSIGNMENT_VERSION,
@@ -22,7 +22,6 @@ function assertProductionCollectionSafe(env) {
         test_token_policy_ready: configuration.tokenPolicyReady,
         admin_authentication_ready: configuration.adminAuthenticationReady,
         randomization_ready: configuration.randomizationReady,
-        identity_verification_ready: configuration.identityVerificationReady,
         secrets_independent: configuration.secretsIndependent,
       },
     );
@@ -31,8 +30,10 @@ function assertProductionCollectionSafe(env) {
 
 async function visitForIssue(db, visitUuid) {
   return db.prepare(`
-    SELECT v.*, p.numeric_id, p.status AS participant_status
+    SELECT v.*, p.numeric_id, p.status AS participant_status,
+      CASE WHEN pn.participant_uuid IS NULL THEN 0 ELSE 1 END AS participant_name_registered
     FROM visits v JOIN participants p ON p.participant_uuid = v.participant_uuid
+    LEFT JOIN participant_names pn ON pn.participant_uuid = p.participant_uuid
     WHERE v.visit_uuid = ? LIMIT 1
   `).bind(visitUuid).first();
 }
@@ -46,6 +47,13 @@ async function issueInvitation(env, requestUrl, visitUuid, nowMs) {
   }
   if (["completed", "withdrawn"].includes(visit.status)) {
     throw new ApiError(409, "visit_closed", "Cannot issue an invitation for a closed visit");
+  }
+  if (visit.visit_type !== "pre" && !Number(visit.participant_name_registered)) {
+    throw new ApiError(
+      409,
+      "participant_name_not_registered",
+      "The participant must register a name during Pre before a later invitation is issued",
+    );
   }
   const openInterruption = await env.DB.prepare(`
     SELECT mode, state FROM participation_interruptions
@@ -204,7 +212,7 @@ export async function createParticipant(request, env) {
       pre_visit_id: participant.pre_visit_uuid,
       immediate_visit_id: participant.immediate_visit_uuid,
       delayed_visit_id: participant.delayed_visit_uuid,
-      identity_registered: Boolean(participant.identity_verifier_hex),
+      participant_name_registered: Boolean(participant.participant_name_registered),
     },
     invitation,
   }, created ? 201 : 200);
