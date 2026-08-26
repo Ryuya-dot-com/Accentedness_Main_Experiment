@@ -4,7 +4,7 @@ Barcroft and Sommers (2005) の Experiment 2 を基礎に、学習時アクセ�
 
 ## 現在の状態
 
-現行の同一WAV token方式について、コードとプレースホルダー刺激による検証は可能です。ただし、Preで平文氏名を登録し後続linkで表示確認する現行buildはfull `npm run verify`待ちで、改訂版migration `0006`もremote D1へ未適用です。したがって、現在の非本番deployを現行buildの実証や本番収集可能状態とはみなしません。さらに実刺激・話者・画像も未確定のため、現時点では本番データを収集できません。production環境では、プレースホルダーが残る、直後・遅延のtoken方針が未確定、または`ADMIN_TOKEN`と`RANDOMIZATION_SECRET`のいずれかが未設定・短すぎる・相互流用されている場合、参加者作成・招待発行・招待redeem・新規trial開始をサーバーが拒否します。
+現行の同一WAV token方式と、Preで平文氏名を登録し後続linkで表示確認するbuildは、implementation commit `079c889`でfull `npm run verify`を通過しています。ただし、改訂版migration `0006`はremote D1へ未適用で、現行buildも非本番へ未deployです。したがって、現在の非本番deployを現行buildの実証や本番収集可能状態とはみなしません。さらに実刺激・話者・画像も未確定のため、現時点では本番データを収集できません。production環境では、プレースホルダーが残る、直後・遅延のtoken方針が未確定、または`ADMIN_TOKEN`と`RANDOMIZATION_SECRET`のいずれかが未設定・短すぎる・相互流用されている場合、参加者作成・招待発行・招待redeem・新規trial開始をサーバーが拒否します。
 
 本番収集前の技術的な配備条件は次のとおりです。これらはリポジトリのコード完成判定とは分けて扱います。
 

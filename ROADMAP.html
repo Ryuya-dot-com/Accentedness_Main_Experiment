@@ -15,14 +15,14 @@
 
   <h3>現在の到達状態</h3>
   <ul>
-    <li><label><input type="checkbox"> G1 Program-ready: 平文氏名契約を含む現行buildのfull <code>npm run verify</code>とcommit evidence待ち</label></li>
+    <li><label><input type="checkbox" checked> G1 Program-ready: 平文氏名契約を含むimplementation commit <code>079c889</code>のfull <code>npm run verify</code>とcommit evidenceを固定した</label></li>
     <li><label><input type="checkbox"> G2 Live-pilot-ready: Pre平文氏名登録・後続表示確認・中断対応を含む現行buildをCloudflare非本番へ配備し、実URLでD1/R2保存を確認した</label></li>
     <li><label><input type="checkbox"> G3 Operationally-ready: 敵対的E2E pilotと手動運用rehearsalを完了した</label></li>
     <li><label><input type="checkbox"> G4 Main-data-ready: 収集用bundleとproduction環境を固定し、soft launchを通過した</label></li>
   </ul>
   <p><strong>Gate依存:</strong> G2 = G1＋第5節、G3 = G2＋第6–7節、G4 = G3＋trigger済み第8節＋第9–10節。下位gateを飛ばして上位だけをcheckedにしない。</p>
-  <p><strong>現在の単一next action:</strong> 平文氏名契約を含む現行commitでfull <code>npm run verify</code>を実行し、正確なcommit SHAと結果をG1 evidenceへ記録する。成功後にだけ、remote migration listで<code>0006</code>未適用を確認し、平文氏名tableへ改訂したD1 migration <code>0006</code> → 現行build deployの順で非本番へ反映する。その後、旧氏名登録契約で発行したID 3を使わず、次の未使用連番ID 4を新規作成して実Chrome・実microphoneのPre pilotを行う。ID 1はsynthetic API smoke、ID 2はUX discovery、ID 3は旧契約確認用として、いずれもclean-pathへ再利用しない。</p>
-  <p><strong>現行平文氏名契約のG1 evidence（検証待ち）:</strong> <code>npm test</code>は16 files / 122 testsが成功したが、これはfull verify、randomization監査、deploy dry-run、commit固定の代替ではない。正確な全結果とcommit SHAを記録するまでG1をcheckedにしない。</p>
+  <p><strong>現在の単一next action:</strong> 変更直前のremote migration listでも<code>0006</code>が未適用であることを再確認し、平文氏名tableへ改訂したD1 migration <code>0006</code> → implementation commit <code>079c889</code>を含む現行build deployの順で非本番へ反映する。その後、旧氏名登録契約で発行したID 3を使わず、次の未使用連番ID 4を新規作成して実Chrome・実microphoneのPre pilotを行う。ID 1はsynthetic API smoke、ID 2はUX discovery、ID 3は旧契約確認用として、いずれもclean-pathへ再利用しない。</p>
+  <p><strong>現行平文氏名契約のG1 evidence（2026-08-26）:</strong> implementation commit <code>079c889</code>のtreeに対してfull <code>npm run verify</code>を実行し、types check、16 files / 128 tests、2 randomization secrets × ID 1–2160の4,320 design監査（failure 0）、development/production deploy dry-runが成功した。改訂版migration <code>0001</code>–<code>0006</code>も空の使い捨てlocal D1へ順番に適用できた。これはG1の証拠であり、remote D1への<code>0006</code>適用、現行Worker deploy、実Chrome/R2/D1 pilotの証拠には流用しない。</p>
   <p><strong>旧HMAC契約のG1 evidence（2026-08-26、履歴）:</strong> 管理者のID-only登録、参加者による初回氏名HMAC binding、新しい招待での後続照合、強制同時claim、専用練習刺激、中断・参加終了を含むimplementation commit <code>56b080c</code>に対し<code>npm run verify</code>を実行し、types check、16 files / 114 tests、2 randomization secrets × ID 1–2160の4,320 design監査（failure 0）、development/production deploy dry-runが成功した。migration <code>0001</code>–<code>0006</code>も空の使い捨てlocal D1へ順番に適用できた。この履歴は平文氏名契約の現行buildや、その非本番deployと実Chrome/R2/D1 pilotの証拠には流用しない。</p>
 
   <h2>1. 固定済みの実験契約</h2>
