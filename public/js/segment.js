@@ -10,7 +10,6 @@ import { ExperimentRunner, ParticipantExitRequested } from "./runner.js";
 import { ResearcherTestRunner } from "./test-mode.js";
 import {
   ExperimentUi,
-  PARTICIPANT_COPY_DELIVERY,
   participantCopyCompletionMessage,
   participantGuidanceError,
   validateBrowserEnvironment,
@@ -43,42 +42,24 @@ const copy = {
   },
 }[expectedSegment];
 
-async function saveParticipantCopy() {
-  while (true) {
-    let fileHandle;
-    try {
-      fileHandle = await ui.chooseParticipantCopyTarget();
-    } catch (error) {
-      if (error?.code !== "participant_copy_picker_failed") throw error;
-      await ui.prompt(
-        "保存先を直接選択できませんでした。通常のダウンロードでZIPの取得を試します。開始後にChromeのダウンロード一覧を確認してください。",
-        "通常ダウンロードを試す",
-      );
-      const archive = await runner.prepareParticipantCopyWithRetry(null);
-      const download = await ui.downloadParticipantCopy(archive);
-      return { ...archive, ...download };
-    }
-    try {
-      const archive = await runner.prepareParticipantCopyWithRetry(fileHandle);
-      if (archive.savedToDisk === true) {
-        return {
-          ...archive,
-          delivery: PARTICIPANT_COPY_DELIVERY.DIRECT_WRITE_CONFIRMED,
-        };
-      }
-      if (archive.blob) {
-        const download = await ui.downloadParticipantCopy(archive);
-        return { ...archive, ...download };
-      }
-      throw new TypeError("参加者向けZIPの保存方法を確認できませんでした。");
-    } catch (error) {
-      if (error?.code !== "participant_copy_file_write_failed") throw error;
-      await ui.prompt(
-        "選択した場所へZIPを書き込めませんでした。空き容量と保存権限を確認し、別の保存先を選んでください。",
-        "別の保存先を選ぶ",
-      );
-    }
+async function finishVisit({ alreadyCompleted = false } = {}) {
+  ui.setInterruptionControlEnabled(false);
+  runner.stopMonitoring();
+  audio.close();
+  await runner.completeVisitWithRetry();
+  if (api.isTestMode) {
+    ui.completed("この画面の動作確認が終了しました。回答と録音は保存・送信されていません。別の画面を確認する場合は、そのURLを開いて参加者IDに「999」と入力してください。");
+    return;
   }
+  ui.resetStage();
+  ui.setTaskStatus("回答と録音は保存済みです。ZIPを準備しています。画面を閉じないでください。");
+  const archive = await runner.prepareParticipantCopyWithRetry();
+  ui.downloadParticipantCopy(archive);
+  ui.completed(participantCopyCompletionMessage({
+    visitType: expectedVisit,
+    alreadyCompleted,
+    filename: archive.filename,
+  }), { preserveDownload: true });
 }
 
 async function runMicrophoneCheck(state) {
@@ -120,38 +101,26 @@ async function runMicrophoneCheck(state) {
   throw new Error("マイク音量を確認できませんでした。担当者に知らせてください。");
 }
 
-async function finalizeAlreadyCompleted(state) {
-  ui.setInterruptionControlEnabled(false);
-  runner.stopMonitoring();
-  audio.close();
-  await runner.completeVisitWithRetry();
-  const participantCopy = state.visit.visit_type === "delayed"
-    ? await saveParticipantCopy()
-    : null;
-  if (state.visit.visit_type !== "delayed") api.clearSession();
-  ui.completed(state.visit.visit_type === "pre"
-    ? "事前テストは終了し、回答と録音は保存済みです。単語学習のリンクは担当者から別途お送りします。"
-    : state.visit.visit_type === "immediate"
-      ? "直後テストは保存済みです。遅延テストの案内をお待ちください。"
-      : participantCopyCompletionMessage(participantCopy.delivery, {
-        alreadyCompleted: true,
-        filename: participantCopy.filename,
-      }), {
-    preserveDownload: state.visit.visit_type === "delayed",
-  });
-}
-
 async function main() {
   const realApi = new ExperimentApi(expectedVisit);
-  const persistentStorage = realApi.hasInvitationToken() || realApi.hasStoredSession();
   const failures = validateBrowserEnvironment({
     microphone: true,
-    persistentStorage,
+    persistentStorage: false,
   });
   if (failures.length) throw participantGuidanceError(failures.join(" "));
+  const requirePersistentParticipantEnvironment = () => {
+    const participantFailures = validateBrowserEnvironment({
+      microphone: true,
+      persistentStorage: true,
+    });
+    if (participantFailures.length) {
+      throw participantGuidanceError(participantFailures.join(" "));
+    }
+  };
   const access = await bootstrapTaskAccess(realApi, ui, {
     expectedVisitType: expectedVisit,
     expectedSegment,
+    beforePersistentParticipantAccess: requirePersistentParticipantEnvironment,
   });
   api = access.api;
   let state = access.state;
@@ -164,7 +133,7 @@ async function main() {
     ? "研究者用テストモードです。回答と録音は保存・送信されません。"
     : state.accepted.length
       ? "保存済みの位置から再開できます。"
-      : "招待情報を確認しました。";
+      : "参加者情報を確認しました。";
   runner = testMode
     ? new ResearcherTestRunner(api, ui, audio, state)
     : new ExperimentRunner(api, ui, audio, state);
@@ -184,7 +153,7 @@ async function main() {
   if (redirectToCanonical(state, { runner, audio })) return;
   const nextTrial = state.manifest.find((trial) => trial.trial_id === state.next_trial_id);
   if (!nextTrial) {
-    await finalizeAlreadyCompleted(state);
+    await finishVisit({ alreadyCompleted: true });
     return;
   }
   if (nextTrial.segment !== expectedSegment) {
@@ -209,14 +178,17 @@ async function main() {
     const phaseTrials = segmentTrials.filter((candidate) => candidate.practice === trial.practice);
     const completed = phaseTrials.filter((candidate) => accepted.has(candidate.trial_id)).length;
     const progressLabel = `${copy.title} ${trial.practice ? "練習" : "本番"}`;
-    ui.updateProgress(progressLabel, completed, phaseTrials.length, { inProgress: true });
+    ui.updateProgress(progressLabel, completed, phaseTrials.length, {
+      inProgress: true,
+      practice: trial.practice,
+    });
     if (trial.practice && !announcedPractice) {
       announcedPractice = true;
       runner.resetInterTrialClock();
       const completedPractice = practiceTrials.filter((candidate) => accepted.has(candidate.trial_id)).length;
       const practiceLead = completedPractice > 0
-        ? `練習は ${completedPractice}/${practiceTrials.length} 回まで終わっています。残り ${practiceTrials.length - completedPractice} 回を再開します。`
-        : `最初に、やさしい英単語で${practiceTrials.length}回練習します。`;
+        ? "練習を途中から再開します。"
+        : "最初に、やさしい英単語で短い練習をします。";
       await ui.prompt(`${practiceLead}\n\n${copy.responseRule}`, completedPractice > 0 ? "練習を再開" : "練習を開始");
       await runner.handleParticipantExit();
     }
@@ -225,8 +197,8 @@ async function main() {
       runner.resetInterTrialClock();
       const completedMain = mainTrials.filter((candidate) => accepted.has(candidate.trial_id)).length;
       const mainLead = completedMain > 0
-        ? `本番は ${completedMain}/${mainTrials.length} 回まで終わっています。残り ${mainTrials.length - completedMain} 回を再開します。`
-        : `練習は終了です。これから本番を${mainTrials.length}回行います。`;
+        ? "本番の途中から再開します。"
+        : "練習は終了です。これから本番です。";
       await ui.prompt(
         `${mainLead}\n\n${copy.responseRule}`,
         completedMain > 0 ? "本番を再開" : "本番を開始",
@@ -248,6 +220,7 @@ async function main() {
       progressLabel,
       phaseTrials.filter((candidate) => accepted.has(candidate.trial_id)).length,
       phaseTrials.length,
+      { practice: trial.practice },
     );
     await runner.handleParticipantExit();
   }
@@ -265,27 +238,7 @@ async function main() {
     window.location.assign(state.next_route);
     return;
   }
-  ui.setInterruptionControlEnabled(false);
-  runner.stopMonitoring();
-  audio.close();
-  await runner.completeVisitWithRetry();
-  if (testMode) {
-    ui.completed("この画面の動作確認が終了しました。回答と録音は保存・送信されていません。別の画面を確認する場合は、そのURLを開いて参加者IDに「test」と入力してください。");
-    return;
-  }
-  const participantCopy = expectedVisit === "delayed"
-    ? await saveParticipantCopy()
-    : null;
-  if (expectedVisit !== "delayed") api.clearSession();
-  ui.completed(expectedVisit === "pre"
-    ? "事前テストは終了し、回答と録音は保存されました。単語学習のリンクは担当者から別途お送りします。"
-    : expectedVisit === "immediate"
-      ? "直後テストは終了し、回答と録音は保存されました。遅延テストの案内をお待ちください。"
-      : participantCopyCompletionMessage(participantCopy.delivery, {
-        filename: participantCopy.filename,
-      }), {
-    preserveDownload: expectedVisit === "delayed",
-  });
+  await finishVisit();
 }
 
 main().catch((error) => {

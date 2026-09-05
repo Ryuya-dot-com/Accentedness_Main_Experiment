@@ -16,15 +16,24 @@ let runner = null;
 
 async function main() {
   const realApi = new ExperimentApi("immediate");
-  const persistentStorage = realApi.hasInvitationToken() || realApi.hasStoredSession();
   const failures = validateBrowserEnvironment({
     microphone: false,
-    persistentStorage,
+    persistentStorage: false,
   });
   if (failures.length) throw participantGuidanceError(failures.join(" "));
+  const requirePersistentParticipantEnvironment = () => {
+    const participantFailures = validateBrowserEnvironment({
+      microphone: false,
+      persistentStorage: true,
+    });
+    if (participantFailures.length) {
+      throw participantGuidanceError(participantFailures.join(" "));
+    }
+  };
   const access = await bootstrapTaskAccess(realApi, ui, {
     expectedVisitType: "immediate",
     expectedSegment: "learning",
+    beforePersistentParticipantAccess: requirePersistentParticipantEnvironment,
   });
   api = access.api;
   let state = access.state;
@@ -37,7 +46,7 @@ async function main() {
     ? "研究者用テストモードです。回答と音声は保存・送信されません。"
     : state.accepted.length
       ? "保存済みの位置から再開できます。"
-      : "招待情報を確認しました。";
+      : "参加者情報を確認しました。";
   runner = testMode
     ? new ResearcherTestRunner(api, ui, audio, state)
     : new ExperimentRunner(api, ui, audio, state);
@@ -67,12 +76,13 @@ async function main() {
     ui.setInterruptionControlEnabled(false);
     runner.stopMonitoring();
     audio.close();
-    window.location.assign("/immediate-picture-naming/");
+    window.location.assign(state.next_route ?? "/immediate-picture-naming/");
     return;
   }
   const completedMainBeforeStart = mainTrials.filter((trial) => accepted.has(trial.trial_id)).length;
   ui.updateProgress("単語学習 本番", completedMainBeforeStart, mainTrials.length, {
     inProgress: mainTrials.some((trial) => !accepted.has(trial.trial_id)),
+    practice: false,
   });
   await ui.prompt("ヘッドホンの音量を確認します。次の短い確認音が聞こえる音量に調整してください。", "確認音を再生");
   await runner.handleParticipantExit();
@@ -83,11 +93,14 @@ async function main() {
   const remainingPractice = practiceTrials.filter((trial) => !accepted.has(trial.trial_id));
   if (remainingPractice.length) {
     const completedPractice = practiceTrials.length - remainingPractice.length;
-    ui.updateProgress("単語学習 練習", completedPractice, practiceTrials.length, { inProgress: true });
+    ui.updateProgress("単語学習 練習", completedPractice, practiceTrials.length, {
+      inProgress: true,
+      practice: true,
+    });
     await ui.prompt(
       completedPractice > 0
-        ? `単語の練習は ${completedPractice}/${practiceTrials.length} 回まで終わっています。残り ${remainingPractice.length} 回です。\n中央の＋のあとに絵文字が出て、英単語の音声が流れます。絵文字と英単語の組み合わせを覚えてください。操作は必要なく、自動で次に進みます。`
-        : `最初に${practiceTrials.length}回練習します。\n中央の＋のあとに絵文字が出て、英単語の音声が流れます。絵文字と英単語の組み合わせを覚えてください。操作は必要なく、自動で次に進みます。`,
+        ? "単語の練習を途中から再開します。\n中央の＋のあとに絵文字が出て、英単語の音声が流れます。絵文字と英単語の組み合わせを覚えてください。操作は必要なく、自動で次に進みます。"
+        : "最初に短い練習をします。\n中央の＋のあとに絵文字が出て、英単語の音声が流れます。絵文字と英単語の組み合わせを覚えてください。操作は必要なく、自動で次に進みます。",
       completedPractice > 0 ? "練習を再開" : "練習を開始",
     );
     await runner.handleParticipantExit();
@@ -95,7 +108,10 @@ async function main() {
       const trial = remainingPractice[trialIndex];
       const nextTrial = remainingPractice[trialIndex + 1] ?? null;
       const completed = practiceTrials.filter((candidate) => accepted.has(candidate.trial_id)).length;
-      ui.updateProgress("単語学習 練習", completed, practiceTrials.length, { inProgress: true });
+      ui.updateProgress("単語学習 練習", completed, practiceTrials.length, {
+        inProgress: true,
+        practice: true,
+      });
       ui.showFixation();
       ui.setTaskStatus("中央の＋を見て、次の絵文字と英単語に備えてください。");
       await runner.handleParticipantExit();
@@ -107,6 +123,7 @@ async function main() {
         "単語学習 練習",
         practiceTrials.filter((candidate) => accepted.has(candidate.trial_id)).length,
         practiceTrials.length,
+        { practice: true },
       );
       await runner.handleParticipantExit();
     }
@@ -116,11 +133,14 @@ async function main() {
   const remainingMain = mainTrials.filter((trial) => !accepted.has(trial.trial_id));
   if (remainingMain.length) {
     const completedMain = mainTrials.length - remainingMain.length;
-    ui.updateProgress("単語学習 本番", completedMain, mainTrials.length, { inProgress: true });
-    const mainIntroduction = "これから本番を144回行います。\n練習と同じ流れで、中央の＋のあとに絵が出て、英単語が流れます。絵と英単語の組み合わせを覚えてください。\n操作は必要なく自動で進み、24回ごとに休憩できます。";
+    ui.updateProgress("単語学習 本番", completedMain, mainTrials.length, {
+      inProgress: true,
+      practice: false,
+    });
+    const mainIntroduction = "これから本番です。\n練習と同じ流れで、中央の＋のあとに絵が出て、英単語が流れます。絵と英単語の組み合わせを覚えてください。英単語の音声は、単語によって異なる話者が担当することがあります。\n操作は必要なく自動で進み、途中で休憩画面が表示されます。";
     await ui.prompt(
       completedMain > 0
-        ? `本番は ${completedMain}/${mainTrials.length} 回まで終わっています。\n残り ${remainingMain.length} 回を再開します。中央の＋を見続け、絵と音声が出ている間はキーを押さないでください。`
+        ? "本番の途中から再開します。中央の＋を見続け、絵と音声が出ている間はキーを押さないでください。"
         : practiceTrials.length > 0
           ? `練習は終了です。${mainIntroduction}`
           : mainIntroduction,
@@ -132,7 +152,10 @@ async function main() {
     const trial = remainingMain[trialIndex];
     const nextTrial = remainingMain[trialIndex + 1] ?? null;
     const completed = mainTrials.filter((candidate) => accepted.has(candidate.trial_id)).length;
-    ui.updateProgress("単語学習 本番", completed, mainTrials.length, { inProgress: true });
+    ui.updateProgress("単語学習 本番", completed, mainTrials.length, {
+      inProgress: true,
+      practice: false,
+    });
     ui.showFixation();
     ui.setTaskStatus("中央の＋を見て、次の絵と英単語に備えてください。");
     await runner.handleParticipantExit();
@@ -141,13 +164,11 @@ async function main() {
     await runner.runLearningTrial(trial, loaded, nextTrial);
     accepted.add(trial.trial_id);
     const learningCompleted = mainTrials.filter((candidate) => accepted.has(candidate.trial_id)).length;
-    ui.updateProgress("単語学習 本番", learningCompleted, mainTrials.length);
+    ui.updateProgress("単語学習 本番", learningCompleted, mainTrials.length, { practice: false });
     await runner.handleParticipantExit();
     if (learningCompleted % 24 === 0 && learningCompleted < mainTrials.length) {
       await ui.prompt(
-        testMode
-          ? `ここで休憩してください。\n${learningCompleted}/${mainTrials.length} 回まで終わりました。このテストの記録は保存されません。\n準備ができたらスペースキーを1回押してください。`
-          : `ここで休憩してください。\n${learningCompleted}/${mainTrials.length} 回まで終わり、ここまでの記録は保存されています。\n準備ができたらスペースキーを1回押してください。`,
+        "ここで休憩してください。\n準備ができたらスペースキーを1回押してください。",
         "学習を再開",
       );
       await runner.handleParticipantExit();
@@ -156,14 +177,14 @@ async function main() {
   }
   await runner.flushWithRetry();
   await runner.handleParticipantExit();
-  ui.updateProgress("単語学習 本番", mainTrials.length, mainTrials.length);
+  ui.updateProgress("単語学習 本番", mainTrials.length, mainTrials.length, { practice: false });
   ui.setSaveState("saved");
   if (testMode) {
     ui.setInterruptionControlEnabled(false);
     runner.stopMonitoring();
     audio.close();
     await runner.completeVisitWithRetry();
-    ui.completed("単語学習の動作確認が終了しました。回答や音声は保存・送信されていません。別の画面を確認する場合は、そのURLを開いて参加者IDに「test」と入力してください。");
+    ui.completed("単語学習の動作確認が終了しました。回答や音声は保存・送信されていません。別の画面を確認する場合は、そのURLを開いて参加者IDに「999」と入力してください。");
     return;
   }
   await ui.prompt("単語学習が終わり、ここまでの記録は保存されました。\n続けて、絵を見て英単語を答える直後テストを行います。", "直後テストを開く");
@@ -171,7 +192,8 @@ async function main() {
   ui.setInterruptionControlEnabled(false);
   runner.stopMonitoring();
   audio.close();
-  window.location.assign("/immediate-picture-naming/");
+  state = await api.state();
+  window.location.assign(state.next_route ?? "/immediate-picture-naming/");
 }
 
 main().catch((error) => {

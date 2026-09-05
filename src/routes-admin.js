@@ -1,275 +1,465 @@
-import { buildParticipantDesign, canonicalParticipantId } from "./lib/manifest.js";
-import { insertParticipantDesign, findParticipantByNumericId } from "./lib/db.js";
-import { randomToken, sha256Hex, stableJson } from "./lib/crypto.js";
-import { ApiError, jsonResponse, readJson, requireMethod, requireUuid } from "./lib/http.js";
+import { canonicalCollectionParticipantId } from "./lib/manifest.js";
+import { ApiError, jsonResponse, requireMethod } from "./lib/http.js";
 import { requireAdmin } from "./lib/auth.js";
-import { collectionConfiguration } from "./lib/config.js";
 import { DELAY_MINIMUM_DAYS } from "./lib/protocol.js";
 
-function assertProductionCollectionSafe(env) {
-  const configuration = collectionConfiguration(env);
-  if (configuration.blocked) {
-    throw new ApiError(
-      503,
-      "production_collection_blocked",
-      "Production participant creation and invitation issuance require real assets, an explicit supported test-token policy, and independent admin/randomization secrets",
-      {
-        asset_version: env.ASSET_VERSION,
-        assignment_version: env.ASSIGNMENT_VERSION,
-        allow_placeholder_assets: configuration.placeholderAllowed,
-        placeholder_assets: configuration.placeholder,
-        test_token_policy: configuration.testTokenPolicy,
-        test_token_policy_ready: configuration.tokenPolicyReady,
-        admin_authentication_ready: configuration.adminAuthenticationReady,
-        randomization_ready: configuration.randomizationReady,
-        secrets_independent: configuration.secretsIndependent,
-      },
-    );
-  }
+const VISIT_ROUTES = Object.freeze({
+  pre: "/pre-picture-naming/",
+  immediate: "/main-experiment/",
+  delayed: "/delayed-picture-naming/",
+});
+
+const VISIT_ORDER = Object.freeze({ pre: 1, immediate: 2, delayed: 3 });
+
+const ACTION_CATEGORIES = Object.freeze({
+  start_pre: "ready",
+  start_immediate: "ready",
+  start_delayed: "ready",
+  resume_pre: "in_progress",
+  resume_immediate: "in_progress",
+  resume_delayed: "in_progress",
+  wait_delayed: "waiting",
+  wait_pre_recording_upload: "waiting",
+  wait_immediate_recording_upload: "waiting",
+  wait_delayed_recording_upload: "waiting",
+  complete: "completed",
+  participation_ended: "ended",
+});
+
+function nullableNumber(value) {
+  return value === null || value === undefined ? null : Number(value);
 }
 
-async function visitForIssue(db, visitUuid) {
-  return db.prepare(`
-    SELECT v.*, p.numeric_id, p.status AS participant_status,
-      CASE WHEN pn.participant_uuid IS NULL THEN 0 ELSE 1 END AS participant_name_registered
-    FROM visits v JOIN participants p ON p.participant_uuid = v.participant_uuid
-    LEFT JOIN participant_names pn ON pn.participant_uuid = p.participant_uuid
-    WHERE v.visit_uuid = ? LIMIT 1
-  `).bind(visitUuid).first();
-}
-
-async function issueInvitation(env, requestUrl, visitUuid, nowMs) {
-  assertProductionCollectionSafe(env);
-  const visit = await visitForIssue(env.DB, visitUuid);
-  if (!visit) throw new ApiError(404, "visit_not_found", "Visit was not found");
-  if (visit.participant_status === "withdrawn") {
-    throw new ApiError(409, "participant_withdrawn", "Cannot issue an invitation after participation has ended");
-  }
-  if (["completed", "withdrawn"].includes(visit.status)) {
-    throw new ApiError(409, "visit_closed", "Cannot issue an invitation for a closed visit");
-  }
-  if (visit.visit_type !== "pre" && !Number(visit.participant_name_registered)) {
-    throw new ApiError(
-      409,
-      "participant_name_not_registered",
-      "The participant must register a name during Pre before a later invitation is issued",
-    );
-  }
-  const openInterruption = await env.DB.prepare(`
-    SELECT mode, state FROM participation_interruptions
-    WHERE participant_uuid = ? AND state IN ('requested', 'paused')
-    ORDER BY requested_at_ms DESC LIMIT 1
-  `).bind(visit.participant_uuid).first();
-  if (openInterruption) {
-    throw new ApiError(409, "participation_interruption_open", "Resolve the participant's pause or termination request before issuing another invitation");
-  }
-  if (visit.visit_type === "immediate") {
-    const preVisit = await env.DB.prepare(`
-      SELECT status FROM visits
-      WHERE participant_uuid = ? AND visit_type = 'pre' LIMIT 1
-    `).bind(visit.participant_uuid).first();
-    if (preVisit?.status !== "completed") {
-      throw new ApiError(409, "pre_not_completed", "Pre Picture Naming must be completed before the main experiment invitation is issued");
-    }
-  }
-  if (visit.visit_type === "delayed") {
-    const immediateVisit = await env.DB.prepare(`
-      SELECT status FROM visits
-      WHERE participant_uuid = ? AND visit_type = 'immediate' LIMIT 1
-    `).bind(visit.participant_uuid).first();
-    if (immediateVisit?.status !== "completed") {
-      throw new ApiError(409, "immediate_not_completed", "The immediate visit must be completed before delayed invitation issuance");
-    }
-    if (visit.available_at_ms === null) {
-      throw new ApiError(409, "delayed_not_scheduled", "Immediate testing must finish before delayed invitation issuance");
-    }
-    if (Number(visit.available_at_ms) > nowMs) {
-      throw new ApiError(
-        409,
-        "delayed_not_available",
-        `The ${DELAY_MINIMUM_DAYS}-day minimum has not been reached`,
-        {
-          available_at_ms: visit.available_at_ms,
-          server_now_ms: nowMs,
-        },
-      );
-    }
-  }
-  const generationRow = await env.DB.prepare(`
-    SELECT COALESCE(MAX(generation), 0) + 1 AS generation
-    FROM invitations WHERE visit_uuid = ?
-  `).bind(visitUuid).first();
-  const generation = Number(generationRow?.generation ?? 1);
-  const rawToken = randomToken(32);
-  const tokenHash = await sha256Hex(rawToken);
-  const inviteUuid = crypto.randomUUID();
-  await env.DB.batch([
-    env.DB.prepare(`
-      UPDATE visits
-      SET active_session_epoch = active_session_epoch + 1, updated_at_ms = ?
-      WHERE visit_uuid = ?
-        AND EXISTS (
-          SELECT 1 FROM sessions
-          WHERE sessions.visit_uuid = visits.visit_uuid AND sessions.status = 'active'
-        )
-    `).bind(nowMs, visitUuid),
-    env.DB.prepare(`
-      UPDATE sessions SET status = 'superseded', superseded_at_ms = ?
-      WHERE visit_uuid = ? AND status = 'active'
-    `).bind(nowMs, visitUuid),
-    env.DB.prepare(`
-      UPDATE invitations SET status = 'revoked', revoked_at_ms = ?
-      WHERE visit_uuid = ? AND status = 'active'
-    `).bind(nowMs, visitUuid),
-    env.DB.prepare(`
-      INSERT INTO invitations (
-        invite_uuid, visit_uuid, generation, token_hash, status, issued_at_ms
-      ) VALUES (?, ?, ?, ?, 'active', ?)
-    `).bind(inviteUuid, visitUuid, generation, tokenHash, nowMs),
-    env.DB.prepare(`
-      UPDATE visits
-      SET status = CASE WHEN status IN ('planned', 'scheduled') THEN 'invited' ELSE status END,
-          updated_at_ms = ?
-      WHERE visit_uuid = ?
-    `).bind(nowMs, visitUuid),
-    env.DB.prepare(`
-      INSERT INTO audit_log (
-        audit_uuid, actor_type, action, participant_uuid, visit_uuid, server_at_ms, details_json
-      ) VALUES (?, 'admin', 'invitation_issued', ?, ?, ?, ?)
-    `).bind(
-      crypto.randomUUID(),
-      visit.participant_uuid,
-      visitUuid,
-      nowMs,
-      stableJson({ generation, visit_type: visit.visit_type }),
-    ),
-  ]);
-  const origin = new URL(requestUrl).origin;
-  const route = {
-    pre: "/pre-picture-naming/",
-    immediate: "/main-experiment/",
-    delayed: "/delayed-picture-naming/",
-  }[visit.visit_type];
+function nextAction(code, {
+  visitType = null,
+  reason,
+  availableAtMs = null,
+  path = null,
+} = {}) {
   return {
-    invite_id: inviteUuid,
-    participant_id: visit.numeric_id,
-    visit_id: visitUuid,
-    visit_type: visit.visit_type,
-    generation,
-    invitation_url: `${origin}${route}#t=${rawToken}`,
-    issued_at_ms: nowMs,
+    code,
+    category: ACTION_CATEGORIES[code] ?? "attention",
+    visit_type: visitType,
+    path: path ?? null,
+    reason,
+    available_at_ms: nullableNumber(availableAtMs),
   };
 }
 
-export async function createParticipant(request, env) {
-  requireMethod(request, ["POST"]);
-  await requireAdmin(request, env);
-  assertProductionCollectionSafe(env);
-  const body = await readJson(request);
-  if (Object.hasOwn(body, "participant_name")) {
-    throw new ApiError(
-      422,
-      "participant_name_not_accepted",
-      "Participant names are entered by participants, not administrators",
+function reviewState(reason = "inconsistent") {
+  return nextAction("review_state", { reason, path: null });
+}
+
+function completedVisitIntegrityReason(visit) {
+  if (visit.status !== "completed") return null;
+  if (visit.finalized_at_ms === null) return `${visit.visit_type}_not_finalized`;
+  if (visit.accepted_trials !== visit.expected_trials) {
+    return `${visit.visit_type}_completed_trial_count_mismatch`;
+  }
+  if (visit.accepted_recording_trials !== visit.expected_recordings) {
+    return `${visit.visit_type}_completed_recording_trial_count_mismatch`;
+  }
+  if (visit.pending_recordings > 0) return `${visit.visit_type}_completed_recording_pending`;
+  if (visit.missing_recordings > 0) return `${visit.visit_type}_completed_recording_missing`;
+  if (visit.abandoned_recordings > 0) return `${visit.visit_type}_completed_recording_abandoned`;
+  if (visit.uploaded_recordings !== visit.expected_recordings) {
+    return `${visit.visit_type}_completed_recording_upload_count_mismatch`;
+  }
+  return null;
+}
+
+function visitNextAction(visit) {
+  if (!visit || !Object.hasOwn(VISIT_ROUTES, visit.visit_type)) return reviewState();
+  const visitType = visit.visit_type;
+
+  if (visit.missing_recordings > 0) return reviewState("canonical_recording_missing");
+  if (visit.abandoned_recordings > 0) return reviewState("canonical_recording_abandoned");
+  if (visit.pending_recordings > 0) {
+    const behavioralComplete = visit.status === "awaiting_uploads"
+      || visit.behavioral_completed_at_ms !== null;
+    return nextAction(
+      behavioralComplete
+        ? `retry_${visitType}_uploads`
+        : `wait_${visitType}_recording_upload`,
+      {
+        visitType,
+        reason: behavioralComplete ? "recordings_pending" : "recording_upload_in_progress",
+        path: null,
+      },
     );
   }
+
+  if (visit.status === "awaiting_uploads" || visit.behavioral_completed_at_ms !== null) {
+    if (visit.status === "completed" || visit.finalized_at_ms !== null) return reviewState();
+    if (visit.accepted_trials !== visit.expected_trials) {
+      return reviewState("accepted_trial_count_incomplete");
+    }
+    if (visit.accepted_recording_trials !== visit.expected_recordings) {
+      return reviewState("accepted_recording_trial_count_incomplete");
+    }
+    if (visit.uploaded_recordings !== visit.expected_recordings) {
+      return reviewState("recording_upload_count_incomplete");
+    }
+    return nextAction(`finalize_${visitType}`, {
+      visitType,
+      reason: "finalization_pending",
+      path: null,
+    });
+  }
+  if (!["planned", "scheduled", "invited", "started"].includes(visit.status)) {
+    return reviewState();
+  }
+  const started = visit.status === "started"
+    || visit.first_started_at_ms !== null
+    || visit.accepted_trials > 0;
+  return nextAction(`${started ? "resume" : "start"}_${visitType}`, {
+    visitType,
+    reason: started ? "in_progress" : "not_started",
+    path: VISIT_ROUTES[visitType],
+  });
+}
+
+function participantNextAction(participant, serverNowMs) {
+  if (participant.status === "withdrawn") {
+    return nextAction("participation_ended", { reason: "withdrawn", path: null });
+  }
+
+  const visits = new Map(participant.visits.map((visit) => [visit.visit_type, visit]));
+  if (visits.size !== 3 || !["pre", "immediate", "delayed"].every((type) => visits.has(type))) {
+    return reviewState("visit_missing");
+  }
+
+  if (participant.open_interruption) {
+    const interruption = participant.open_interruption;
+    if (!visits.has(interruption.visit_type)) return reviewState("interruption_visit_missing");
+    if (interruption.state === "requested") {
+      return nextAction("finish_interruption", {
+        visitType: interruption.visit_type,
+        reason: "interruption_requested",
+        path: null,
+      });
+    }
+    if (interruption.mode === "pause" && interruption.state === "paused") {
+      return nextAction("resume_paused_visit", {
+        visitType: interruption.visit_type,
+        reason: "paused",
+        path: null,
+      });
+    }
+    return reviewState("interruption_state_invalid");
+  }
+
+  const pre = visits.get("pre");
+  const immediate = visits.get("immediate");
+  const delayed = visits.get("delayed");
+  for (const visit of [pre, immediate, delayed]) {
+    const integrityReason = completedVisitIntegrityReason(visit);
+    if (integrityReason) return reviewState(integrityReason);
+  }
+  if (immediate.status === "completed" && pre.status !== "completed") {
+    return reviewState("immediate_completed_before_pre");
+  }
+  if (delayed.status === "completed" && immediate.status !== "completed") {
+    return reviewState("delayed_completed_before_immediate");
+  }
+  if (participant.status === "completed" && delayed.status !== "completed") {
+    return reviewState("participant_completed_early");
+  }
+  if (pre.status !== "completed") return visitNextAction(pre);
+
+  if (immediate.status !== "completed") return visitNextAction(immediate);
+
+  if (delayed.status === "completed") {
+    if (participant.status !== "completed") {
+      return reviewState("delayed_completed_participant_not_completed");
+    }
+    return nextAction("complete", { reason: "completed", path: null });
+  }
+  if (delayed.available_at_ms === null) return reviewState("delayed_not_scheduled");
+  if (delayed.available_at_ms > serverNowMs) {
+    return nextAction("wait_delayed", {
+      visitType: "delayed",
+      reason: "delayed_not_available",
+      availableAtMs: delayed.available_at_ms,
+      path: null,
+    });
+  }
+  return visitNextAction(delayed);
+}
+
+function visitFromParticipantRow(row) {
+  return {
+    visit_type: row.visit_type,
+    status: row.visit_status,
+    target_at_ms: nullableNumber(row.target_at_ms),
+    available_at_ms: nullableNumber(row.available_at_ms),
+    first_started_at_ms: nullableNumber(row.first_started_at_ms),
+    last_seen_at_ms: nullableNumber(row.last_seen_at_ms),
+    behavioral_completed_at_ms: nullableNumber(row.behavioral_completed_at_ms),
+    finalized_at_ms: nullableNumber(row.finalized_at_ms),
+    accepted_trials: Number(row.accepted_trials ?? 0),
+    expected_trials: Number(row.expected_trial_count),
+    accepted_recording_trials: Number(row.accepted_recording_trials ?? 0),
+    uploaded_recordings: Number(row.uploaded_recordings ?? 0),
+    pending_recordings: Number(row.pending_recordings ?? 0),
+    missing_recordings: Number(row.missing_recordings ?? 0),
+    abandoned_recordings: Number(row.abandoned_recordings ?? 0),
+    expected_recordings: Number(row.expected_recording_count),
+    current_segment: null,
+    segments: [],
+  };
+}
+
+function segmentFromParticipantRow(row) {
+  return {
+    segment: row.segment,
+    status: row.segment_status,
+    accepted_trials: Number(row.segment_accepted_trials ?? 0),
+    expected_trials: Number(row.segment_expected_trials ?? 0),
+    started_at_ms: nullableNumber(row.segment_started_at_ms),
+    completed_at_ms: nullableNumber(row.segment_completed_at_ms),
+  };
+}
+
+function deriveCurrentSegment(visit) {
+  if (visit.status === "completed" || visit.finalized_at_ms !== null) return null;
+  const started = visit.segments.find((segment) => segment.status === "started");
+  if (started) return started.segment;
+  const visitStarted = visit.status === "started"
+    || visit.status === "awaiting_uploads"
+    || visit.first_started_at_ms !== null
+    || visit.accepted_trials > 0;
+  if (!visitStarted) return null;
+  return visit.segments.find((segment) => segment.status !== "completed")?.segment ?? null;
+}
+
+export async function listParticipants(request, env) {
+  requireMethod(request, ["GET"]);
+  await requireAdmin(request, env);
+  const serverNowMs = Date.now();
+  const rows = await env.DB.prepare(`
+    WITH visit_progress AS (
+      SELECT
+        v.visit_uuid, v.participant_uuid, v.visit_type, v.status,
+        v.target_at_ms, v.available_at_ms, v.first_started_at_ms, v.last_seen_at_ms,
+        v.behavioral_completed_at_ms, v.finalized_at_ms,
+        v.expected_trial_count, v.expected_recording_count,
+        SUM(CASE WHEN tm.canonical_attempt_uuid IS NOT NULL THEN 1 ELSE 0 END)
+          AS accepted_trials,
+        SUM(CASE
+          WHEN tm.expects_recording = 1 AND tm.canonical_attempt_uuid IS NOT NULL
+          THEN 1 ELSE 0 END) AS accepted_recording_trials,
+        SUM(CASE
+          WHEN tm.expects_recording = 1
+            AND tm.canonical_attempt_uuid IS NOT NULL
+            AND r.state = 'uploaded'
+            AND r.abandoned_at_ms IS NULL
+          THEN 1 ELSE 0 END) AS uploaded_recordings,
+        SUM(CASE
+          WHEN tm.expects_recording = 1
+            AND tm.canonical_attempt_uuid IS NOT NULL
+            AND r.state = 'pending'
+            AND r.abandoned_at_ms IS NULL
+          THEN 1 ELSE 0 END) AS pending_recordings,
+        SUM(CASE
+          WHEN tm.expects_recording = 1
+            AND tm.canonical_attempt_uuid IS NOT NULL
+            AND r.attempt_uuid IS NULL
+          THEN 1 ELSE 0 END) AS missing_recordings,
+        SUM(CASE
+          WHEN tm.expects_recording = 1
+            AND tm.canonical_attempt_uuid IS NOT NULL
+            AND r.abandoned_at_ms IS NOT NULL
+          THEN 1 ELSE 0 END) AS abandoned_recordings
+      FROM visits v
+      LEFT JOIN trial_manifest tm ON tm.visit_uuid = v.visit_uuid
+      LEFT JOIN recordings r ON r.attempt_uuid = tm.canonical_attempt_uuid
+      GROUP BY v.visit_uuid
+    ), segment_progress AS (
+      SELECT
+        s.visit_uuid,
+        s.segment,
+        s.segment_order,
+        s.status,
+        s.started_at_ms,
+        s.completed_at_ms,
+        COUNT(tm.trial_uuid) AS expected_trials,
+        SUM(CASE WHEN tm.canonical_attempt_uuid IS NOT NULL THEN 1 ELSE 0 END)
+          AS accepted_trials
+      FROM segments s
+      LEFT JOIN trial_manifest tm
+        ON tm.visit_uuid = s.visit_uuid AND tm.segment = s.segment
+      GROUP BY s.visit_uuid, s.segment
+    ), ranked_open_interruptions AS (
+      SELECT
+        pi.participant_uuid,
+        v.visit_type AS interruption_visit_type,
+        pi.mode AS interruption_mode,
+        pi.state AS interruption_state,
+        pi.requested_at_ms AS interruption_requested_at_ms,
+        ROW_NUMBER() OVER (
+          PARTITION BY pi.participant_uuid
+          ORDER BY pi.requested_at_ms DESC, pi.interruption_uuid DESC
+        ) AS interruption_rank
+      FROM participation_interruptions pi
+      JOIN visits v ON v.visit_uuid = pi.visit_uuid
+      WHERE pi.state IN ('requested', 'paused')
+    )
+    SELECT
+      p.numeric_id,
+      p.status AS participant_status,
+      p.created_at_ms AS participant_created_at_ms,
+      p.updated_at_ms AS participant_updated_at_ms,
+      vp.visit_type,
+      vp.status AS visit_status,
+      vp.target_at_ms,
+      vp.available_at_ms,
+      vp.first_started_at_ms,
+      vp.last_seen_at_ms,
+      vp.behavioral_completed_at_ms,
+      vp.finalized_at_ms,
+      vp.expected_trial_count,
+      vp.expected_recording_count,
+      vp.accepted_trials,
+      vp.accepted_recording_trials,
+      vp.uploaded_recordings,
+      vp.pending_recordings,
+      vp.missing_recordings,
+      vp.abandoned_recordings,
+      segment.segment,
+      segment.segment_order,
+      segment.status AS segment_status,
+      segment.started_at_ms AS segment_started_at_ms,
+      segment.completed_at_ms AS segment_completed_at_ms,
+      segment.expected_trials AS segment_expected_trials,
+      segment.accepted_trials AS segment_accepted_trials,
+      interruption.interruption_visit_type,
+      interruption.interruption_mode,
+      interruption.interruption_state,
+      interruption.interruption_requested_at_ms
+    FROM participants p
+    LEFT JOIN visit_progress vp ON vp.participant_uuid = p.participant_uuid
+    LEFT JOIN segment_progress segment ON segment.visit_uuid = vp.visit_uuid
+    LEFT JOIN ranked_open_interruptions interruption
+      ON interruption.participant_uuid = p.participant_uuid
+      AND interruption.interruption_rank = 1
+    ORDER BY p.numeric_id,
+      CASE vp.visit_type WHEN 'pre' THEN 1 WHEN 'immediate' THEN 2 ELSE 3 END,
+      segment.segment_order
+  `).all();
+
+  const participantsById = new Map();
+  for (const row of rows.results) {
+    const participantId = Number(row.numeric_id);
+    let record = participantsById.get(participantId);
+    if (!record) {
+      record = {
+        visitsByType: new Map(),
+        participant: {
+          participant_id: participantId,
+          status: row.participant_status,
+          created_at_ms: Number(row.participant_created_at_ms),
+          updated_at_ms: Number(row.participant_updated_at_ms),
+          open_interruption: row.interruption_state ? {
+            visit_type: row.interruption_visit_type,
+            mode: row.interruption_mode,
+            state: row.interruption_state,
+            requested_at_ms: Number(row.interruption_requested_at_ms),
+          } : null,
+          visits: [],
+        },
+      };
+      participantsById.set(participantId, record);
+    }
+    if (row.visit_type !== null && row.visit_type !== undefined) {
+      let visit = record.visitsByType.get(row.visit_type);
+      if (!visit) {
+        visit = visitFromParticipantRow(row);
+        record.visitsByType.set(row.visit_type, visit);
+      }
+      if (row.segment !== null && row.segment !== undefined) {
+        visit.segments.push(segmentFromParticipantRow(row));
+      }
+    }
+  }
+
+  const participants = [...participantsById.values()].map((record) => {
+    const { participant } = record;
+    participant.visits = [...record.visitsByType.values()];
+    participant.visits.sort(
+      (left, right) => VISIT_ORDER[left.visit_type] - VISIT_ORDER[right.visit_type],
+    );
+    for (const visit of participant.visits) {
+      visit.current_segment = deriveCurrentSegment(visit);
+    }
+    return {
+      ...participant,
+      next_action: participantNextAction(participant, serverNowMs),
+    };
+  });
+  return jsonResponse({ ok: true, server_now_ms: serverNowMs, participants });
+}
+
+export async function getParticipantStatus(request, env, participantIdInput) {
+  requireMethod(request, ["GET"]);
+  await requireAdmin(request, env);
   let numericId;
   try {
-    numericId = canonicalParticipantId(body.participant_id);
+    numericId = canonicalCollectionParticipantId(participantIdInput);
   } catch (error) {
     throw new ApiError(400, "invalid_participant_id", error.message);
   }
-  if (!env.RANDOMIZATION_SECRET || String(env.RANDOMIZATION_SECRET).length < 24) {
-    throw new ApiError(503, "randomization_unconfigured", "Randomization secret is not configured");
-  }
-  let participant = await findParticipantByNumericId(env.DB, numericId);
-  let created = false;
+  const participant = await env.DB.prepare(`
+    SELECT
+      p.numeric_id, p.status, p.created_at_ms, p.updated_at_ms
+    FROM participants p
+    WHERE p.numeric_id = ? LIMIT 1
+  `).bind(numericId).first();
   if (!participant) {
-    const design = await buildParticipantDesign({
-      participantId: numericId,
-      assignmentVersion: env.ASSIGNMENT_VERSION,
-      seedAlgorithmVersion: env.SEED_ALGORITHM_VERSION,
-      assetVersion: env.ASSET_VERSION,
-      randomizationSecret: env.RANDOMIZATION_SECRET,
-    });
-    const nowMs = Date.now();
-    const inserted = await insertParticipantDesign(env.DB, design, nowMs);
-    participant = await findParticipantByNumericId(env.DB, numericId);
-    created = !inserted.existing;
+    throw new ApiError(404, "participant_not_found", "Participant was not found");
   }
-  let invitation = null;
-  if (body.issue_pre_invitation !== false) {
-    invitation = await issueInvitation(env, request.url, participant.pre_visit_uuid, Date.now());
-  }
+  const visits = await env.DB.prepare(`
+    SELECT
+      v.visit_uuid, v.visit_type, v.status, v.target_at_ms, v.available_at_ms,
+      v.first_started_at_ms, v.last_seen_at_ms, v.behavioral_completed_at_ms,
+      v.finalized_at_ms, v.expected_trial_count, v.expected_recording_count,
+      SUM(CASE WHEN tm.canonical_attempt_uuid IS NOT NULL THEN 1 ELSE 0 END) AS accepted_trials,
+      SUM(CASE WHEN r.state = 'uploaded' THEN 1 ELSE 0 END) AS uploaded_recordings,
+      SUM(CASE WHEN r.state = 'pending' THEN 1 ELSE 0 END) AS pending_recordings
+    FROM visits v
+    LEFT JOIN trial_manifest tm ON tm.visit_uuid = v.visit_uuid
+    LEFT JOIN recordings r ON r.attempt_uuid = tm.canonical_attempt_uuid
+    WHERE v.participant_uuid = (
+      SELECT participant_uuid FROM participants WHERE numeric_id = ? LIMIT 1
+    )
+    GROUP BY v.visit_uuid
+    ORDER BY CASE v.visit_type WHEN 'pre' THEN 1 WHEN 'immediate' THEN 2 ELSE 3 END
+  `).bind(numericId).all();
   return jsonResponse({
     ok: true,
-    created,
     participant: {
       participant_id: numericId,
-      participant_uuid: participant.participant_uuid,
-      training_accent: participant.training_accent,
-      counterbalance_cell: Number(participant.counterbalance_cell),
-      pre_visit_id: participant.pre_visit_uuid,
-      immediate_visit_id: participant.immediate_visit_uuid,
-      delayed_visit_id: participant.delayed_visit_uuid,
-      participant_name_registered: Boolean(participant.participant_name_registered),
+      status: participant.status,
+      created_at_ms: participant.created_at_ms,
+      updated_at_ms: participant.updated_at_ms,
     },
-    invitation,
-  }, created ? 201 : 200);
-}
-
-export async function createInvitation(request, env, visitUuidInput) {
-  requireMethod(request, ["POST"]);
-  await requireAdmin(request, env);
-  const visitUuid = requireUuid(visitUuidInput, "visit_id");
-  const invitation = await issueInvitation(env, request.url, visitUuid, Date.now());
-  return jsonResponse({ ok: true, invitation }, 201);
-}
-
-export async function revokeInvitation(request, env, inviteUuidInput) {
-  requireMethod(request, ["POST"]);
-  await requireAdmin(request, env);
-  const inviteUuid = requireUuid(inviteUuidInput, "invite_id");
-  const nowMs = Date.now();
-  const openInterruption = await env.DB.prepare(`
-    SELECT pi.mode, pi.state
-    FROM invitations i
-    JOIN visits v ON v.visit_uuid = i.visit_uuid
-    JOIN participation_interruptions pi ON pi.participant_uuid = v.participant_uuid
-    WHERE i.invite_uuid = ? AND pi.state IN ('requested', 'paused')
-    LIMIT 1
-  `).bind(inviteUuid).first();
-  if (openInterruption) {
-    throw new ApiError(409, "participation_interruption_open", "Do not revoke an invitation while participant data are draining or paused");
-  }
-  const results = await env.DB.batch([
-    env.DB.prepare(`
-      UPDATE visits
-      SET active_session_epoch = active_session_epoch + 1, updated_at_ms = ?
-      WHERE visit_uuid = (
-        SELECT visit_uuid FROM invitations WHERE invite_uuid = ? AND status = 'active'
-      )
-        AND EXISTS (
-          SELECT 1 FROM sessions
-          WHERE sessions.visit_uuid = visits.visit_uuid AND sessions.status = 'active'
-        )
-    `).bind(nowMs, inviteUuid),
-    env.DB.prepare(`
-      UPDATE sessions SET status = 'superseded', superseded_at_ms = ?
-      WHERE status = 'active'
-        AND visit_uuid = (
-          SELECT visit_uuid FROM invitations WHERE invite_uuid = ? AND status = 'active'
-        )
-    `).bind(nowMs, inviteUuid),
-    env.DB.prepare(`
-      UPDATE invitations SET status = 'revoked', revoked_at_ms = ?
-      WHERE invite_uuid = ? AND status = 'active'
-    `).bind(nowMs, inviteUuid),
-  ]);
-  if (Number(results[2]?.meta?.changes ?? 0) === 0) {
-    throw new ApiError(404, "active_invitation_not_found", "Active invitation was not found");
-  }
-  return jsonResponse({ ok: true, invite_id: inviteUuid, revoked_at_ms: nowMs });
+    visits: visits.results.map((visit) => ({
+      visit_id: visit.visit_uuid,
+      visit_type: visit.visit_type,
+      status: visit.status,
+      target_at_ms: visit.target_at_ms,
+      available_at_ms: visit.available_at_ms,
+      first_started_at_ms: visit.first_started_at_ms,
+      last_seen_at_ms: visit.last_seen_at_ms,
+      behavioral_completed_at_ms: visit.behavioral_completed_at_ms,
+      finalized_at_ms: visit.finalized_at_ms,
+      accepted_trials: Number(visit.accepted_trials ?? 0),
+      expected_trials: Number(visit.expected_trial_count),
+      uploaded_recordings: Number(visit.uploaded_recordings ?? 0),
+      pending_recordings: Number(visit.pending_recordings ?? 0),
+      expected_recordings: Number(visit.expected_recording_count),
+    })),
+  });
 }
 
 export async function listDueDelayed(request, env) {

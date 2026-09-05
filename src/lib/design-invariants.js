@@ -1,18 +1,21 @@
 import {
   ACCENTS,
   LEARNING_PRACTICE_STIMULI,
-  LEARNING_PRACTICE_TALKERS,
+  L2_TO_L1_CONTROL_STIMULI,
+  L2_TO_L1_CONTROL_TALKER,
   L2_TO_L1_PRACTICE_STIMULI,
   MAIN_STIMULI,
   PICTURE_NAMING_PRACTICE_STIMULI,
-  PRACTICE_TEST_TALKERS,
+  PRACTICE_TALKER,
+  TEST_TALKERS,
   TRAINING_TALKERS,
 } from "./stimuli.js";
+import { maxRun } from "./randomization.js";
 
 const VISIT_EXPECTATIONS = Object.freeze({
-  pre: Object.freeze({ trials: 26, recordings: 26 }),
-  immediate: Object.freeze({ trials: 199, recordings: 53 }),
-  delayed: Object.freeze({ trials: 53, recordings: 53 }),
+  pre: Object.freeze({ trials: 26, recordings: 24 }),
+  immediate: Object.freeze({ trials: 205, recordings: 54 }),
+  delayed: Object.freeze({ trials: 59, recordings: 54 }),
 });
 
 const L2_STRATA = Object.freeze(
@@ -39,20 +42,15 @@ function sameUniqueMembers(values, expected) {
 }
 
 function checkPracticeStimuli(design) {
-  invariant(
-    new Set(Object.values(LEARNING_PRACTICE_TALKERS)).size === ACCENTS.length,
-    "Learning practice talker uniqueness",
-  );
+  invariant(Boolean(PRACTICE_TALKER), "practice talker presence");
   for (const accent of ACCENTS) {
-    const practiceTalker = LEARNING_PRACTICE_TALKERS[accent];
-    invariant(Boolean(practiceTalker), `${accent} Learning practice talker presence`);
     invariant(
-      !TRAINING_TALKERS[accent].includes(practiceTalker),
-      `${accent} Learning practice/main talker disjointness`,
+      !TRAINING_TALKERS[accent].includes(PRACTICE_TALKER),
+      `${accent} practice/main talker disjointness`,
     );
     invariant(
-      PRACTICE_TEST_TALKERS[accent] !== practiceTalker,
-      `${accent} Learning practice/test talker disjointness`,
+      TEST_TALKERS[accent] !== PRACTICE_TALKER,
+      `${accent} practice/main-test talker disjointness`,
     );
   }
   const sourcePools = [
@@ -60,38 +58,31 @@ function checkPracticeStimuli(design) {
     ["Learning practice", LEARNING_PRACTICE_STIMULI],
     ["Picture Naming practice", PICTURE_NAMING_PRACTICE_STIMULI],
     ["L2-to-L1 practice", L2_TO_L1_PRACTICE_STIMULI],
+    ["L2-to-L1 control", L2_TO_L1_CONTROL_STIMULI],
   ];
   for (const [label, items] of sourcePools) {
     invariant(new Set(items.map((item) => item.id)).size === items.length, `${label} source item ID uniqueness`);
     invariant(new Set(items.map((item) => item.word)).size === items.length, `${label} source word uniqueness`);
   }
-  const mainSourceIds = new Set(MAIN_STIMULI.map((item) => item.id));
-  const mainSourceWords = new Set(MAIN_STIMULI.map((item) => item.word));
-  const pictureSourceIds = new Set(PICTURE_NAMING_PRACTICE_STIMULI.map((item) => item.id));
-  const pictureSourceWords = new Set(PICTURE_NAMING_PRACTICE_STIMULI.map((item) => item.word));
-  for (const item of [
-    ...LEARNING_PRACTICE_STIMULI,
-    ...PICTURE_NAMING_PRACTICE_STIMULI,
-    ...L2_TO_L1_PRACTICE_STIMULI,
-  ]) {
-    invariant(!mainSourceIds.has(item.id), "practice/main source item ID disjointness");
-    invariant(!mainSourceWords.has(item.word), "practice/main source word disjointness");
-  }
-  const learningSourceIds = new Set(LEARNING_PRACTICE_STIMULI.map((item) => item.id));
-  const learningSourceWords = new Set(LEARNING_PRACTICE_STIMULI.map((item) => item.word));
-  for (const item of [...PICTURE_NAMING_PRACTICE_STIMULI, ...L2_TO_L1_PRACTICE_STIMULI]) {
-    invariant(!learningSourceIds.has(item.id), "practice task source item ID disjointness");
-    invariant(!learningSourceWords.has(item.word), "practice task source word disjointness");
-  }
-  for (const item of L2_TO_L1_PRACTICE_STIMULI) {
-    invariant(!pictureSourceIds.has(item.id), "practice task source item ID disjointness");
-    invariant(!pictureSourceWords.has(item.word), "practice task source word disjointness");
-  }
+  const sourceItems = sourcePools.flatMap(([, items]) => items);
+  invariant(new Set(sourceItems.map((item) => item.id)).size === sourceItems.length, "source pool item ID disjointness");
+  invariant(new Set(sourceItems.map((item) => item.word)).size === sourceItems.length, "source pool word disjointness");
 
   const visitTypes = Object.keys(VISIT_EXPECTATIONS);
   const allTrials = visitTypes.flatMap((visitType) => design[visitType].trials);
   const main = allTrials.filter((trial) => !trial.practice);
   const practice = allTrials.filter((trial) => trial.practice);
+  const spokenSegments = new Set(["picture_naming", "l2_to_l1"]);
+  const spokenPractice = practice.filter((trial) => spokenSegments.has(trial.segment));
+  const spokenMain = main.filter((trial) => spokenSegments.has(trial.segment));
+  invariant(
+    spokenPractice.every((trial) => trial.expectsRecording === false),
+    "spoken practice recording exclusion",
+  );
+  invariant(
+    spokenMain.every((trial) => trial.expectsRecording === true),
+    "spoken main recording requirement",
+  );
   for (const [field, label] of [
     ["itemId", "item ID"],
     ["itemWord", "word"],
@@ -136,15 +127,13 @@ function checkPracticeStimuli(design) {
         trial.listId === null && trial.listRank === null && trial.variability === null,
         `${visitType} Learning practice condition metadata`,
       );
-      invariant(trial.testAccent === null, `${visitType} Learning practice test-accent metadata`);
-      const practiceAccent = design.assignment.trainingAccent;
-      const practiceTalker = LEARNING_PRACTICE_TALKERS[practiceAccent];
-      invariant(trial.talkerId === practiceTalker, `${visitType} Learning practice accent-matched talker`);
+      invariant(trial.testAccent === "english", `${visitType} Learning practice test-accent metadata`);
+      invariant(trial.talkerId === PRACTICE_TALKER, `${visitType} Learning practice talker`);
       invariant(trial.imageKey === null, `${visitType} Learning practice image absence`);
       invariant(trial.protocol?.visualEmoji === item?.emoji, `${visitType} Learning practice emoji`);
       invariant(trial.protocol?.visualLabel === item?.gloss, `${visitType} Learning practice visual label`);
       invariant(
-        trial.audioKey === `stimuli/${trial.assetVersion}/learning-practice/${practiceAccent}/${practiceTalker}/${trial.itemWord}.wav`,
+        trial.audioKey === `stimuli/${trial.assetVersion}/learning-practice/english/${PRACTICE_TALKER}/${trial.itemWord}.wav`,
         `${visitType} Learning practice audio key category`,
       );
     }
@@ -158,6 +147,7 @@ function checkPracticeStimuli(design) {
     for (const trial of picture) {
       const item = pictureItemsById.get(trial.itemId);
       invariant(trial.excludeFromAnalysis === true, `${visitType} Picture Naming practice analysis exclusion`);
+      invariant(trial.expectsRecording === false, `${visitType} Picture Naming practice recording exclusion`);
       invariant(item?.word === trial.itemWord && item?.gloss === trial.itemGloss, `${visitType} Picture Naming practice item identity`);
       invariant(
         trial.listId === null && trial.listRank === null && trial.variability === null,
@@ -179,16 +169,14 @@ function checkPracticeStimuli(design) {
       ),
       `${visitType} L2-to-L1 practice item set`,
     );
-    const accentCounts = countBy(l2.map((trial) => trial.testAccent));
-    for (const accent of ACCENTS) {
-      invariant(
-        accentCounts.get(accent) === (visitType === "pre" ? undefined : 1),
-        `${visitType} L2-to-L1 practice ${accent} count`,
-      );
-    }
+    invariant(
+      l2.every((trial) => trial.testAccent === "english"),
+      `${visitType} L2-to-L1 practice English accent`,
+    );
     for (const trial of l2) {
       const item = l2ItemsById.get(trial.itemId);
       invariant(trial.excludeFromAnalysis === true, `${visitType} L2-to-L1 practice analysis exclusion`);
+      invariant(trial.expectsRecording === false, `${visitType} L2-to-L1 practice recording exclusion`);
       invariant(item?.word === trial.itemWord && item?.gloss === trial.itemGloss, `${visitType} L2-to-L1 practice item identity`);
       invariant(
         trial.listId === null && trial.listRank === null && trial.variability === null,
@@ -196,11 +184,11 @@ function checkPracticeStimuli(design) {
       );
       invariant(trial.imageKey === null, `${visitType} L2-to-L1 practice image absence`);
       invariant(
-        trial.talkerId === PRACTICE_TEST_TALKERS[trial.testAccent],
+        trial.talkerId === PRACTICE_TALKER,
         `${visitType} L2-to-L1 practice fixed talker`,
       );
       invariant(
-        trial.audioKey === `stimuli/${trial.assetVersion}/practice/${trial.testAccent}/${trial.talkerId}/${trial.itemWord}.wav`,
+        trial.audioKey === `stimuli/${trial.assetVersion}/practice/english/${PRACTICE_TALKER}/${trial.itemWord}.wav`,
         `${visitType} L2-to-L1 practice audio key category`,
       );
     }
@@ -210,7 +198,15 @@ function checkPracticeStimuli(design) {
 function mainTrials(design, visitType, segment) {
   const trials = design?.[visitType]?.trials;
   invariant(Array.isArray(trials), `${visitType} trials are missing`);
-  return trials.filter((trial) => trial.segment === segment && !trial.practice);
+  return trials.filter(
+    (trial) => trial.segment === segment && !trial.practice && !trial.excludeFromAnalysis,
+  );
+}
+
+function controlTrials(design, visitType) {
+  return design[visitType].trials.filter(
+    (trial) => trial.segment === "l2_to_l1" && !trial.practice && trial.excludeFromAnalysis,
+  );
 }
 
 function checkVisitCounts(design) {
@@ -225,19 +221,64 @@ function checkVisitCounts(design) {
   }
 }
 
-function checkHighTalkersByCycle(design) {
+function checkLearningSequence(design) {
   const learning = mainTrials(design, "immediate", "learning");
   invariant(learning.length === 144, "learning main trial count");
+  const conditionOrder = design.assignment.orderCell === 0 ? ["no", "high"] : ["high", "no"];
   for (let cycle = 1; cycle <= 6; cycle += 1) {
-    const cycleTrials = learning.filter((trial) => trial.cycle === cycle);
-    const highTrials = cycleTrials.filter((trial) => trial.variability === "high");
-    const talkerCounts = countBy(highTrials.map((trial) => trial.talkerId));
-    invariant(cycleTrials.length === 24, `learning cycle ${cycle} trial count`);
-    invariant(highTrials.length === 12, `learning cycle ${cycle} High trial count`);
-    invariant(talkerCounts.size === 6, `learning cycle ${cycle} High talker count`);
-    for (const [talkerId, count] of talkerCounts) {
-      invariant(typeof talkerId === "string" && talkerId.length > 0, `learning cycle ${cycle} High talker ID`);
-      invariant(count === 2, `learning cycle ${cycle} High frequency for ${talkerId}`);
+    const cycleTrials = learning.slice((cycle - 1) * 24, cycle * 24);
+    invariant(
+      cycleTrials.length === 24 && cycleTrials.every((trial) => trial.cycle === cycle),
+      `learning cycle ${cycle} trial count and contiguity`,
+    );
+    invariant(new Set(cycleTrials.map((trial) => trial.itemId)).size === 24, `learning cycle ${cycle} item uniqueness`);
+    invariant(
+      cycleTrials.slice(0, 12).every((trial) => trial.variability === conditionOrder[0])
+        && cycleTrials.slice(12).every((trial) => trial.variability === conditionOrder[1]),
+      `learning cycle ${cycle} counterbalanced condition order`,
+    );
+  }
+
+  const assignmentsByItem = new Map(design.itemAssignments.map((item) => [item.id, item]));
+  const expectedHighTalkers = TRAINING_TALKERS[design.assignment.trainingAccent];
+  for (const variability of ["no", "high"]) {
+    const conditionTrials = learning.filter((trial) => trial.variability === variability);
+    invariant(conditionTrials.length === 72, `learning ${variability} trial count`);
+    let referenceItemOrder = null;
+    for (let exposure = 1; exposure <= 6; exposure += 1) {
+      const block = conditionTrials.filter((trial) => trial.exposure === exposure);
+      const itemOrder = block.map((trial) => trial.itemId);
+      invariant(block.length === 12, `learning ${variability} exposure ${exposure} trial count`);
+      invariant(new Set(itemOrder).size === 12, `learning ${variability} exposure ${exposure} item uniqueness`);
+      invariant(
+        block.every((trial, index) => trial.cycle === exposure && trial.protocol?.blockIndex === index + 1),
+        `learning ${variability} exposure ${exposure} block metadata`,
+      );
+      if (referenceItemOrder === null) referenceItemOrder = itemOrder;
+      else {
+        invariant(
+          itemOrder.join("\u001f") === referenceItemOrder.join("\u001f"),
+          `learning ${variability} exposure ${exposure} fixed item order`,
+        );
+      }
+    }
+
+    for (const itemId of referenceItemOrder) {
+      const itemTrials = conditionTrials.filter((trial) => trial.itemId === itemId);
+      const assignment = assignmentsByItem.get(itemId);
+      invariant(itemTrials.length === 6, `learning ${variability} item ${itemId} exposure count`);
+      invariant(assignment?.variability === variability, `learning ${variability} item ${itemId} assignment`);
+      if (variability === "no") {
+        invariant(
+          itemTrials.every((trial) => trial.talkerId === design.assignment.noTalkerId),
+          `learning No fixed talker for item ${itemId}`,
+        );
+      } else {
+        invariant(
+          sameUniqueMembers(itemTrials.map((trial) => trial.talkerId), expectedHighTalkers),
+          `learning High talker permutation for item ${itemId}`,
+        );
+      }
     }
   }
 }
@@ -296,6 +337,49 @@ function checkL2TimepointMapping(design) {
   }
 }
 
+function checkL2Controls(design) {
+  const itemsById = new Map(L2_TO_L1_CONTROL_STIMULI.map((item) => [item.id, item]));
+  invariant(controlTrials(design, "pre").length === 0, "pre L2-to-L1 control absence");
+  for (const visitType of ["immediate", "delayed"]) {
+    const controls = controlTrials(design, visitType);
+    invariant(
+      sameUniqueMembers(controls.map((trial) => trial.itemId), [...itemsById.keys()]),
+      `${visitType} L2-to-L1 control item set`,
+    );
+    for (const trial of controls) {
+      const item = itemsById.get(trial.itemId);
+      invariant(item?.word === trial.itemWord && item?.gloss === trial.itemGloss, `${visitType} L2-to-L1 control identity`);
+      invariant(trial.practice === false && trial.excludeFromAnalysis === true, `${visitType} L2-to-L1 control analysis exclusion`);
+      invariant(trial.expectsRecording === true, `${visitType} L2-to-L1 control recording requirement`);
+      invariant(
+        trial.listId === null && trial.listRank === null && trial.variability === null,
+        `${visitType} L2-to-L1 control condition metadata`,
+      );
+      invariant(
+        trial.testAccent === "english" && trial.talkerId === L2_TO_L1_CONTROL_TALKER,
+        `${visitType} L2-to-L1 control talker`,
+      );
+      invariant(trial.protocol?.controlType === "untrained_easy", `${visitType} L2-to-L1 control type`);
+      invariant(
+        trial.audioKey === `stimuli/${trial.assetVersion}/test-control/english/${L2_TO_L1_CONTROL_TALKER}/${trial.itemWord}.wav`,
+        `${visitType} L2-to-L1 control audio key`,
+      );
+    }
+    const l2Sequence = design[visitType].trials.filter(
+      (trial) => trial.segment === "l2_to_l1" && !trial.practice,
+    );
+    invariant(
+      maxRun(l2Sequence.map((trial) => trial.testAccent)) <= 2,
+      `${visitType} main/control L2-to-L1 accent run`,
+    );
+  }
+  const delayedByItem = new Map(controlTrials(design, "delayed").map((trial) => [trial.itemId, trial]));
+  for (const immediate of controlTrials(design, "immediate")) {
+    const delayed = delayedByItem.get(immediate.itemId);
+    invariant(delayed?.audioKey === immediate.audioKey, `L2-to-L1 control audio mapping for item ${immediate.itemId}`);
+  }
+}
+
 export function samePositionCount(first, second) {
   invariant(Array.isArray(first) && Array.isArray(second), "same-position inputs must be arrays");
   invariant(first.length === second.length, "same-position inputs must have equal length");
@@ -305,10 +389,11 @@ export function samePositionCount(first, second) {
 export function assertParticipantDesignInvariants(design) {
   checkVisitCounts(design);
   checkPracticeStimuli(design);
-  checkHighTalkersByCycle(design);
+  checkLearningSequence(design);
   for (const visitType of ["pre", "immediate", "delayed"]) checkPictureNamingPairs(design, visitType);
   for (const visitType of ["immediate", "delayed"]) checkL2Miniblocks(design, visitType);
   checkL2TimepointMapping(design);
+  checkL2Controls(design);
 
   const immediatePictureNaming = mainTrials(design, "immediate", "picture_naming");
   const delayedPictureNaming = mainTrials(design, "delayed", "picture_naming");

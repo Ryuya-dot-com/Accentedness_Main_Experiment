@@ -1,5 +1,9 @@
 import { requireSession } from "./lib/auth.js";
-import { getVisitForInvitation, getVisitState } from "./lib/db.js";
+import {
+  findParticipantByNumericId,
+  getVisitState,
+  insertParticipantDesign,
+} from "./lib/db.js";
 import {
   deterministicUuid,
   randomToken,
@@ -16,13 +20,12 @@ import {
   requireUuid,
 } from "./lib/http.js";
 import { collectionConfiguration, placeholderAssetsAllowed } from "./lib/config.js";
-import { canonicalParticipantId } from "./lib/manifest.js";
+import {
+  buildParticipantDesign,
+  canonicalCollectionParticipantId,
+} from "./lib/manifest.js";
 import { DELAY_MINIMUM_MS } from "./lib/protocol.js";
 import { crc32 } from "./lib/stored-zip.js";
-import {
-  ParticipantNameError,
-  normalizeParticipantName,
-} from "./lib/participant-identity.js";
 
 const VALID_VISITS = new Set(["pre", "immediate", "delayed"]);
 const VALID_EVENT_TYPES = new Set([
@@ -158,8 +161,10 @@ function assertParticipantCollectionConfigured(env) {
   if (!collection.blocked) return;
   throw new ApiError(
     503,
-    "production_collection_blocked",
-    "Production participation requires real assets, an explicit supported test-token policy, and independent admin/randomization secrets",
+    collection.production ? "production_collection_blocked" : "development_participants_blocked",
+    collection.production
+      ? "Production participation requires real assets, an explicit supported test-token policy, and independent admin/randomization secrets"
+      : "Development participant access is disabled; use researcher ID 999",
     {
       asset_version: env.ASSET_VERSION,
       assignment_version: env.ASSIGNMENT_VERSION,
@@ -170,6 +175,7 @@ function assertParticipantCollectionConfigured(env) {
       admin_authentication_ready: collection.adminAuthenticationReady,
       randomization_ready: collection.randomizationReady,
       secrets_independent: collection.secretsIndependent,
+      development_participants_allowed: collection.developmentParticipantsAllowed,
     },
   );
 }
@@ -513,245 +519,346 @@ function validateResponsePayload(payload, attempt, nowMs) {
   return clientSavedPerfMs;
 }
 
-async function participantInvitation(body, env) {
-  const rawToken = String(body.token ?? "");
-  if (!/^[A-Za-z0-9_-]{40,100}$/u.test(rawToken)) {
-    throw new ApiError(400, "invalid_invitation", "Invitation token format is invalid");
+function expectedVisitType(body) {
+  const value = String(body.expected_visit_type ?? "");
+  if (!VALID_VISITS.has(value)) {
+    throw new ApiError(
+      400,
+      "invalid_visit_type",
+      "Expected visit type must be pre, immediate, or delayed",
+    );
   }
-  const expectedVisitType = String(body.expected_visit_type ?? "");
-  if (!VALID_VISITS.has(expectedVisitType)) {
-    throw new ApiError(400, "invalid_visit_type", "Expected visit type must be pre, immediate, or delayed");
-  }
-  const tokenHash = await sha256Hex(rawToken);
-  const invitation = await getVisitForInvitation(env.DB, tokenHash);
-  if (!invitation || invitation.invitation_status !== "active") {
-    throw new ApiError(404, "invitation_not_found", "Invitation is invalid or has been revoked");
-  }
-  if (invitation.visit_type !== expectedVisitType) {
-    throw new ApiError(409, "wrong_visit_route", "This invitation belongs to a different visit", {
-      expected: invitation.visit_type,
-    });
-  }
-  let submittedParticipantId;
+  return value;
+}
+
+function collectionParticipantId(value) {
   try {
-    submittedParticipantId = canonicalParticipantId(body.participant_id);
-  } catch {
-    submittedParticipantId = null;
-  }
-  if (submittedParticipantId !== Number(invitation.numeric_id)) {
+    return canonicalCollectionParticipantId(value);
+  } catch (error) {
+    const reserved = String(value ?? "").trim() === "999";
     throw new ApiError(
-      409,
-      "participant_access_mismatch",
-      "The invitation link and participant ID could not be confirmed",
+      400,
+      reserved ? "reserved_test_participant_id" : "invalid_participant_id",
+      reserved
+        ? "Participant ID 999 is reserved for non-persistent researcher testing"
+        : error.message,
     );
   }
-  if (["completed", "withdrawn"].includes(invitation.visit_status)) {
-    throw new ApiError(409, "visit_closed", "This visit is already closed", { status: invitation.visit_status });
-  }
-  const nowMs = Date.now();
-  if (invitation.available_at_ms !== null && Number(invitation.available_at_ms) > nowMs) {
-    throw new ApiError(403, "visit_not_available", "This visit is not available yet", {
-      available_at_ms: invitation.available_at_ms,
-      server_now_ms: nowMs,
-    });
-  }
-  return { invitation, submittedParticipantId, nowMs };
 }
 
-export async function previewParticipantName(request, env) {
-  requireMethod(request, ["POST"]);
-  assertParticipantCollectionConfigured(env);
-  const body = await readJson(request);
-  const { invitation } = await participantInvitation(body, env);
-  if (typeof invitation.participant_name === "string") {
-    return jsonResponse({
-      ok: true,
-      name_action: "confirm",
-      participant_name: invitation.participant_name,
-    });
-  }
-  if (invitation.visit_type !== "pre") {
+async function commonEntryRow(db, numericId, visitType) {
+  return db.prepare(`
+    SELECT
+      v.visit_uuid, v.visit_type, v.status AS visit_status,
+      v.target_at_ms, v.available_at_ms, v.first_started_at_ms,
+      v.behavioral_completed_at_ms, v.finalized_at_ms,
+      v.active_session_epoch, v.participant_uuid, v.manifest_hash,
+      p.numeric_id, p.assignment_version, p.asset_version,
+      p.status AS participant_status,
+      (SELECT prerequisite.status FROM visits prerequisite
+       WHERE prerequisite.participant_uuid = p.participant_uuid
+         AND prerequisite.visit_type = 'pre' LIMIT 1) AS pre_status,
+      (SELECT prerequisite.status FROM visits prerequisite
+       WHERE prerequisite.participant_uuid = p.participant_uuid
+         AND prerequisite.visit_type = 'immediate' LIMIT 1) AS immediate_status
+    FROM participants p
+    JOIN visits v ON v.participant_uuid = p.participant_uuid
+      AND v.visit_type = ?
+    WHERE p.numeric_id = ?
+    LIMIT 1
+  `).bind(visitType, numericId).first();
+}
+
+function assertCommonEntryAvailable(entry, nowMs) {
+  if (!entry) {
     throw new ApiError(
-      409,
-      "participant_name_not_registered",
-      "A participant name must be registered during Pre before a later visit",
+      404,
+      "participant_not_registered",
+      "The participant must start the Pre task first",
     );
   }
-  return jsonResponse({ ok: true, name_action: "register" });
+  if (entry.participant_status === "withdrawn") {
+    throw new ApiError(409, "participant_withdrawn", "Participation has ended");
+  }
+  if (["completed", "withdrawn"].includes(entry.visit_status)) {
+    throw new ApiError(
+      409,
+      "visit_closed",
+      "This visit is already closed",
+      { status: entry.visit_status },
+    );
+  }
+  if (entry.visit_type === "immediate" && entry.pre_status !== "completed") {
+    throw new ApiError(
+      409,
+      "pre_not_completed",
+      "The Pre task must be completed before the main experiment",
+    );
+  }
+  if (entry.visit_type === "delayed") {
+    if (entry.immediate_status !== "completed") {
+      throw new ApiError(
+        409,
+        "immediate_not_completed",
+        "The immediate visit must be completed before the delayed visit",
+      );
+    }
+    if (entry.available_at_ms === null) {
+      throw new ApiError(
+        409,
+        "delayed_not_scheduled",
+        "The delayed visit has not been scheduled",
+      );
+    }
+  }
+  if (entry.available_at_ms !== null && Number(entry.available_at_ms) > nowMs) {
+    throw new ApiError(
+      403,
+      "visit_not_available",
+      "This visit is not available yet",
+      {
+        available_at_ms: entry.available_at_ms,
+        server_now_ms: nowMs,
+      },
+    );
+  }
 }
 
-export async function redeemInvitation(request, env) {
-  requireMethod(request, ["POST"]);
-  assertParticipantCollectionConfigured(env);
-  const body = await readJson(request);
-  const clientInstanceId = requireUuid(body.client_instance_id, "client_instance_id");
-  const { invitation, nowMs } = await participantInvitation(body, env);
-  const nameAction = String(body.name_action ?? "");
-  if (!new Set(["register", "confirm"]).has(nameAction)) {
-    throw new ApiError(422, "invalid_name_action", "name_action must be register or confirm");
+function assertIdOnlyParticipantAccess(body) {
+  for (const field of ["participant_name", "participant_name_confirmed", "name_action"]) {
+    if (Object.hasOwn(body, field)) {
+      throw new ApiError(422, "participant_name_not_accepted", "Participant names are not collected");
+    }
   }
-  if (body.participant_name_confirmed !== true) {
+  if (body.participant_id_confirmed !== true) {
     throw new ApiError(
       422,
-      "participant_name_confirmation_required",
-      "The displayed participant name must be confirmed before the visit starts",
+      "participant_id_confirmation_required",
+      "Confirm the displayed participant ID before the visit starts",
     );
   }
-  const nameAlreadyRegistered = typeof invitation.participant_name === "string";
-  let participantName = null;
-  if (nameAlreadyRegistered) {
-    if (nameAction !== "confirm") {
-      throw new ApiError(
-        409,
-        "participant_name_state_changed",
-        "The participant name state changed; preview the invitation again",
-      );
-    }
-    if (Object.hasOwn(body, "participant_name")) {
-      throw new ApiError(
-        422,
-        "participant_name_not_accepted",
-        "A registered participant name must be confirmed without resubmitting it",
-      );
-    }
-  } else {
-    if (invitation.visit_type !== "pre") {
-      throw new ApiError(
-        409,
-        "participant_name_not_registered",
-        "A participant name must be registered during Pre before a later visit",
-      );
-    }
-    if (nameAction !== "register") {
-      throw new ApiError(
-        409,
-        "participant_name_state_changed",
-        "The participant name state changed; preview the invitation again",
-      );
-    }
-    try {
-      participantName = normalizeParticipantName(body.participant_name);
-    } catch (error) {
-      if (!(error instanceof ParticipantNameError)) throw error;
-      throw new ApiError(422, error.code, error.message);
-    }
+}
+
+async function startCommonEntrySession(env, entry, body, nowMs) {
+  const interruption = await env.DB.prepare(`
+    SELECT interruption_uuid, visit_uuid, mode, state, requested_at_ms
+    FROM participation_interruptions
+    WHERE participant_uuid = ? AND state IN ('requested', 'paused')
+    ORDER BY requested_at_ms DESC LIMIT 1
+  `).bind(entry.participant_uuid).first();
+  if (interruption && interruption.visit_uuid !== entry.visit_uuid) {
+    throw new ApiError(
+      409,
+      "participation_interruption_open",
+      "Finish the pending pause or participation-ending operation before reopening a visit",
+      interruption ? { mode: interruption.mode, state: interruption.state } : null,
+    );
   }
 
-  const priorEpoch = Number(invitation.active_session_epoch);
+  const recoveringRequestedInterruption = interruption?.state === "requested";
+  let inviteUuid;
+  let generation = null;
+  let invitationTokenHash = null;
+  if (recoveringRequestedInterruption) {
+    const activeInvitation = await env.DB.prepare(`
+      SELECT invite_uuid FROM invitations
+      WHERE visit_uuid = ? AND status = 'active'
+      ORDER BY generation DESC LIMIT 1
+    `).bind(entry.visit_uuid).first();
+    if (!activeInvitation) {
+      throw new ApiError(
+        409,
+        "participation_recovery_unavailable",
+        "The pending participation operation has no active recovery session",
+      );
+    }
+    inviteUuid = activeInvitation.invite_uuid;
+  } else {
+    const generationRow = await env.DB.prepare(`
+      SELECT COALESCE(MAX(generation), 0) + 1 AS generation
+      FROM invitations WHERE visit_uuid = ?
+    `).bind(entry.visit_uuid).first();
+    generation = Number(generationRow?.generation ?? 1);
+    inviteUuid = crypto.randomUUID();
+    invitationTokenHash = await sha256Hex(randomToken(32));
+  }
+  const priorEpoch = Number(entry.active_session_epoch);
   const epoch = priorEpoch + 1;
   const sessionUuid = crypto.randomUUID();
   const rawSessionToken = randomToken(32);
   const sessionTokenHash = await sha256Hex(rawSessionToken);
   const expiresAtMs = nowMs + numericEnv(env, "SESSION_TTL_SECONDS", 43_200) * 1000;
-  try {
-    const statements = [];
-    if (!nameAlreadyRegistered) {
-      statements.push(
-        env.DB.prepare(`
-          INSERT INTO participant_names (
-            participant_uuid, registered_visit_uuid, participant_name, registered_at_ms
-          ) VALUES (?, ?, ?, ?)
-        `).bind(
-          invitation.participant_uuid,
-          invitation.visit_uuid,
-          participantName,
-          nowMs,
-        ),
-        env.DB.prepare(`
-          INSERT INTO audit_log (
-            audit_uuid, actor_type, action, participant_uuid, visit_uuid,
-            server_at_ms, details_json
-          ) VALUES (?, 'participant', 'participant_name_registered', ?, ?, ?, ?)
-        `).bind(
-          crypto.randomUUID(),
-          invitation.participant_uuid,
-          invitation.visit_uuid,
-          nowMs,
-          stableJson({
-            source: "first_pre_invitation_redeem",
-          }),
-        ),
-      );
-    }
-    statements.push(
-      env.DB.prepare(`
-        UPDATE visits
-        SET active_session_epoch = ?,
-            status = CASE WHEN status IN ('planned', 'scheduled', 'invited') THEN 'started' ELSE status END,
-            first_started_at_ms = COALESCE(first_started_at_ms, ?),
-            last_seen_at_ms = ?, updated_at_ms = ?
-        WHERE visit_uuid = ? AND active_session_epoch = ?
-          AND status NOT IN ('completed', 'withdrawn')
-      `).bind(epoch, nowMs, nowMs, nowMs, invitation.visit_uuid, priorEpoch),
-      env.DB.prepare(`
-        UPDATE sessions
-        SET status = 'superseded', superseded_at_ms = ?
-        WHERE visit_uuid = ? AND status = 'active'
-      `).bind(nowMs, invitation.visit_uuid),
-      env.DB.prepare(`
-        INSERT INTO sessions (
-          session_uuid, visit_uuid, invite_uuid, epoch, client_instance_id, token_hash,
-          status, started_at_ms, last_seen_at_ms, expires_at_ms
-        ) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)
-      `).bind(
-        sessionUuid,
-        invitation.visit_uuid,
-        invitation.invite_uuid,
-        epoch,
-        clientInstanceId,
-        sessionTokenHash,
-        nowMs,
-        nowMs,
-        expiresAtMs,
-      ),
-      env.DB.prepare(`
-        UPDATE invitations
-        SET first_redeemed_at_ms = COALESCE(first_redeemed_at_ms, ?),
-            last_redeemed_at_ms = ?, redeem_count = redeem_count + 1
-        WHERE invite_uuid = ? AND status = 'active'
-      `).bind(nowMs, nowMs, invitation.invite_uuid),
-      env.DB.prepare(`
-        INSERT INTO audit_log (
-          audit_uuid, actor_type, action, participant_uuid, visit_uuid, server_at_ms, details_json
-        ) VALUES (?, 'participant', 'invitation_redeemed', ?, ?, ?, ?)
-      `).bind(
-        crypto.randomUUID(),
-        invitation.participant_uuid,
-        invitation.visit_uuid,
-        nowMs,
-        stableJson({ epoch, client_instance_id: clientInstanceId }),
-      ),
-    );
+  const clientInstanceId = requireUuid(body.client_instance_id, "client_instance_id");
+  const statements = [];
+  let resumedAtMs = null;
+  if (interruption?.state === "paused") {
+    resumedAtMs = Math.max(Number(interruption.requested_at_ms), nowMs - 1);
     statements.push(
       env.DB.prepare(`
         UPDATE participation_interruptions
         SET state = 'resumed', resumed_at_ms = ?
-        WHERE visit_uuid = ? AND mode = 'pause' AND state = 'paused'
-      `).bind(nowMs, invitation.visit_uuid),
+        WHERE interruption_uuid = ? AND visit_uuid = ?
+          AND mode = 'pause' AND state = 'paused'
+      `).bind(resumedAtMs, interruption.interruption_uuid, entry.visit_uuid),
+    );
+  }
+  statements.push(
+    env.DB.prepare(`
+      UPDATE visits
+      SET active_session_epoch = ?,
+          status = CASE WHEN status IN ('planned', 'scheduled', 'invited') THEN 'started' ELSE status END,
+          first_started_at_ms = COALESCE(first_started_at_ms, ?),
+          last_seen_at_ms = ?, updated_at_ms = ?
+      WHERE visit_uuid = ? AND active_session_epoch = ?
+        AND status NOT IN ('completed', 'withdrawn')
+    `).bind(epoch, nowMs, nowMs, nowMs, entry.visit_uuid, priorEpoch),
+    env.DB.prepare(`
+      UPDATE sessions
+      SET status = 'superseded', superseded_at_ms = ?
+      WHERE visit_uuid = ? AND status = 'active'
+    `).bind(nowMs, entry.visit_uuid),
+  );
+  if (!recoveringRequestedInterruption) {
+    statements.push(
+      env.DB.prepare(`
+        UPDATE invitations
+        SET status = 'closed', closed_at_ms = ?
+        WHERE visit_uuid = ? AND status = 'active'
+      `).bind(nowMs, entry.visit_uuid),
+      env.DB.prepare(`
+        INSERT INTO invitations (
+          invite_uuid, visit_uuid, generation, token_hash, status, issued_at_ms,
+          first_redeemed_at_ms, last_redeemed_at_ms, redeem_count
+        ) VALUES (?, ?, ?, ?, 'active', ?, ?, ?, 1)
+      `).bind(
+        inviteUuid,
+        entry.visit_uuid,
+        generation,
+        invitationTokenHash,
+        nowMs,
+        nowMs,
+        nowMs,
+      ),
+    );
+  }
+  statements.push(
+    env.DB.prepare(`
+      INSERT INTO sessions (
+        session_uuid, visit_uuid, invite_uuid, epoch, client_instance_id, token_hash,
+        status, started_at_ms, last_seen_at_ms, expires_at_ms
+      ) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)
+    `).bind(
+      sessionUuid,
+      entry.visit_uuid,
+      inviteUuid,
+      epoch,
+      clientInstanceId,
+      sessionTokenHash,
+      nowMs,
+      nowMs,
+      expiresAtMs,
+    ),
+    env.DB.prepare(`
+      INSERT INTO audit_log (
+        audit_uuid, actor_type, action, participant_uuid, visit_uuid, server_at_ms, details_json
+      ) VALUES (?, 'participant', 'participant_access_started', ?, ?, ?, ?)
+    `).bind(
+      crypto.randomUUID(),
+      entry.participant_uuid,
+      entry.visit_uuid,
+      nowMs,
+      stableJson({
+        epoch,
+        client_instance_id: clientInstanceId,
+        source: recoveringRequestedInterruption
+          ? "common_entry_interruption_recovery"
+          : "common_entry",
+      }),
+    ),
+  );
+  if (interruption?.state === "paused") {
+    statements.push(
       env.DB.prepare(`
         INSERT INTO audit_log (
           audit_uuid, actor_type, action, participant_uuid, visit_uuid,
           server_at_ms, details_json
         )
-        SELECT ?, 'participant', 'participation_resumed', ?, ?, ?,
-               json_object('interruption_uuid', interruption_uuid)
-        FROM participation_interruptions
-        WHERE visit_uuid = ? AND mode = 'pause' AND state = 'resumed'
-          AND resumed_at_ms = ?
+        SELECT ?, 'participant', 'participation_resumed', ?, ?, ?, ?
+        WHERE EXISTS (
+          SELECT 1 FROM participation_interruptions
+          WHERE interruption_uuid = ? AND visit_uuid = ?
+            AND state = 'resumed' AND resumed_at_ms = ?
+        )
       `).bind(
         crypto.randomUUID(),
-        invitation.participant_uuid,
-        invitation.visit_uuid,
+        entry.participant_uuid,
+        entry.visit_uuid,
         nowMs,
-        invitation.visit_uuid,
-        nowMs,
+        stableJson({
+          interruption_uuid: interruption.interruption_uuid,
+          source: "common_entry",
+        }),
+        interruption.interruption_uuid,
+        entry.visit_uuid,
+        resumedAtMs,
       ),
     );
+  }
+  try {
     await env.DB.batch(statements);
   } catch {
-    throw new ApiError(409, "invitation_redeem_conflict", "The invitation changed while it was being redeemed; retry the invitation link");
+    throw new ApiError(
+      409,
+      "participant_access_start_conflict",
+      "The participant access state changed; try again",
+    );
   }
-  const session = await env.DB.prepare(`
+  const session = await sessionByUuid(env.DB, sessionUuid);
+  const state = await getVisitState(env.DB, session);
+  return jsonResponse({ ok: true, session_token: rawSessionToken, ...state });
+}
+
+export async function startCommonParticipantVisit(request, env) {
+  requireMethod(request, ["POST"]);
+  assertParticipantCollectionConfigured(env);
+  const body = await readJson(request);
+  assertIdOnlyParticipantAccess(body);
+  const visitType = expectedVisitType(body);
+  const numericId = collectionParticipantId(body.participant_id);
+  requireUuid(body.client_instance_id, "client_instance_id");
+  let participant = await findParticipantByNumericId(env.DB, numericId);
+  if (!participant) {
+    if (visitType !== "pre") {
+      throw new ApiError(
+        404,
+        "participant_not_registered",
+        "Complete the Pre task before opening a later task",
+      );
+    }
+    if (!env.RANDOMIZATION_SECRET || String(env.RANDOMIZATION_SECRET).length < 24) {
+      throw new ApiError(503, "randomization_unconfigured", "Randomization secret is not configured");
+    }
+    const design = await buildParticipantDesign({
+      participantId: numericId,
+      assignmentVersion: env.ASSIGNMENT_VERSION,
+      seedAlgorithmVersion: env.SEED_ALGORITHM_VERSION,
+      assetVersion: env.ASSET_VERSION,
+      randomizationSecret: env.RANDOMIZATION_SECRET,
+    });
+    await insertParticipantDesign(env.DB, design, Date.now(), {
+      actorType: "participant",
+      source: "first_pre_common_entry",
+    });
+    participant = await findParticipantByNumericId(env.DB, numericId);
+  }
+  const nowMs = Date.now();
+  const entry = await commonEntryRow(env.DB, numericId, visitType);
+  assertCommonEntryAvailable(entry, nowMs);
+  return startCommonEntrySession(env, entry, body, nowMs);
+}
+
+async function sessionByUuid(db, sessionUuid) {
+  return db.prepare(`
     SELECT
       s.session_uuid, s.visit_uuid, s.epoch, s.client_instance_id,
       s.status AS session_status, s.expires_at_ms,
@@ -767,8 +874,6 @@ export async function redeemInvitation(request, env) {
     JOIN participants p ON p.participant_uuid = v.participant_uuid
     WHERE s.session_uuid = ? LIMIT 1
   `).bind(sessionUuid).first();
-  const state = await getVisitState(env.DB, session);
-  return jsonResponse({ ok: true, session_token: rawSessionToken, ...state });
 }
 
 export async function sessionState(request, env) {

@@ -2,6 +2,8 @@ import { env, exports } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { sha256Hex } from "../src/lib/crypto.js";
 import { crc32 } from "../src/lib/stored-zip.js";
+import { seedVisit, silenceWav } from "./helpers/participant-copy-fixture.js";
+import { participantCopyFilename } from "../src/routes-participant-copy.js";
 
 const ORIGIN = "https://experiment.test";
 const ADMIN_TOKEN = "test-admin-token-that-is-long-and-private";
@@ -23,20 +25,12 @@ async function jsonRequest(path, options = {}) {
   return { response, json: await response.json() };
 }
 
-function invitationToken(url) {
-  return new URLSearchParams(new URL(url).hash.slice(1)).get("t");
-}
-
-async function redeem(invitationUrl, visitType) {
-  const nameAction = visitType === "pre" ? "register" : "confirm";
-  const result = await jsonRequest("/api/invitations/redeem", {
+async function startVisit(participantId, visitType) {
+  const result = await jsonRequest("/api/participant-access/start", {
     method: "POST",
     body: {
-      token: invitationToken(invitationUrl),
-      participant_id: 901,
-      name_action: nameAction,
-      participant_name_confirmed: true,
-      ...(nameAction === "register" ? { participant_name: "Test Participant" } : {}),
+      participant_id: participantId,
+      participant_id_confirmed: true,
       client_instance_id: crypto.randomUUID(),
       expected_visit_type: visitType,
     },
@@ -45,103 +39,16 @@ async function redeem(invitationUrl, visitType) {
   return result.json;
 }
 
-function seededLearningPayload(segmentOrdinal) {
-  const visualOnsetPerfMs = 1_000 + segmentOrdinal * 10;
-  const visualOnsetContextS = 10 + segmentOrdinal;
-  return {
-    task: "learning",
-    client_response_saved_perf_ms: visualOnsetPerfMs + 5_100,
-    visual_mode: "image",
-    visual_onset_perf_ms: visualOnsetPerfMs,
-    visual_onset_context_s: visualOnsetContextS,
-    clock_anchor: {
-      context_time_s: visualOnsetContextS,
-      performance_time_ms: visualOnsetPerfMs,
-      performance_time_origin_ms: 1_000_000,
-    },
-    target_onset_perf_ms: visualOnsetPerfMs - 2,
-    onset_late_ms: 2,
-    visual_deadline_perf_ms: visualOnsetPerfMs + 5_000,
-    visual_hidden_perf_ms: visualOnsetPerfMs + 5_001,
-    audio_scheduled_context_s: visualOnsetContextS + 0.75,
-    audio_scheduled_end_context_s: visualOnsetContextS + 1.25,
-    audio_duration_s: 0.5,
-    audio_ended_perf_ms: visualOnsetPerfMs + 1_251,
-    trial_end_perf_ms: visualOnsetPerfMs + 5_001,
-    visibility_interrupted: false,
-    page_visibility_at_end: "visible",
-  };
-}
-
-async function seedVisit(visitUuid, sessionUuid, visitType, { skipTrialUuid = null } = {}) {
-  const trialResult = await env.DB.prepare(`
-    SELECT trial_uuid, segment, segment_ordinal, expects_recording
-    FROM trial_manifest WHERE visit_uuid = ? ORDER BY ordinal
-  `).bind(visitUuid).all();
-  const statements = [];
-  for (const trial of trialResult.results) {
-    if (trial.trial_uuid === skipTrialUuid) continue;
-    const attemptUuid = crypto.randomUUID();
-    const payload = JSON.stringify(trial.segment === "learning"
-      ? seededLearningPayload(Number(trial.segment_ordinal))
-      : { task: trial.segment, timing_marker: `${visitType}-${trial.segment_ordinal}` });
-    const payloadHash = await sha256Hex(payload);
-    statements.push(
-      env.DB.prepare(`
-        INSERT INTO trial_attempts (
-          attempt_uuid, trial_uuid, attempt_no, session_uuid, start_key, response_key,
-          state, repeated_after_interruption, extra_exposure, server_started_at_ms,
-          server_received_at_ms, payload_hash, payload_json
-        ) VALUES (?, ?, 1, ?, ?, ?, 'response_saved', 0, 0, ?, ?, ?, ?)
-      `).bind(
-        attemptUuid,
-        trial.trial_uuid,
-        sessionUuid,
-        crypto.randomUUID(),
-        crypto.randomUUID(),
-        Date.now() - 100,
-        Date.now(),
-        payloadHash,
-        payload,
-      ),
-      env.DB.prepare(`
-        UPDATE trial_manifest SET canonical_attempt_uuid = ? WHERE trial_uuid = ?
-      `).bind(attemptUuid, trial.trial_uuid),
-    );
-    if (Number(trial.expects_recording) === 1) {
-      const bytes = new Uint8Array([82, 73, 70, 70, Number(trial.segment_ordinal) & 0xff]);
-      const sha256 = await sha256Hex(bytes);
-      const r2Key = `recordings/participant-copy-test/${attemptUuid}.wav`;
-      const object = await env.RECORDINGS.put(r2Key, bytes, {
-        httpMetadata: { contentType: "audio/wav", cacheControl: "private, no-store" },
-        customMetadata: { sha256 },
-      });
-      statements.push(env.DB.prepare(`
-        INSERT INTO recordings (
-          attempt_uuid, r2_key, state, sha256, etag, byte_count, mime_type,
-          sample_rate_hz, sample_count, duration_seconds, crc32,
-          analysis_start_seconds, analyzed_sample_count, rms_amplitude,
-          peak_amplitude, clipping_ratio, received_at_ms, uploaded_at_ms, updated_at_ms
-        ) VALUES (?, ?, 'uploaded', ?, ?, ?, 'audio/wav', 48000, 1, 0.00002, ?, 0, 1, 0, 0, 0, ?, ?, ?)
-      `).bind(
-        attemptUuid,
-        r2Key,
-        sha256,
-        object.etag,
-        bytes.byteLength,
-        crc32(bytes),
-        Date.now(),
-        Date.now(),
-        Date.now(),
-      ));
-    }
-  }
-  for (let index = 0; index < statements.length; index += 50) {
-    await env.DB.batch(statements.slice(index, index + 50));
-  }
-  await env.DB.prepare(`
-    UPDATE segments SET status = 'completed', completed_at_ms = ? WHERE visit_uuid = ?
-  `).bind(Date.now(), visitUuid).run();
+async function createParticipant(participantId) {
+  const start = await startVisit(participantId, "pre");
+  const rows = await env.DB.prepare(`
+    SELECT p.participant_uuid, v.visit_uuid, v.visit_type
+    FROM participants p JOIN visits v ON v.participant_uuid = p.participant_uuid
+    WHERE p.numeric_id = ?
+  `).bind(participantId).all();
+  const participant = { participant_id: participantId, participant_uuid: rows.results[0].participant_uuid };
+  for (const visit of rows.results) participant[`${visit.visit_type}_visit_id`] = visit.visit_uuid;
+  return { participant, start };
 }
 
 function validPictureNamingPayload() {
@@ -190,32 +97,6 @@ function validPictureNamingPayload() {
       clipping_ratio: 0,
     },
   };
-}
-
-function silenceWav() {
-  const sampleRate = 48_000;
-  const sampleCount = 480_000;
-  const bytes = new Uint8Array(44 + sampleCount * 2);
-  const view = new DataView(bytes.buffer);
-  const ascii = (offset, value) => {
-    for (let index = 0; index < value.length; index += 1) {
-      view.setUint8(offset + index, value.charCodeAt(index));
-    }
-  };
-  ascii(0, "RIFF");
-  view.setUint32(4, 36 + sampleCount * 2, true);
-  ascii(8, "WAVE");
-  ascii(12, "fmt ");
-  view.setUint32(16, 16, true);
-  view.setUint16(20, 1, true);
-  view.setUint16(22, 1, true);
-  view.setUint32(24, sampleRate, true);
-  view.setUint32(28, sampleRate * 2, true);
-  view.setUint16(32, 2, true);
-  view.setUint16(34, 16, true);
-  ascii(36, "data");
-  view.setUint32(40, sampleCount * 2, true);
-  return bytes;
 }
 
 function parseStoredEntries(archiveBytes) {
@@ -282,44 +163,64 @@ async function completeVisit(token) {
   expect(response.status).toBe(200);
 }
 
+async function expectParticipantCopy(token, visitTypes, responseCount, recordingCount) {
+  // Query parameters cannot expand the authenticated session's copy scope.
+  const response = await request("/api/visit/results.zip?visit_type=delayed&participant_id=902", { token });
+  expect(response.status).toBe(200);
+  const archive = await response.arrayBuffer();
+  expect(archive.byteLength).toBe(Number(response.headers.get("Content-Length")));
+  const entries = parseStoredEntries(archive);
+  const document = JSON.parse(new TextDecoder().decode(entries.get("responses.json")));
+  expect(document.participant).toEqual({ participant_id: 901 });
+  expect(response.headers.get("Content-Disposition"))
+    .toBe(`attachment; filename="${participantCopyFilename(901, visitTypes.at(-1), document.generated_at_ms)}"`);
+  expect(document.visits.map((visit) => visit.visit_type)).toEqual(visitTypes);
+  expect(document.responses).toHaveLength(responseCount);
+  expect(document.responses.every((row) => visitTypes.includes(row.visit_type) && !row.research)).toBe(true);
+  expect([...entries.keys()].filter((name) => name.endsWith(".wav"))).toHaveLength(recordingCount);
+  expect(entries.size).toBe(recordingCount + 2);
+  expect(new TextDecoder().decode(entries.get("README.txt"))).toContain("録音を聞き返したりせず");
+  const text = new TextDecoder().decode(archive);
+  expect(text).not.toMatch(/casket|english|chinese|japanese|test_f|design\.json|item_assignments|learning_trials/iu);
+  expect(text).not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/iu);
+  return document;
+}
+
 describe("on-demand result ZIP", () => {
-  it("is participant-accessible only after delayed completion and contains all three visits without labels or UUIDs", async () => {
-    const createdResult = await jsonRequest("/api/admin/participants", {
-      method: "POST",
-      token: ADMIN_TOKEN,
-      body: { participant_id: 901 },
-    });
-    expect(createdResult.response.status).toBe(201);
-    const created = createdResult.json;
+  it.each(["pre", "immediate", "delayed"])("names the %s ZIP with the numeric ID and generation date in Japan", (visitType) => {
+    expect(participantCopyFilename(901, visitType, Date.parse("2026-09-05T14:59:59.999Z")))
+      .toBe(`accentedness_p901_${visitType}_20260905.zip`);
+    expect(participantCopyFilename(1, visitType, Date.parse("2026-09-05T15:00:00.000Z")))
+      .toBe(`accentedness_p1_${visitType}_20260906.zip`);
+  });
 
-    const pre = await redeem(created.invitation.invitation_url, "pre");
+  it("copies only the completed session's visit prefix without labels or UUIDs", async () => {
+    const created = await createParticipant(901);
+
+    const pre = created.start;
     const preForbidden = await request("/api/visit/results.zip", { token: pre.session_token });
-    expect(preForbidden.status).toBe(403);
-    await seedVisit(created.participant.pre_visit_id, pre.session.session_id, "pre");
+    expect(preForbidden.status).toBe(409);
+    await seedVisit(env, created.participant.pre_visit_id, pre.session.session_id, "pre");
     await completeVisit(pre.session_token);
+    const preCopy = await expectParticipantCopy(pre.session_token, ["pre"], 26, 24);
 
-    const immediateInvitation = await jsonRequest(
-      `/api/admin/visits/${created.participant.immediate_visit_id}/invitations`,
-      { method: "POST", token: ADMIN_TOKEN, body: {} },
-    );
-    const immediate = await redeem(immediateInvitation.json.invitation.invitation_url, "immediate");
-    await seedVisit(
+    const immediate = await startVisit(901, "immediate");
+    await seedVisit(env,
       created.participant.immediate_visit_id,
       immediate.session.session_id,
       "immediate",
     );
+    const immediateForbidden = await request("/api/visit/results.zip", { token: immediate.session_token });
+    expect(immediateForbidden.status).toBe(409);
     await completeVisit(immediate.session_token);
+    const immediateCopy = await expectParticipantCopy(immediate.session_token, ["pre", "immediate"], 231, 78);
     await env.DB.prepare(`
       UPDATE visits SET target_at_ms = 1, available_at_ms = 1 WHERE visit_uuid = ?
     `).bind(created.participant.delayed_visit_id).run();
 
-    const delayedInvitation = await jsonRequest(
-      `/api/admin/visits/${created.participant.delayed_visit_id}/invitations`,
-      { method: "POST", token: ADMIN_TOKEN, body: {} },
-    );
-    const delayed = await redeem(delayedInvitation.json.invitation.invitation_url, "delayed");
-    const routeUploadedTrial = delayed.manifest[0];
-    await seedVisit(
+    const delayed = await startVisit(901, "delayed");
+    const routeUploadedTrial = delayed.manifest.find((trial) => trial.expects_recording);
+    await seedVisit(env,
       created.participant.delayed_visit_id,
       delayed.session.session_id,
       "delayed",
@@ -375,11 +276,17 @@ describe("on-demand result ZIP", () => {
     const downloaded = await request("/api/visit/results.zip", { token: delayed.session_token });
     expect(downloaded.status).toBe(200);
     expect(downloaded.headers.get("Content-Type")).toBe("application/zip");
-    expect(downloaded.headers.get("Content-Disposition")).toContain("accentedness_results.zip");
     const archive = await downloaded.arrayBuffer();
     expect(archive.byteLength).toBe(Number(downloaded.headers.get("Content-Length")));
     const entries = parseStoredEntries(archive);
     const responses = JSON.parse(new TextDecoder().decode(entries.get("responses.json")));
+    expect(downloaded.headers.get("Content-Disposition"))
+      .toBe(`attachment; filename="${participantCopyFilename(901, "delayed", responses.generated_at_ms)}"`);
+    expect(responses.participant).toEqual({ participant_id: 901 });
+    expect(new TextDecoder().decode(entries.get("README.txt")))
+      .toContain("参加者IDと録音が含まれます");
+    expect(new TextDecoder().decode(entries.get("README.txt")))
+      .toContain("見えない場所へ移動するか削除");
     expect(responses.visits.map((visit) => visit.visit_type)).toEqual([
       "pre",
       "immediate",
@@ -391,11 +298,30 @@ describe("on-demand result ZIP", () => {
     expect(responses.copy_purpose).toBe("participant_local_copy");
     expect(responses.responses.every((row) => row.research === undefined)).toBe(true);
     expect(entries.has("design.json")).toBe(false);
+    expect(entries.has("item_assignments.csv")).toBe(false);
     expect(entries.has("learning_trials.csv")).toBe(false);
-    expect([...entries.keys()]).toContain("recordings/pre/picture_naming/recording_001.wav");
-    expect([...entries.keys()]).toContain("recordings/immediate/l2_to_l1/recording_001.wav");
-    expect([...entries.keys()]).toContain("recordings/delayed/l2_to_l1/recording_001.wav");
-    expect(entries.get("recordings/delayed/picture_naming/recording_001.wav"))
+    const participantWavEntries = [...entries.keys()].filter((name) => name.endsWith(".wav"));
+    expect(participantWavEntries).toHaveLength(132);
+    expect(responses.visits.map((visit) => ({
+      visit_type: visit.visit_type,
+      copied_recording_count: visit.copied_recording_count,
+    }))).toEqual([
+      { visit_type: "pre", copied_recording_count: 24 },
+      { visit_type: "immediate", copied_recording_count: 54 },
+      { visit_type: "delayed", copied_recording_count: 54 },
+    ]);
+    const participantSpokenPractice = responses.responses.filter(
+      (row) => row.practice && row.segment !== "learning",
+    );
+    expect(participantSpokenPractice)
+      .toHaveLength(12);
+    expect(participantSpokenPractice
+      .every((row) => row.recording === null && row.expects_recording === false))
+      .toBe(true);
+    expect([...entries.keys()]).toContain("recordings/pre/picture_naming/recording_003.wav");
+    expect([...entries.keys()]).toContain("recordings/immediate/l2_to_l1/recording_004.wav");
+    expect([...entries.keys()]).toContain("recordings/delayed/l2_to_l1/recording_004.wav");
+    expect(entries.get("recordings/delayed/picture_naming/recording_003.wav"))
       .toEqual(routeUploadedWav);
     const routeUploadedRecording = await env.DB.prepare(`
       SELECT crc32, sha256, byte_count FROM recordings WHERE attempt_uuid = ?
@@ -409,6 +335,14 @@ describe("on-demand result ZIP", () => {
     expect(exposedText).not.toMatch(/casket|english|chinese|japanese|test_f/iu);
     expect(exposedText).not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/iu);
 
+    // Later visits must not expand an earlier completed session's archive.
+    const preCopyAgain = await expectParticipantCopy(pre.session_token, ["pre"], 26, 24);
+    const immediateCopyAgain = await expectParticipantCopy(immediate.session_token, ["pre", "immediate"], 231, 78);
+    expect(preCopyAgain.responses).toEqual(preCopy.responses);
+    expect(preCopyAgain.visits).toEqual(preCopy.visits);
+    expect(immediateCopyAgain.responses).toEqual(immediateCopy.responses);
+    expect(immediateCopyAgain.visits).toEqual(immediateCopy.visits);
+
     const adminDownload = await request(
       `/api/admin/participants/${created.participant.participant_id}/results.zip`,
       { token: ADMIN_TOKEN },
@@ -420,6 +354,14 @@ describe("on-demand result ZIP", () => {
     const adminResponses = JSON.parse(
       new TextDecoder().decode(adminEntries.get("responses.json")),
     );
+    const adminWavEntries = [...adminEntries.keys()].filter((name) => name.endsWith(".wav"));
+    expect(adminWavEntries).toHaveLength(132);
+    expect(new Set(adminWavEntries)).toEqual(new Set(participantWavEntries));
+    expect(adminResponses.responses.filter(
+      (row) => row.practice && row.segment !== "learning",
+    )
+      .every((row) => row.recording === null && row.expects_recording === false))
+      .toBe(true);
     expect(adminResponses.copy_purpose).toBe("research_admin_copy");
     expect(adminResponses.responses[0].research).toMatchObject({
       trial_id: expect.stringMatching(/^[0-9a-f-]{36}$/u),
@@ -486,6 +428,121 @@ describe("on-demand result ZIP", () => {
     });
     expect(JSON.stringify(design)).not.toMatch(/participant_name|root_seed/iu);
 
+    const itemAssignmentsCsvBytes = adminEntries.get("item_assignments.csv");
+    expect([...itemAssignmentsCsvBytes.slice(0, 3)]).toEqual([0xef, 0xbb, 0xbf]);
+    const itemAssignmentsCsv = new TextDecoder().decode(itemAssignmentsCsvBytes);
+    const itemAssignmentLines = itemAssignmentsCsv.trimEnd().split("\r\n");
+    const itemAssignmentHeaders = itemAssignmentLines[0].split(",");
+    expect(itemAssignmentHeaders).toEqual([
+      "participant_id",
+      "training_accent",
+      "counterbalance_cell",
+      "list_cell",
+      "order_cell",
+      "talker_cell",
+      "item_id",
+      "item_word",
+      "item_gloss",
+      "list_id",
+      "list_rank",
+      "variability",
+      "no_training_talker_id",
+      "test_accent",
+      "test_talker_id",
+      "assignment_version",
+      "asset_version",
+    ]);
+    const itemAssignmentRecords = itemAssignmentLines.slice(1).map((line) => {
+      const values = line.split(",");
+      return Object.fromEntries(
+        itemAssignmentHeaders.map((header, index) => [header, values[index]]),
+      );
+    });
+    const storedItemAssignments = await env.DB.prepare(`
+      SELECT ia.item_id, ia.list_id, ia.list_rank, ia.variability,
+             ia.no_talker_id, ia.test_accent, ia.test_talker_id, ia.asset_version,
+             tm.item_word, tm.item_gloss,
+             tm.list_id AS manifest_list_id,
+             tm.list_rank AS manifest_list_rank,
+             tm.variability AS manifest_variability
+      FROM participants p
+      JOIN item_assignments ia ON ia.participant_uuid = p.participant_uuid
+      JOIN visits v
+        ON v.participant_uuid = p.participant_uuid
+       AND v.visit_type = 'immediate'
+      JOIN trial_manifest tm
+        ON tm.visit_uuid = v.visit_uuid
+       AND tm.segment = 'learning'
+       AND tm.practice = 0
+       AND tm.exposure = 1
+       AND tm.item_id = ia.item_id
+      WHERE p.numeric_id = 901
+      ORDER BY ia.item_id
+    `).all();
+    expect(itemAssignmentRecords).toHaveLength(24);
+    expect(itemAssignmentRecords.map((record) => Number(record.item_id)))
+      .toEqual(Array.from({ length: 24 }, (_, index) => index + 1));
+    expect(storedItemAssignments.results).toHaveLength(24);
+    itemAssignmentRecords.forEach((record, index) => {
+      const stored = storedItemAssignments.results[index];
+      expect(Number(stored.manifest_list_id)).toBe(Number(stored.list_id));
+      expect(Number(stored.manifest_list_rank)).toBe(Number(stored.list_rank));
+      expect(stored.manifest_variability).toBe(stored.variability);
+      expect(record).toMatchObject({
+        participant_id: "901",
+        training_accent: storedParticipantDesign.training_accent,
+        counterbalance_cell: String(storedParticipantDesign.counterbalance_cell),
+        list_cell: String(storedParticipantDesign.list_cell),
+        order_cell: String(storedParticipantDesign.order_cell),
+        talker_cell: String(storedParticipantDesign.talker_cell),
+        item_id: String(stored.item_id),
+        item_word: stored.item_word,
+        item_gloss: stored.item_gloss,
+        list_id: String(stored.list_id),
+        list_rank: String(stored.list_rank),
+        variability: stored.variability,
+        no_training_talker_id: stored.variability === "no" ? stored.no_talker_id : "",
+        test_accent: stored.test_accent,
+        test_talker_id: stored.test_talker_id,
+        assignment_version: storedParticipantDesign.assignment_version,
+        asset_version: stored.asset_version,
+      });
+    });
+    for (const listId of ["1", "2"]) {
+      expect(itemAssignmentRecords.filter((record) => record.list_id === listId))
+        .toHaveLength(12);
+    }
+    const noRows = itemAssignmentRecords.filter((record) => record.variability === "no");
+    const highRows = itemAssignmentRecords.filter((record) => record.variability === "high");
+    expect(noRows).toHaveLength(12);
+    expect(highRows).toHaveLength(12);
+    expect(noRows.every((record) => record.no_training_talker_id !== "")).toBe(true);
+    expect(new Set(noRows.map((record) => record.no_training_talker_id)).size).toBe(1);
+    expect(highRows.every((record) => record.no_training_talker_id === "")).toBe(true);
+    const expectedTestTalkers = {
+      english: "E6_Audio",
+      chinese: "C11_Natural",
+      japanese: "J5_Natural",
+    };
+    for (const accent of ["english", "chinese", "japanese"]) {
+      expect(itemAssignmentRecords.filter((record) => record.test_accent === accent))
+        .toHaveLength(8);
+      expect(itemAssignmentRecords
+        .filter((record) => record.test_accent === accent)
+        .every((record) => record.test_talker_id === expectedTestTalkers[accent]))
+        .toBe(true);
+      for (const variability of ["no", "high"]) {
+        expect(itemAssignmentRecords.filter((record) => (
+          record.variability === variability && record.test_accent === accent
+        ))).toHaveLength(4);
+      }
+    }
+    expect(itemAssignmentsCsv)
+      .not.toMatch(/participant_name|root_seed|_uuid|r2_key|Test Participant/iu);
+    expect(itemAssignmentsCsv)
+      .not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/iu);
+    expect(itemAssignmentsCsv).not.toContain("recordings/");
+
     const learningCsvBytes = adminEntries.get("learning_trials.csv");
     expect([...learningCsvBytes.slice(0, 3)]).toEqual([0xef, 0xbb, 0xbf]);
     const learningCsv = new TextDecoder().decode(learningCsvBytes);
@@ -530,15 +587,34 @@ describe("on-demand result ZIP", () => {
       runtime_visibility_interrupted: "false",
     });
     expect(learningCsv).not.toMatch(/participant_name|root_seed|Test Participant/iu);
+
+    // A completed flag alone cannot bypass missing data in an earlier included visit.
+    const recording = await env.DB.prepare(`
+      SELECT r.attempt_uuid FROM recordings r
+      JOIN trial_attempts ta ON ta.attempt_uuid = r.attempt_uuid
+      JOIN trial_manifest tm ON tm.trial_uuid = ta.trial_uuid
+      WHERE tm.visit_uuid = ? LIMIT 1
+    `).bind(created.participant.pre_visit_id).first();
+    await env.DB.prepare("UPDATE recordings SET state = 'pending' WHERE attempt_uuid = ?")
+      .bind(recording.attempt_uuid).run();
+    for (const state of [pre, immediate, delayed]) {
+      const incomplete = await jsonRequest("/api/visit/results.zip", { token: state.session_token });
+      expect(incomplete.response.status).toBe(409);
+      expect(incomplete.json.error.code).toBe("participant_copy_not_ready");
+    }
+    await env.DB.prepare("UPDATE recordings SET state = 'uploaded' WHERE attempt_uuid = ?")
+      .bind(recording.attempt_uuid).run();
+    await env.DB.prepare("UPDATE visits SET finalized_at_ms = NULL WHERE visit_uuid = ?")
+      .bind(created.participant.pre_visit_id).run();
+    for (const state of [pre, immediate, delayed]) {
+      const incomplete = await jsonRequest("/api/visit/results.zip", { token: state.session_token });
+      expect(incomplete.response.status).toBe(409);
+      expect(incomplete.json.error.code).toBe("participant_copy_visits_incomplete");
+    }
   }, 60_000);
 
   it("exports every planned learning trial before responses and leaves canonical runtime fields blank", async () => {
-    const createdResult = await jsonRequest("/api/admin/participants", {
-      method: "POST",
-      token: ADMIN_TOKEN,
-      body: { participant_id: 902 },
-    });
-    expect(createdResult.response.status).toBe(201);
+    await createParticipant(902);
 
     const adminDownload = await request(
       "/api/admin/participants/902/results.zip",
@@ -548,6 +624,13 @@ describe("on-demand result ZIP", () => {
     const entries = parseStoredEntries(await adminDownload.arrayBuffer());
     const responses = JSON.parse(new TextDecoder().decode(entries.get("responses.json")));
     expect(responses.responses).toEqual([]);
+
+    const itemAssignmentsCsvBytes = entries.get("item_assignments.csv");
+    expect([...itemAssignmentsCsvBytes.slice(0, 3)]).toEqual([0xef, 0xbb, 0xbf]);
+    const itemAssignmentLines = new TextDecoder().decode(itemAssignmentsCsvBytes)
+      .trimEnd()
+      .split("\r\n");
+    expect(itemAssignmentLines).toHaveLength(25);
 
     const learningCsv = new TextDecoder().decode(entries.get("learning_trials.csv"));
     const learningLines = learningCsv.trimEnd().split("\r\n");
@@ -565,8 +648,10 @@ describe("on-demand result ZIP", () => {
     expect(records.every((record) => record.runtime_noncanonical_attempt_count === "0")).toBe(true);
   });
 
-  it("requires admin authentication for researcher downloads", async () => {
+  it("requires authentication for both download routes", async () => {
     const response = await request("/api/admin/participants/901/results.zip");
     expect(response.status).toBe(401);
+    expect((await request("/api/visit/results.zip")).status).toBe(401);
+    expect((await request("/api/visit/results.zip", { token: "invalid-token" })).status).toBe(401);
   });
 });

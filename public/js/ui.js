@@ -9,8 +9,6 @@ function canonicalPositiveInteger(value) {
   return Number.isSafeInteger(numeric) && numeric > 0 ? numeric : null;
 }
 
-const RESEARCHER_TEST_SAVE_STATE = "保存・送信なし";
-
 export function countdownState(deadlinePerfMs, durationMs, nowPerfMs) {
   const safeDurationMs = Math.max(1, Number(durationMs) || 0);
   const remainingMs = Math.max(0, Number(deadlinePerfMs) - Number(nowPerfMs));
@@ -24,18 +22,14 @@ export function countdownState(deadlinePerfMs, durationMs, nowPerfMs) {
 export function progressState(label, completedInput, totalInput, { inProgress = false } = {}) {
   const total = Math.max(0, Math.trunc(Number(totalInput) || 0));
   const completed = Math.max(0, Math.min(total, Math.trunc(Number(completedInput) || 0)));
-  const position = inProgress && completed < total ? completed + 1 : completed;
+  const percent = total > 0 ? completed / total * 100 : 0;
+  const roundedPercent = Math.round(percent);
   return {
     completed,
     total,
-    position,
-    percent: total > 0 ? completed / total * 100 : 0,
-    labelText: inProgress && completed < total
-      ? `${label}　${position}/${total} 回目`
-      : `${label}　${completed}/${total} 完了`,
-    valueText: inProgress && completed < total
-      ? `${label}、現在 ${position}/${total} 回目、完了 ${completed}/${total}`
-      : `${label}、完了 ${completed}/${total}`,
+    inProgress: Boolean(inProgress && completed < total),
+    percent,
+    valueText: `進み具合 ${roundedPercent}パーセント`,
   };
 }
 
@@ -55,28 +49,41 @@ export function participantSupportCode(error) {
   return `E-${(hash >>> 0).toString(36).toUpperCase().padStart(7, "0")}`;
 }
 
-export const PARTICIPANT_COPY_DELIVERY = Object.freeze({
-  DIRECT_WRITE_CONFIRMED: "direct_write_confirmed",
-  DOWNLOAD_STARTED: "download_started",
-});
+export function visitAvailabilityMessage(error) {
+  const availableAt = error?.details?.available_at_ms;
+  const serverNow = error?.details?.server_now_ms;
+  if (error?.status !== 403 || error?.code !== "visit_not_available"
+      || !Number.isSafeInteger(availableAt) || !Number.isSafeInteger(serverNow)
+      || serverNow <= 0 || availableAt <= serverNow) return null;
+  // Round display up only; the server remains authoritative for admission.
+  const date = new Date(Math.ceil(availableAt / 1000) * 1000);
+  if (!Number.isFinite(date.getTime())) return null;
+  const dateLabel = new Intl.DateTimeFormat("ja-JP", {
+    timeZone: "Asia/Tokyo",
+    year: "numeric", month: "long", day: "numeric", weekday: "long",
+    hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23",
+  }).format(date);
+  return `この課題は、次の日時以降に開始できます。\n\n${dateLabel}（日本時間）以降\n\nこのページは閉じてかまいません。上の日時以降に、担当者から届いた同じリンクを開き、同じ参加者IDを入力してください。開いたままでも自動では始まりません。`;
+}
 
 export function participantCopyCompletionMessage(
-  delivery,
-  { alreadyCompleted = false, filename = "accentedness_results.zip" } = {},
+  { visitType = "delayed", alreadyCompleted = false, filename = "accentedness_results.zip" } = {},
 ) {
   const safeFilename = /^[A-Za-z0-9._-]+\.zip$/u.test(String(filename))
     ? String(filename)
     : "accentedness_results.zip";
+  const label = { pre: "事前テスト", immediate: "直後テスト", delayed: "遅延テスト" }[visitType];
   const completion = alreadyCompleted
-    ? "遅延テストは終了しています。回答と録音も保存済みです。"
-    : "遅延テストは終了し、回答と録音は保存されました。";
-  if (delivery === PARTICIPANT_COPY_DELIVERY.DIRECT_WRITE_CONFIRMED) {
-    return `${completion} 選択した保存先へのZIP書き込みも完了しました。必要なら下のボタンからもう一度保存できます。ご協力ありがとうございました。`;
-  }
-  if (delivery === PARTICIPANT_COPY_DELIVERY.DOWNLOAD_STARTED) {
-    return `${completion} ZIPのダウンロードを開始しました。Chromeのダウンロード一覧を開き、「${safeFilename}」が最後までダウンロードされていることを確認してください。確認できない場合は、下のリンクからもう一度ダウンロードを開始できます。ご協力ありがとうございました。`;
-  }
-  throw new TypeError("参加者向けZIPの受け渡し状態を確認できませんでした。");
+    ? `${label}は終了しています。回答と録音も保存済みです。`
+    : `${label}は終了し、回答と録音は保存されました。`;
+  const nextStep = visitType === "pre"
+    ? "単語学習のリンクは担当者から別途お送りします。"
+    : visitType === "immediate"
+      ? "遅延テストの案内をお待ちください。"
+      : "ご協力ありがとうございました。";
+  const storageGuidance = visitType === "delayed" ? ""
+    : "すべての課題が終わるまで、ZIPを開いたり録音を聞き返したりせずに保管してください。";
+  return `${completion}${nextStep}\n\nここまでの回答と録音を含むZIPの自動ダウンロードを開始しました。Chromeのダウンロード一覧で「${safeFilename}」の完了を確認してください。開始されない・確認できない場合は、下のリンクからもう一度ダウンロードできます。\n\n${storageGuidance}ZIPには参加者IDと録音が含まれます。他の人へ共有しないでください。共用パソコンでは、担当者の案内に従い他の利用者に見えない場所へ移動するか削除してください。`;
 }
 
 export function validateBrowserEnvironment({ microphone, persistentStorage = true }) {
@@ -101,30 +108,31 @@ export function validateBrowserEnvironment({ microphone, persistentStorage = tru
 }
 
 const PARTICIPANT_ERROR_MESSAGES = Object.freeze({
-  invitation_required: "このページからは課題を開始できません。担当者から届いた招待リンクを開いてください。",
-  invalid_invitation: "招待リンクの形式を確認できません。担当者から届いたリンクを開き直してください。",
-  invitation_not_found: "この招待リンクは無効または再発行済みです。担当者へ新しいリンクを依頼してください。",
-  wrong_visit_route: "このリンクと開いている課題が一致しません。ページを閉じ、担当者から届いたリンクを開き直してください。",
-  participant_name_not_registered: "Preで氏名登録が完了していません。このまま進まず担当者へ連絡してください。",
-  invalid_name_preview: "氏名確認情報を読み込めませんでした。このまま進まず担当者へ連絡してください。",
+  participant_not_registered: "この参加者IDの事前課題を確認できません。先に事前課題を実施してください。",
+  pre_not_completed: "先に事前課題を完了してください。完了済みの場合は担当者へ連絡してください。",
+  immediate_not_completed: "先に本実験と直後の課題を完了してください。完了済みの場合は担当者へ連絡してください。",
+  delayed_not_scheduled: "後日の課題の受付時刻を確認できません。担当者へ連絡してください。",
+  reserved_test_participant_id: "この参加者IDは使用できません。担当者から案内されたIDを確認してください。",
   visit_closed: "この課題はすでに終了しています。担当者に知らせてください。",
   visit_not_available: "この課題はまだ開始できません。担当者の案内後に開き直してください。",
-  invalid_session: "この画面の情報を確認できません。担当者から届いたリンクを開き直してください。",
-  session_expired: "この画面の有効時間が切れました。回答期限ではありません。担当者から届いた同じ招待リンクを開き直すと、続きから再開できます。",
+  invalid_session: "この画面の情報を確認できません。同じ課題ページを開き直してください。",
+  session_expired: "この画面の有効時間が切れました。回答期限ではありません。同じ課題ページを開き直すと、続きから再開できます。",
   session_superseded: "別のタブまたは再開操作により、この画面は無効になりました。この画面では続行しないでください。",
+  development_participants_blocked: "この開発用画面では通常の参加者IDを使用できません。担当者に知らせてください。",
   production_collection_blocked: "実験環境が本番開始条件を満たしていないため停止しました。担当者に知らせてください。",
   placeholder_assets_disabled: "本番刺激を確認できないため停止しました。担当者に知らせてください。",
   stimulus_asset_missing: "必要な刺激を読み込めないため停止しました。担当者に知らせてください。",
-  participant_copy_before_completion: "遅延テストの完了を確認できません。担当者に知らせてください。",
-  participant_copy_visits_incomplete: "3回分の結果ファイルを準備できません。担当者に知らせてください。",
+  participant_copy_before_completion: "今回の課題の完了を確認できません。担当者に知らせてください。",
+  participant_copy_visits_incomplete: "ここまでの課題の完了を確認できず、結果ファイルを準備できません。担当者に知らせてください。",
   participant_copy_not_ready: "結果ファイルに必要な回答または録音を確認できません。担当者に知らせてください。",
   participant_copy_session_expired: "実験データは保存済みです。このパソコン向けZIPをもう一度取得する場合は、担当者へ依頼してください。",
-  participation_termination_pending: "参加終了の処理中です。同じ招待リンクを開き直して、終了確認を続けてください。新しい問題は開始されません。",
+  participation_termination_pending: "参加終了の処理中です。同じ課題ページを開き直して、終了確認を続けてください。新しい問題は開始されません。",
   local_outbox_inconsistent: "保存待ちの回答を確認できません。このまま課題を再開せず、お問い合わせ番号を担当者へ知らせてください。",
   local_recording_missing: "前回の回答に対応する録音を確認できないため、この課題は完了しておらず、安全に再開もできません。参加終了を選ばず停止しました。このまま課題を再開せず、お問い合わせ番号を担当者へ知らせてください。",
   local_recording_unreadable: "前回の回答に対応する録音を読み出せないため、この課題は完了しておらず、安全に再開もできません。参加終了を選ばず停止しました。このまま課題を再開せず、お問い合わせ番号を担当者へ知らせてください。",
-  request_timeout: "通信がタイムアウトしました。ネットワーク接続を確認し、担当者から届いた同じ招待リンクを開き直してください。",
+  request_timeout: "通信がタイムアウトしました。ネットワーク接続を確認し、同じ課題ページを開き直してください。",
   session_storage_unavailable: "このブラウザでは回答を一時保存できません。通常モードのGoogle Chromeで開き直し、担当者に知らせてください。",
+  trial_visibility_interrupted: "試行中にこの画面が非表示になったため、課題を停止しました。この回の保存状態は、この画面では確認できません。「同じ課題を開き直す」を押し、同じ参加者IDを入力してください。サーバーで確認できた位置から再開します。この画面では新しい問題に答えないでください。",
 });
 
 export function participantErrorMessage(error) {
@@ -143,7 +151,7 @@ export function fatalErrorMessage(error, { interruptionRequested = false } = {})
   return [
     "「中断・終了」を押した後、課題を安全に続行できない問題が発生しました。",
     "この画面では、通常完了、一時中断、参加終了のどれが完了したか確認できていません。回答や録音がどこまで保存されたかも確認できていません。",
-    "担当者から届いた同じ有効な招待リンクを開き直し、参加者IDを入力して表示される氏名を確認してください。画面が開いたら、新しい問題を始める前に「中断・終了」を選んでください。",
+    "同じ課題ページを開き直し、参加者IDを入力してください。画面が開いたら、新しい問題を始める前に「中断・終了」を選んでください。",
     "同じリンクを開けない場合や状態が分からない場合は、お問い合わせ番号とともに担当者へ連絡してください。",
   ].join("\n\n");
 }
@@ -153,7 +161,10 @@ export class ExperimentUi {
     this.welcome = document.getElementById("welcome");
     this.task = document.getElementById("task");
     this.fatalPanel = document.getElementById("fatal");
+    this.fatalTitle = document.getElementById("fatal-title");
     this.fatalMessage = document.getElementById("fatal-message");
+    this.fatalReload = document.getElementById("fatal-reload");
+    this.fatalHelp = document.getElementById("fatal-help");
     this.badge = document.getElementById("connection-badge");
     this.participantIdForm = document.getElementById("participant-id-form");
     this.participantIdHeading = document.getElementById("participant-id-heading");
@@ -161,28 +172,22 @@ export class ExperimentUi {
     this.participantIdInput = document.getElementById("participant-id-input");
     this.participantIdSubmit = document.getElementById("participant-id-submit");
     this.participantIdStatus = document.getElementById("participant-id-status");
-    this.participantNameForm = document.getElementById("participant-name-form");
-    this.participantNameInput = document.getElementById("participant-name-input");
-    this.participantNameSubmit = document.getElementById("participant-name-submit");
-    this.participantNameStatus = document.getElementById("participant-name-status");
-    this.participantNameConfirmation = document.getElementById("participant-name-confirmation");
-    this.participantNameConfirmationHeading = document.getElementById("participant-name-confirmation-heading");
-    this.participantNameConfirmationPrompt = document.getElementById("participant-name-confirmation-prompt");
-    this.participantNameConfirmationValue = document.getElementById("participant-name-confirmation-value");
-    this.participantNameConfirm = document.getElementById("participant-name-confirm");
-    this.participantNameEdit = document.getElementById("participant-name-edit");
-    this.participantNameReject = document.getElementById("participant-name-reject");
-    this.participantNameConfirmationStatus = document.getElementById("participant-name-confirmation-status");
+    this.participantIdConfirmation = document.getElementById("participant-id-confirmation");
+    this.participantIdConfirmationHeading = document.getElementById("participant-id-confirmation-heading");
+    this.participantIdConfirmationValue = document.getElementById("participant-id-confirmation-value");
+    this.participantIdConfirm = document.getElementById("participant-id-confirm");
+    this.participantIdEdit = document.getElementById("participant-id-edit");
+    this.researcherTokenForm = document.getElementById("researcher-token-form");
+    this.researcherTokenInput = document.getElementById("researcher-token-input");
+    this.researcherTokenSubmit = document.getElementById("researcher-token-submit");
+    this.researcherTokenStatus = document.getElementById("researcher-token-status");
     this.participationSetup = document.getElementById("participation-setup");
     this.summary = document.getElementById("participant-summary");
     this.readyCheck = document.getElementById("ready-check");
     this.startButton = document.getElementById("start-button");
     this.welcomeStatus = document.getElementById("welcome-status");
-    this.progressLabel = document.getElementById("progress-label");
     this.progressTrack = document.getElementById("progress-track");
     this.progressFill = document.getElementById("progress-fill");
-    this.progressDetail = document.getElementById("progress-detail");
-    this.saveState = document.getElementById("save-state");
     this.stage = document.getElementById("stage");
     this.fixation = document.getElementById("fixation");
     this.image = document.getElementById("stimulus-image");
@@ -212,15 +217,19 @@ export class ExperimentUi {
     this.pauseParticipationButton = document.getElementById("pause-participation-button");
     this.terminateParticipationButton = document.getElementById("terminate-participation-button");
     this.cancelInterruptionButton = document.getElementById("cancel-interruption-button");
-    this.taskStatus = document.getElementById("task-status");
     this.activeImageUrl = null;
     this.activeDownloadUrl = null;
     this.responseTimerFrame = null;
     this.responseTimerRun = 0;
     this.activePromptFinish = null;
+    this.interruptedPrompt = null;
     this.spaceHeld = false;
     this.interruptionHandler = null;
+    this.interruptionControlEnabled = false;
+    this.progressIsPractice = true;
+    this.saveStateValue = "not_started";
     this.researcherTestMode = false;
+    this.fatalReload?.addEventListener("click", () => window.location.reload());
     for (const button of this.interruptionButtons) {
       button.addEventListener("click", () => {
         if (!button.disabled) this.interruptionHandler?.();
@@ -251,11 +260,12 @@ export class ExperimentUi {
     this.researcherTestMode = true;
     this.badge.textContent = "研究者用テスト";
     this.badge.classList.remove("error");
-    this.setParticipant("test", resolvedVisitType);
-    this.saveState.classList.toggle("pending", false);
-    this.saveState.classList.add("test-mode");
-    this.saveState.textContent = RESEARCHER_TEST_SAVE_STATE;
-    for (const button of this.interruptionButtons) button.textContent = "テストを終了";
+    this.setParticipant("999", resolvedVisitType);
+    this.interruptionControlEnabled = false;
+    for (const button of this.interruptionButtons) {
+      button.hidden = true;
+      button.disabled = true;
+    }
   }
 
   setParticipant(id, visitType) {
@@ -274,56 +284,49 @@ export class ExperimentUi {
 
   hideParticipantAccessSteps() {
     this.participantIdForm.hidden = true;
-    this.participantNameForm.hidden = true;
-    this.participantNameConfirmation.hidden = true;
-  }
-
-  clearParticipantName() {
-    this.participantNameInput.value = "";
-    this.participantNameInput.setAttribute("aria-invalid", "false");
-    this.participantNameConfirmationValue.textContent = "";
-    this.participantNameConfirmationStatus.textContent = "";
+    this.participantIdConfirmation.hidden = true;
+    if (this.researcherTokenForm) this.researcherTokenForm.hidden = true;
   }
 
   clearParticipantAccess() {
     this.participantIdInput.value = "";
-    this.clearParticipantName();
+    this.participantIdConfirmationValue.textContent = "";
+    if (this.researcherTokenInput) this.researcherTokenInput.value = "";
     this.hideParticipantAccessSteps();
   }
 
   requestParticipantId(message = "", { researcherTest = false } = {}) {
     this.participationSetup.hidden = true;
     this.hideParticipantAccessSteps();
-    this.clearParticipantName();
     this.participantIdForm.hidden = false;
     this.participantIdSubmit.disabled = false;
     this.participantIdInput.setAttribute("aria-invalid", "false");
     this.participantIdHeading.textContent = researcherTest
       ? "研究者用動作確認"
-      : "参加者情報の確認";
+      : "参加者IDの確認";
     this.participantIdGuidance.textContent = researcherTest
-      ? "参加者IDに「test」と入力してください。氏名の入力・確認は行いません。"
-      : "担当者から案内された参加者IDを入力してください。次の画面で、ご自身の氏名が表示されることを確認します。";
+      ? "参加者IDに「999」と入力してください。"
+      : "担当者から案内された参加者IDを入力してください。";
     this.participantIdStatus.textContent = message || (researcherTest
       ? "研究者用の動作確認を開始します。"
       : "担当者から案内された参加者IDを入力してください。");
     this.welcomeStatus.textContent = researcherTest
       ? "この動作確認で行った回答と録音は、実験データとして保存・送信されません。"
-      : "氏名は参加者記録の確認に使用します。このブラウザには保存しません。";
+      : "参加者IDは担当者から案内された番号を入力してください。";
     this.participantIdInput.focus();
     return new Promise((resolve) => {
       const onSubmit = (event) => {
         event.preventDefault();
         const participantId = this.participantIdInput.value.trim();
-        if (researcherTest && participantId !== "test") {
+        if (researcherTest && participantId !== "999") {
           this.participantIdInput.setAttribute("aria-invalid", "true");
-          this.participantIdStatus.textContent = "研究者用の動作確認では、半角小文字で「test」と入力してください。";
+          this.participantIdStatus.textContent = "研究者用の動作確認では、半角数字で「999」と入力してください。";
           this.participantIdInput.focus();
           return;
         }
         if (!researcherTest && canonicalPositiveInteger(participantId) === null) {
           this.participantIdInput.setAttribute("aria-invalid", "true");
-          this.participantIdStatus.textContent = "参加者IDを確認し、0や先頭の0を含まない正整数で入力してください。";
+          this.participantIdStatus.textContent = "担当者から案内された参加者IDを、半角数字だけで入力してください。先頭に0は付けません。";
           this.participantIdInput.focus();
           return;
         }
@@ -332,85 +335,74 @@ export class ExperimentUi {
         this.participantIdInput.setAttribute("aria-invalid", "false");
         this.participantIdStatus.textContent = researcherTest
           ? "研究者用テストモードを準備しています。"
-          : "招待リンクと参加者IDを確認しています。";
+          : "参加者IDを確認しています。";
         resolve(participantId);
       };
       this.participantIdForm.addEventListener("submit", onSubmit);
     });
   }
 
-  requestParticipantName(initialValue = "", message = "") {
+  requestResearcherToken(message = "") {
     this.hideParticipantAccessSteps();
-    this.clearParticipantName();
-    this.participantNameForm.hidden = false;
-    this.participantNameSubmit.disabled = false;
-    this.participantNameStatus.textContent = message
-      || "氏名は保存前に次の画面で確認できます。";
-    this.participantNameInput.value = String(initialValue ?? "");
-    this.participantNameInput.setAttribute("aria-invalid", message ? "true" : "false");
-    this.participantNameInput.focus();
+    this.researcherTokenInput.value = "";
+    this.researcherTokenInput.setAttribute("aria-invalid", message ? "true" : "false");
+    this.researcherTokenStatus.textContent = message
+      || "ID 999の回答と録音は保存・送信しません。";
+    this.researcherTokenForm.hidden = false;
+    this.researcherTokenSubmit.disabled = false;
+    this.researcherTokenInput.focus();
     return new Promise((resolve) => {
       const onSubmit = (event) => {
         event.preventDefault();
-        if (!this.participantNameForm.reportValidity()) return;
-        // Pass the raw value to the shared canonicalizer/validator. In particular,
-        // whitespace-only input must produce inline feedback instead of making the
-        // submit button appear unresponsive here.
-        const participantName = this.participantNameInput.value;
-        this.participantNameForm.removeEventListener("submit", onSubmit);
-        this.participantNameSubmit.disabled = true;
-        this.participantNameInput.setAttribute("aria-invalid", "false");
-        this.participantNameInput.value = "";
-        resolve(participantName);
+        const token = this.researcherTokenInput.value;
+        if (!token) {
+          this.researcherTokenInput.setAttribute("aria-invalid", "true");
+          this.researcherTokenStatus.textContent = "管理トークンを入力してください。";
+          this.researcherTokenInput.focus();
+          return;
+        }
+        this.researcherTokenForm.removeEventListener("submit", onSubmit);
+        this.researcherTokenSubmit.disabled = true;
+        this.researcherTokenInput.setAttribute("aria-invalid", "false");
+        this.researcherTokenInput.value = "";
+        this.researcherTokenStatus.textContent = "実素材を読み込んでいます。";
+        resolve(token);
       };
-      this.participantNameForm.addEventListener("submit", onSubmit);
+      this.researcherTokenForm.addEventListener("submit", onSubmit);
     });
   }
 
-  confirmParticipantName(participantName, { allowEdit = false } = {}) {
+  confirmParticipantId(participantId) {
     this.hideParticipantAccessSteps();
-    this.participantNameInput.value = "";
-    this.participantNameConfirmation.hidden = false;
-    this.participantNameConfirmationPrompt.textContent = allowEdit
-      ? "この氏名をPreの参加者記録として保存します。誤りがないか確認してください。"
-      : "Preで記録された氏名です。ご自身の氏名であることを確認してください。";
-    this.participantNameConfirmationValue.textContent = String(participantName ?? "");
-    this.participantNameConfirmationStatus.textContent = allowEdit
-      ? "誤りがある場合は「氏名を修正」を選んでください。"
-      : "ご自身の氏名でない場合は「いいえ、違います」を選んでください。";
-    this.participantNameEdit.hidden = !allowEdit;
-    this.participantNameReject.hidden = allowEdit;
-    this.participantNameConfirm.disabled = false;
-    this.participantNameEdit.disabled = false;
-    this.participantNameReject.disabled = false;
-    this.participantNameConfirmationHeading.focus();
+    this.participantIdConfirmationValue.textContent = String(participantId);
+    this.participantIdConfirmation.hidden = false;
+    this.participantIdConfirm.disabled = false;
+    this.participantIdEdit.disabled = false;
+    this.participantIdConfirmationHeading.focus();
     return new Promise((resolve) => {
-      const cleanup = () => {
-        this.participantNameConfirm.removeEventListener("click", onConfirm);
-        this.participantNameEdit.removeEventListener("click", onEdit);
-        this.participantNameReject.removeEventListener("click", onReject);
-        this.participantNameConfirmation.hidden = true;
-        this.clearParticipantName();
-      };
       const finish = (decision) => {
-        this.participantNameConfirm.disabled = true;
-        this.participantNameEdit.disabled = true;
-        this.participantNameReject.disabled = true;
-        cleanup();
+        this.participantIdConfirm.removeEventListener("click", onConfirm);
+        this.participantIdEdit.removeEventListener("click", onEdit);
+        this.participantIdConfirm.disabled = true;
+        this.participantIdEdit.disabled = true;
+        this.participantIdConfirmation.hidden = true;
+        this.participantIdConfirmationValue.textContent = "";
         resolve(decision);
       };
       const onConfirm = () => finish("confirm");
       const onEdit = () => finish("edit");
-      const onReject = () => finish("reject");
-      this.participantNameConfirm.addEventListener("click", onConfirm);
-      this.participantNameEdit.addEventListener("click", onEdit);
-      this.participantNameReject.addEventListener("click", onReject);
+      this.participantIdConfirm.addEventListener("click", onConfirm);
+      this.participantIdEdit.addEventListener("click", onEdit);
     });
   }
 
   showParticipationSetup() {
     this.clearParticipantAccess();
     this.participationSetup.hidden = false;
+    if (this.welcomeInterruptionButton) {
+      this.welcomeInterruptionButton.hidden = this.researcherTestMode;
+      this.welcomeInterruptionButton.disabled = this.researcherTestMode;
+    }
   }
 
   enableStartWhenReady() {
@@ -466,9 +458,7 @@ export class ExperimentUi {
 
   setInterruptionPending(activeTrial) {
     for (const button of this.interruptionButtons) {
-      button.textContent = this.researcherTestMode
-        ? "テストを終了"
-        : button === this.interruptionButton && activeTrial
+      button.textContent = button === this.interruptionButton && activeTrial
           ? "この回の後に確認"
           : "中断・終了を確認中";
       button.disabled = true;
@@ -477,21 +467,22 @@ export class ExperimentUi {
 
   clearInterruptionPending() {
     for (const button of this.interruptionButtons) {
-      button.textContent = this.researcherTestMode ? "テストを終了" : "中断・終了";
-      button.disabled = false;
+      button.textContent = "中断・終了";
+      button.disabled = this.researcherTestMode || !this.interruptionControlEnabled;
+      if (this.researcherTestMode) button.hidden = true;
     }
   }
 
   releaseActivePromptForInterruption() {
-    this.activePromptFinish?.();
+    this.activePromptFinish?.("interrupt");
   }
 
   setInterruptionControlEnabled(enabled) {
+    this.interruptionControlEnabled = Boolean(enabled) && !this.researcherTestMode;
     for (const button of this.interruptionButtons) {
-      button.disabled = !enabled;
-      if (!enabled) {
-        button.textContent = this.researcherTestMode ? "テストを終了" : "中断・終了";
-      }
+      button.disabled = !this.interruptionControlEnabled;
+      button.textContent = "中断・終了";
+      if (this.researcherTestMode || !this.interruptionControlEnabled) button.hidden = true;
     }
   }
 
@@ -514,16 +505,20 @@ export class ExperimentUi {
       this.continueButton,
       this.downloadLink,
       this.interruptionChoice,
+      this.interruptionButton,
+      this.progressTrack,
     ]
       .forEach((element) => { if (element) element.hidden = true; });
     if (this.continueButton) this.continueButton.disabled = false;
     if (this.recording) this.recording.hidden = true;
-    this.taskStatus.textContent = "";
   }
 
   showFixation() {
     this.resetStage();
     this.fixation.hidden = false;
+    if (this.progressTrack && !this.progressIsPractice) {
+      this.progressTrack.hidden = false;
+    }
   }
 
   showVisual(trial, imageUrl = null) {
@@ -555,20 +550,17 @@ export class ExperimentUi {
     if (this.recording) this.recording.hidden = !active;
   }
 
-  setTaskStatus(text) {
-    this.taskStatus.textContent = text;
-  }
+  setTaskStatus() {}
 
   updateProgress(label, completed, total, options = {}) {
     const progress = progressState(label, completed, total, options);
-    this.progressLabel.textContent = progress.labelText;
+    this.progressIsPractice = options.practice === true;
     this.progressFill.style.width = `${progress.percent.toFixed(2)}%`;
-    this.progressTrack.setAttribute("aria-valuemax", String(progress.total));
-    this.progressTrack.setAttribute("aria-valuenow", String(progress.completed));
+    this.progressTrack.setAttribute("aria-valuemax", "100");
+    this.progressTrack.setAttribute("aria-valuenow", progress.percent.toFixed(2));
     this.progressTrack.setAttribute("aria-valuetext", progress.valueText);
-    this.progressDetail.textContent = this.researcherTestMode
-      ? `完了 ${progress.completed}/${progress.total}。回答と録音は保存・送信されません。終了する場合は「テストを終了」を選んでください。`
-      : `完了 ${progress.completed}/${progress.total}。ここまで自動で保存されます。続けられなくなった場合は「中断・終了」を選んでください。`;
+    const fixationVisible = this.fixation?.hidden === false;
+    this.progressTrack.hidden = this.progressIsPractice || !fixationVisible;
   }
 
   startResponseTimer(deadlinePerfMs, durationMs, label = "回答時間") {
@@ -616,24 +608,12 @@ export class ExperimentUi {
   }
 
   setSaveState(state) {
-    if (this.researcherTestMode) {
-      this.saveState.classList.toggle("pending", false);
-      this.saveState.classList.add("test-mode");
-      this.saveState.textContent = RESEARCHER_TEST_SAVE_STATE;
-      return;
-    }
-    this.saveState.classList.remove("test-mode");
-    const pending = state !== "saved";
-    this.saveState.classList.toggle("pending", pending);
-    this.saveState.textContent = state === "saving"
-      ? "保存中…"
-      : state === "queued"
-        ? "未送信あり"
-        : "ここまで保存済み";
+    this.saveStateValue = this.researcherTestMode ? "not_persisted" : state;
   }
 
-  async prompt(message, buttonLabel = "続ける") {
+  async prompt(message, buttonLabel = "続ける", { allowInterruption = true } = {}) {
     this.resetStage();
+    this.interruptedPrompt = { message: String(message), buttonLabel: String(buttonLabel) };
     this.stage.classList?.add("prompt-active");
     this.message.textContent = message;
     this.message.hidden = false;
@@ -641,16 +621,25 @@ export class ExperimentUi {
     this.promptKeyboardHint.hidden = false;
     this.continueKeyLabel.textContent = "Space";
     this.continueKeyLabel.hidden = false;
+    if (allowInterruption
+        && this.interruptionButton
+        && this.interruptionControlEnabled
+        && !this.researcherTestMode) {
+      this.interruptionButton.textContent = "中断・終了";
+      this.interruptionButton.disabled = false;
+      this.interruptionButton.hidden = false;
+    }
     this.stage.setAttribute("aria-keyshortcuts", "Space");
     await new Promise((resolve) => {
       const cleanup = () => {
         document.removeEventListener("keydown", onKey);
         this.stage.removeAttribute("aria-keyshortcuts");
       };
-      const finish = () => {
+      const finish = (reason = "continue") => {
         if (this.activePromptFinish !== finish) return;
         this.activePromptFinish = null;
         cleanup();
+        if (reason !== "interrupt") this.interruptedPrompt = null;
         resolve();
       };
       const onKey = (event) => {
@@ -663,7 +652,7 @@ export class ExperimentUi {
         event.preventDefault();
         if (event.repeat || this.spaceHeld) return;
         this.spaceHeld = true;
-        finish();
+        finish("continue");
       };
       document.addEventListener("keydown", onKey);
       this.activePromptFinish = finish;
@@ -671,11 +660,12 @@ export class ExperimentUi {
     });
   }
 
-  chooseInterruptionMode() {
+  async chooseInterruptionMode() {
+    const promptToResume = this.interruptedPrompt;
     this.resetStage();
-    this.setInterruptionControlEnabled(false);
+    for (const button of this.interruptionButtons) button.disabled = true;
     this.interruptionChoiceTitle.textContent = "課題を中断・終了しますか？";
-    this.interruptionChoiceDescription.textContent = "一時中断すると、ここまでを保存し、同じ招待リンクから続きに戻れます。参加終了を選ぶと、実験への参加を終え、再開できません。";
+    this.interruptionChoiceDescription.textContent = "一時中断すると、ここまでを保存し、同じ課題ページから続きに戻れます。参加終了を選ぶと、実験への参加を終え、再開できません。";
     this.pauseParticipationButton.textContent = "一時中断する";
     this.pauseParticipationButton.hidden = false;
     this.terminateParticipationButton.textContent = "参加を終了する";
@@ -683,7 +673,7 @@ export class ExperimentUi {
     this.cancelInterruptionButton.textContent = "課題に戻る";
     this.interruptionChoice.hidden = false;
     this.pauseParticipationButton.focus();
-    return new Promise((resolve) => {
+    const mode = await new Promise((resolve) => {
       const finish = (mode) => {
         this.pauseParticipationButton.removeEventListener("click", onPause);
         this.terminateParticipationButton.removeEventListener("click", onTerminate);
@@ -699,50 +689,16 @@ export class ExperimentUi {
       this.terminateParticipationButton.addEventListener("click", onTerminate);
       this.cancelInterruptionButton.addEventListener("click", onCancel);
     });
-  }
-
-  chooseResearcherTestExit() {
-    this.resetStage();
-    this.setInterruptionControlEnabled(false);
-    this.interruptionChoiceTitle.textContent = "動作確認を終了しますか？";
-    this.interruptionChoiceDescription.textContent = "この画面の研究者用テストモードを終了します。";
-    this.pauseParticipationButton.hidden = true;
-    this.terminateParticipationButton.textContent = "テストを終了";
-    this.terminateParticipationButton.hidden = false;
-    this.cancelInterruptionButton.textContent = "テストに戻る";
-    this.interruptionChoice.hidden = false;
-    this.cancelInterruptionButton.focus();
-    return new Promise((resolve) => {
-      const finish = (exitTest) => {
-        this.terminateParticipationButton.removeEventListener("click", onExit);
-        this.cancelInterruptionButton.removeEventListener("click", onCancel);
-        this.interruptionChoice.hidden = true;
-        if (!exitTest) this.stage.focus();
-        resolve(exitTest);
-      };
-      const onExit = () => finish(true);
-      const onCancel = () => finish(false);
-      this.terminateParticipationButton.addEventListener("click", onExit);
-      this.cancelInterruptionButton.addEventListener("click", onCancel);
-    });
-  }
-
-  researcherTestInterrupted(message = "動作確認を終了しました。このページは閉じて構いません。") {
-    document.body.classList.remove("experiment-active");
-    this.resetStage();
-    for (const button of this.interruptionButtons) {
-      button.disabled = true;
-      button.textContent = "テスト終了済み";
+    if (mode) {
+      this.interruptedPrompt = null;
+      return mode;
     }
-    this.progressLabel.textContent = "動作確認終了";
-    this.progressTrack.setAttribute("aria-valuetext", "研究者用テストを終了");
-    this.progressDetail.textContent = "この画面の動作確認を終了しました。";
-    this.saveState.textContent = RESEARCHER_TEST_SAVE_STATE;
-    this.saveState.classList.toggle("pending", false);
-    this.saveState.classList.add("test-mode");
-    this.message.textContent = String(message);
-    this.message.hidden = false;
-    this.stage.focus();
+    if (promptToResume) {
+      await this.prompt(promptToResume.message, promptToResume.buttonLabel, {
+        allowInterruption: false,
+      });
+    }
+    return null;
   }
 
   retryInterruptionOrShowCloseGuidance(message, retryLabel = "再試行") {
@@ -836,21 +792,11 @@ export class ExperimentUi {
       button.disabled = true;
       button.textContent = mode === "pause" ? "一時中断済み" : "参加終了済み";
     }
-    this.progressLabel.textContent = mode === "pause" ? "一時中断" : "参加終了";
-    this.progressTrack.setAttribute(
-      "aria-valuetext",
-      mode === "pause" ? "一時中断を保存済み" : "参加終了を受付済み",
-    );
-    this.progressDetail.textContent = partialData
-      ? "一部の録音を保存できませんでした。すでに保存できたデータは残ります。"
-      : "ここまでの回答と録音は保存されています。";
-    this.saveState.textContent = partialData ? "一部未保存・参加終了済み" : "保存済み";
-    this.saveState.classList.toggle("pending", partialData);
     this.message.textContent = mode === "pause"
-      ? "一時中断が完了しました。このページは閉じて構いません。再開するときは、担当者から届いた元の招待リンクを開いてください。"
+      ? "一時中断が完了しました。このページは閉じて構いません。再開するときは、同じ課題ページを開いてください。"
       : partialData
         ? "参加終了が完了しました。一部の録音は保存できませんでしたが、すでに保存できたデータは残ります。このページは閉じて構いません。"
-        : "参加終了が完了しました。ここまでのデータは保存されています。このページは閉じて構いません。参加終了後は、この招待リンクから課題を再開できません。";
+        : "参加終了が完了しました。ここまでのデータは保存されています。このページは閉じて構いません。参加終了後は課題を再開できません。";
     this.message.hidden = false;
     this.stage.focus();
   }
@@ -858,9 +804,6 @@ export class ExperimentUi {
   async confirmTerminationWithPartialData() {
     this.resetStage();
     this.setInterruptionControlEnabled(false);
-    this.progressDetail.textContent = "一部の回答または録音を保存できていません。";
-    this.saveState.textContent = "一部未保存";
-    this.saveState.classList.add("pending");
     this.interruptionChoiceTitle.textContent = "保存できていないデータがあります";
     this.interruptionChoiceDescription.textContent = "一部の回答または録音を保存できません。この状態で参加を終了すると、すでに保存できたデータだけが残り、課題は再開できません。";
     this.pauseParticipationButton.hidden = true;
@@ -889,11 +832,6 @@ export class ExperimentUi {
       button.disabled = true;
       button.textContent = "確定未確認";
     }
-    this.progressLabel.textContent = mode === "pause" ? "一時中断：未確定" : "参加終了：未確定";
-    this.progressTrack.setAttribute("aria-valuetext", "中断または参加終了の確定を未確認");
-    this.progressDetail.textContent = "中断・終了の完了を確認できませんでした。未保存のデータが残っている可能性があります。";
-    this.saveState.textContent = "保存・確定：未確認";
-    this.saveState.classList.add("pending");
     this.message.textContent = [
       mode === "pause"
         ? "一時中断はまだ確定したものとして扱わないでください。"
@@ -905,103 +843,24 @@ export class ExperimentUi {
     this.stage.focus();
   }
 
-  async downloadParticipantCopy({ blob, filename }) {
+  downloadParticipantCopy({ blob, filename }) {
     this.resetStage();
     if (this.activeDownloadUrl) URL.revokeObjectURL(this.activeDownloadUrl);
-    const objectUrl = URL.createObjectURL(blob);
-    this.activeDownloadUrl = objectUrl;
-    this.message.textContent = [
-      "実験の回答と録音は保存されています。",
-      "事前・直後・遅延の3回分の結果を、1つのZIPとしてこのパソコンにも保存してください。",
-      "共用パソコンの場合は、他の利用者に見えない保存先を選び、担当者の案内に従って削除してください。",
-    ].join("\n");
-    this.message.hidden = false;
-    this.downloadLink.href = objectUrl;
+    this.activeDownloadUrl = URL.createObjectURL(blob);
+    this.downloadLink.href = this.activeDownloadUrl;
     this.downloadLink.download = filename;
-    this.downloadLink.textContent = "ZIPをダウンロード";
+    this.downloadLink.textContent = "ZIPをもう一度ダウンロード";
     this.downloadLink.hidden = false;
-    return new Promise((resolve) => {
-      this.downloadLink.addEventListener("click", () => {
-        window.setTimeout(() => {
-          this.downloadLink.textContent = "ZIPをもう一度ダウンロード";
-          this.setTaskStatus(
-            "ZIPのダウンロードを開始しました。Chromeのダウンロード一覧で、ZIPが最後までダウンロードされていることを確認してください。",
-          );
-          resolve({ delivery: PARTICIPANT_COPY_DELIVERY.DOWNLOAD_STARTED });
-        }, 0);
-      }, { once: true });
-      this.downloadLink.focus();
-    });
-  }
-
-  chooseParticipantCopyTarget(filename = "accentedness_results.zip") {
-    this.resetStage();
-    this.message.textContent = [
-      "実験の回答と録音は保存されています。",
-      "事前・直後・遅延の3回分の結果を、このパソコンにもZIPで保存します。",
-      "共用パソコンの場合は、他の利用者に見えない保存先を選び、担当者の案内に従って削除してください。",
-    ].join("\n");
-    this.message.hidden = false;
-    this.continueButton.textContent = typeof window.showSaveFilePicker === "function"
-      ? "ZIPの保存先を選ぶ"
-      : "ZIPを準備する";
-    this.continueButton.hidden = false;
-    this.continueButton.focus();
-    return new Promise((resolve, reject) => {
-      const onClick = async () => {
-        this.continueButton.disabled = true;
-        try {
-          if (typeof window.showSaveFilePicker !== "function") {
-            this.continueButton.removeEventListener("click", onClick);
-            this.continueButton.disabled = false;
-            this.continueButton.hidden = true;
-            this.setTaskStatus("ZIPを準備しています。画面を閉じないでください。");
-            resolve(null);
-            return;
-          }
-          const handle = await window.showSaveFilePicker({
-            suggestedName: filename,
-            types: [{
-              description: "ZIP archive",
-              accept: { "application/zip": [".zip"] },
-            }],
-          });
-          this.continueButton.removeEventListener("click", onClick);
-          this.continueButton.disabled = false;
-          this.continueButton.hidden = true;
-          this.setTaskStatus("ZIPを保存しています。画面を閉じないでください。");
-          resolve(handle);
-        } catch (error) {
-          this.continueButton.disabled = false;
-          if (error?.name === "AbortError") {
-            this.setTaskStatus("保存先の選択をキャンセルしました。保存する場合は、もう一度ボタンを押してください。");
-            return;
-          }
-          this.continueButton.removeEventListener("click", onClick);
-          const pickerError = new Error("保存先を選択できませんでした。");
-          pickerError.code = "participant_copy_picker_failed";
-          pickerError.cause = error;
-          reject(pickerError);
-        }
-      };
-      this.continueButton.addEventListener("click", onClick);
-    });
+    this.downloadLink.click();
+    this.downloadLink.focus();
   }
 
   completed(message, { preserveDownload = false } = {}) {
     document.body.classList.remove("experiment-active");
+    this.stage.classList.add("completed");
     this.stopResponseTimer();
     if (this.researcherTestMode) {
       this.resetStage();
-      this.progressFill.style.width = "100%";
-      const progressMax = this.progressTrack.getAttribute("aria-valuemax") ?? "1";
-      this.progressTrack.setAttribute("aria-valuenow", progressMax);
-      this.progressTrack.setAttribute("aria-valuetext", "研究者用テスト完了、保存なし");
-      this.progressLabel.textContent = "動作確認完了";
-      this.progressDetail.textContent = "回答と録音は保存または送信されていません。";
-      this.saveState.textContent = RESEARCHER_TEST_SAVE_STATE;
-      this.saveState.classList.remove("pending");
-      this.saveState.classList.add("test-mode");
       this.message.textContent = message;
       this.message.hidden = false;
       return;
@@ -1019,23 +878,11 @@ export class ExperimentUi {
     } else {
       this.resetStage();
     }
-    this.progressFill.style.width = "100%";
-    const progressMax = this.progressTrack.getAttribute("aria-valuemax") ?? "1";
-    this.progressTrack.setAttribute("aria-valuenow", progressMax);
-    this.progressTrack.setAttribute("aria-valuetext", "この課題の回答と録音を保存済み");
-    this.progressLabel.textContent = "課題完了";
     this.message.textContent = message;
     this.message.hidden = false;
     if (preserveDownload && this.activeDownloadUrl) {
       this.downloadLink.hidden = false;
-    } else if (preserveDownload) {
-      this.continueButton.textContent = "ZIPをもう一度保存";
-      this.continueButton.hidden = false;
-      this.continueButton.addEventListener("click", () => window.location.reload(), { once: true });
     }
-    this.progressDetail.textContent = "この課題の回答と録音は保存されています。";
-    this.saveState.textContent = "保存済み";
-    this.saveState.classList.remove("pending");
   }
 
   fatal(error, { interruptionRequested = false } = {}) {
@@ -1043,12 +890,41 @@ export class ExperimentUi {
     this.stopResponseTimer();
     this.welcome.hidden = true;
     this.task.hidden = true;
+    const availability = !this.researcherTestMode && !interruptionRequested
+      ? visitAvailabilityMessage(error) : null;
+    this.fatalTitle.textContent = availability
+      ? "まだ開始時刻になっていません" : "課題を続行できません";
+    this.fatalPanel.classList.toggle("error-card", !availability);
+    this.fatalPanel.setAttribute("role", availability ? "region" : "alert");
     this.fatalPanel.hidden = false;
+    if (availability) {
+      this.fatalMessage.textContent = availability;
+      this.fatalReload.hidden = false;
+      this.fatalReload.textContent = "受付状況を確認する";
+      this.fatalHelp.textContent = "確認するときは、もう一度同じ参加者IDを入力してください。上の日時を過ぎても開始できない場合は、この画面の内容を担当者へ知らせてください。";
+      this.fatalPanel.focus();
+      return;
+    }
     const supportCode = participantSupportCode(error);
+    const visibilityInterrupted = error?.code === "trial_visibility_interrupted";
     const message = this.researcherTestMode
-      ? "研究者用動作確認を続けられない問題が発生しました。回答と録音は保存・送信されていません。このページを再読み込みし、参加者IDに「test」と入力してやり直してください。"
+      ? visibilityInterrupted
+        ? "研究者用動作確認中、試行中にこの画面が非表示になったため停止しました。この回を含む回答と録音は保存・送信されていません。「動作確認を最初からやり直す」を押し、参加者ID「999」と管理トークンをもう一度入力してください。再開後は、試行中、この画面を表示したままにしてください。"
+        : "研究者用動作確認を続けられない問題が発生しました。回答と録音は保存・送信されていません。「動作確認を最初からやり直す」を押し、参加者ID「999」と管理トークンをもう一度入力してください。"
       : fatalErrorMessage(error, { interruptionRequested });
     this.fatalMessage.textContent = `${message}\n\nお問い合わせ番号: ${supportCode}`;
+    const canReload = this.researcherTestMode || visibilityInterrupted;
+    if (this.fatalReload) {
+      this.fatalReload.hidden = !canReload;
+      this.fatalReload.textContent = this.researcherTestMode
+        ? "動作確認を最初からやり直す"
+        : "同じ課題を開き直す";
+    }
+    if (this.fatalHelp) {
+      this.fatalHelp.textContent = canReload
+        ? "開き直せない場合や同じ問題が繰り返される場合は、お問い合わせ番号と画面の状況を担当者へ知らせてください。"
+        : "お問い合わせ番号と画面の状況を担当者へ知らせてください。";
+    }
     this.fatalPanel.focus();
   }
 }

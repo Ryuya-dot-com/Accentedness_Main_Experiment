@@ -2,44 +2,40 @@ import { exports } from "cloudflare:workers";
 import { describe, expect, it, vi } from "vitest";
 import {
   ApiClientError,
-  canonicalizeParticipantNameForDisplay,
-  consumeInvitationToken,
   ExperimentApi,
-  invitationRedeemPayload,
-  isCorrectableParticipantAccessError,
-  isCorrectableParticipantNameError,
-  ParticipantNameValidationError,
   participantCopyFilename,
-  participantNamePreviewPayload,
-  validateParticipantNameForRegistration,
-  writeResponseToFile,
 } from "../public/js/api.js";
 import {
-  bootstrapWithParticipantAccess,
   microphoneCheckStorageKey,
   redirectToCanonical,
   waitForStartOrParticipantExit,
 } from "../public/js/flow-guards.js";
 import {
+  buildDurableTrialRecord,
+  canonicalRecordingPayload,
   fullyAcknowledgedAttemptIds,
   isQueuedTrialFullyAcknowledged,
+  recordingBlobForDurableQueue,
+  saveResponseWithLegacyQualityRepair,
 } from "../public/js/outbox.js";
+import { analyzeSamples } from "../public/js/audio-engine.js";
 import {
   ExperimentRunner,
   isNonRetryableLocalRecordingError,
   isTerminalInterruptionDrainError,
+  recordingBlobForPersistence,
 } from "../public/js/runner.js";
 import {
   countdownState,
   ExperimentUi,
   fatalErrorMessage,
-  PARTICIPANT_COPY_DELIVERY,
   participantCopyCompletionMessage,
   participantErrorMessage,
   participantGuidanceError,
   participantSupportCode,
   progressState,
   validateBrowserEnvironment,
+  visitAvailabilityMessage,
 } from "../public/js/ui.js";
 
 function stateWith({ manifest = [], accepted = [] } = {}) {
@@ -74,6 +70,7 @@ function interactiveElement(overrides = {}) {
     value: "",
     textContent: "",
     innerHTML: "unchanged-sentinel",
+    classList: { add: vi.fn(), remove: vi.fn(), toggle: vi.fn() },
     focus: vi.fn(),
     setAttribute: vi.fn((name, value) => attributes.set(name, value)),
     removeAttribute: vi.fn((name) => attributes.delete(name)),
@@ -89,7 +86,217 @@ function interactiveElement(overrides = {}) {
   };
 }
 
+function pcm16Wav(samples, sampleRate = 8_000) {
+  const buffer = new ArrayBuffer(44 + samples.length * 2);
+  const view = new DataView(buffer);
+  const ascii = (offset, text) => [...text].forEach((character, index) => {
+    view.setUint8(offset + index, character.charCodeAt(0));
+  });
+  ascii(0, "RIFF");
+  view.setUint32(4, 36 + samples.length * 2, true);
+  ascii(8, "WAVE");
+  ascii(12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  ascii(36, "data");
+  view.setUint32(40, samples.length * 2, true);
+  samples.forEach((sample, index) => view.setInt16(44 + index * 2, sample, true));
+  return new Blob([buffer], { type: "audio/wav" });
+}
+
 describe("frontend reliability guards", () => {
+  it.each(["completed", "started"])("monitors only open visits when reopening %s", (status) => {
+    const state = stateWith();
+    state.visit.status = status;
+    const { runner, api } = runnerFor(state, { heartbeat: vi.fn(async () => ({})) });
+    const documentListener = vi.fn();
+    const windowListener = vi.fn();
+    const interval = vi.fn((tick) => { tick(); return 1; });
+    vi.stubGlobal("document", { addEventListener: documentListener });
+    vi.stubGlobal("window", { addEventListener: windowListener, setInterval: interval });
+    try {
+      runner.startMonitoring();
+      const count = status === "completed" ? 0 : 1;
+      expect(documentListener).toHaveBeenCalledTimes(count);
+      expect(windowListener).toHaveBeenCalledTimes(count);
+      expect(interval).toHaveBeenCalledTimes(count);
+      expect(api.heartbeat).toHaveBeenCalledTimes(count);
+      expect(runner.running).toBe(status !== "completed");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("measures quality from the same clipped samples written to WAV", () => {
+    const quality = analyzeSamples(Float32Array.of(2, -2, 0.5), 48_000);
+
+    expect(quality.peak_amplitude).toBe(1);
+    expect(quality.rms_amplitude).toBeCloseTo(Math.sqrt(2.25 / 3), 12);
+    expect(quality.clipping_ratio).toBeCloseTo(2 / 3, 12);
+  });
+
+  it("repairs legacy WAV quality only after an explicit invalid-payload response", async () => {
+    const blob = pcm16Wav([32_767, -32_768, 16_384, 0]);
+    const payload = {
+      sample_rate_hz: 8_000,
+      sample_count: 4,
+      duration_seconds: 4 / 8_000,
+      quality: {
+        analysis_start_seconds: 0,
+        analyzed_sample_count: 4,
+        rms_amplitude: 2,
+        peak_amplitude: 2,
+        clipping_ratio: 0,
+      },
+    };
+    const record = {
+      trialId: "trial-1",
+      attemptId: "attempt-1",
+      responseKey: "response-1",
+      expectsRecording: true,
+      recordingBlob: blob,
+      payload,
+    };
+    const order = [];
+    const api = {
+      saveResponse: vi.fn(async (...args) => {
+        order.push(`send:${args[3].quality.peak_amplitude}`);
+        if (order.length === 1) {
+          throw Object.assign(new Error("peak_amplitude is outside the accepted range"), {
+            status: 422,
+            code: "invalid_response_payload",
+          });
+        }
+      }),
+    };
+    const persist = vi.fn(async () => order.push("persist"));
+
+    await saveResponseWithLegacyQualityRepair(api, record, persist);
+
+    expect(order).toEqual(["send:2", "persist", "send:1"]);
+    expect(record.recordingQualityVersion).toBe("pcm16-v1");
+    expect(record.payload).toEqual(await canonicalRecordingPayload(blob, payload));
+  });
+
+  it("does not rewrite a legacy payload when acknowledgement is uncertain", async () => {
+    const payload = { quality: { peak_amplitude: 2 } };
+    const record = {
+      trialId: "trial-1",
+      attemptId: "attempt-1",
+      responseKey: "response-1",
+      expectsRecording: true,
+      recordingBlob: pcm16Wav([0]),
+      payload,
+    };
+    const api = { saveResponse: vi.fn().mockRejectedValue(new TypeError("offline")) };
+    const persist = vi.fn();
+
+    await expect(saveResponseWithLegacyQualityRepair(api, record, persist)).rejects.toThrow("offline");
+    expect(record.payload).toBe(payload);
+    expect(record.recordingQualityVersion).toBeUndefined();
+    expect(persist).not.toHaveBeenCalled();
+  });
+
+  it("discards practice speech audio while retaining main-trial recording blobs", () => {
+    const blob = new Blob(["captured speech"], { type: "audio/wav" });
+    const recording = { blob };
+
+    expect(recordingBlobForPersistence({ expects_recording: false }, recording)).toBeNull();
+    expect(recordingBlobForPersistence({ expects_recording: true }, recording)).toBe(blob);
+    expect(recordingBlobForPersistence({ expects_recording: true }, null)).toBeNull();
+  });
+
+  it("rejects an accidentally forwarded practice blob at the durable outbox boundary", async () => {
+    const blob = new Blob(["captured speech"], { type: "audio/wav" });
+
+    expect(recordingBlobForDurableQueue(false, blob)).toBeNull();
+    expect(recordingBlobForDurableQueue(true, blob)).toBe(blob);
+    expect(recordingBlobForDurableQueue(true, null)).toBeNull();
+    await expect(buildDurableTrialRecord({
+      visitId: "visit-1",
+      expectsRecording: false,
+      recordingBlob: blob,
+      payload: {},
+    })).resolves.toMatchObject({
+      recordingBlob: null,
+      recordingSha256: null,
+      recordingAck: true,
+    });
+  });
+
+  it("does not show the recording indicator before L2 audio onset", async () => {
+    const events = [];
+    const ui = {
+      bindInterruptionControl: vi.fn(),
+      showFixation: vi.fn(() => events.push("fixation")),
+      setTaskStatus: vi.fn(),
+      showAudioCue: vi.fn(() => events.push("audio-cue")),
+      setRecording: vi.fn((visible) => events.push(`recording:${visible}`)),
+      startResponseTimer: vi.fn(),
+    };
+    const recording = {
+      blob: new Blob(["practice speech"], { type: "audio/wav" }),
+      sample_rate_hz: 48_000,
+      sample_count: 1,
+      duration_seconds: 0,
+      start_context_s: -0.15,
+      stop_context_s: 0,
+      command_stop_perf_ms: 0,
+      stopped_perf_ms: 0,
+      scheduled_stop_context_s: 0,
+      expected_sample_count: 1,
+      sample_count_difference: 0,
+      missing_input_frames: 0,
+      quality: { rms_amplitude: 0.1, peak_amplitude: 0.2, clipping_ratio: 0 },
+      microphone_settings: {},
+    };
+    const audio = {
+      startCapture: vi.fn().mockResolvedValue({ start_context_s: -0.15 }),
+      playCue: vi.fn(() => ({
+        scheduledStartContextS: 0,
+        scheduledEndContextS: 0,
+        durationS: 0,
+        ended: Promise.resolve({ endedPerfMs: 0, endedContextS: 0 }),
+      })),
+      clockSnapshot: vi.fn(() => ({ performance_time_ms: 0, context_time_s: 0 })),
+      stopCaptureAt: vi.fn().mockResolvedValue(recording),
+    };
+    const runner = new ExperimentRunner({}, ui, audio, {
+      visit: { visit_id: "visit-1" },
+      manifest: [],
+      accepted: [],
+    });
+    runner.authorizeTrial = vi.fn().mockResolvedValue({ attempt_id: "attempt-1" });
+    runner.markTrialStimulusShown = vi.fn().mockResolvedValue(undefined);
+    runner.prepareOnset = vi.fn().mockResolvedValue(0);
+    runner.requireVisibleBeforeOnset = vi.fn();
+    runner.sendEvent = vi.fn().mockResolvedValue(undefined);
+    runner.persistTrial = vi.fn().mockResolvedValue(undefined);
+
+    await runner.runL2Trial({
+      trial_id: "practice-l2-1",
+      expects_recording: false,
+      protocol: {
+        timing: {
+          preAudioRecordingMs: 150,
+          responseWindowAfterAudioMs: 10_000,
+          interTrialMs: 0,
+        },
+      },
+    }, { cueBuffer: {} });
+
+    const cueIndex = events.indexOf("audio-cue");
+    const recordingVisibleIndex = events.indexOf("recording:true");
+    expect(cueIndex).toBeGreaterThanOrEqual(0);
+    expect(recordingVisibleIndex).toBeGreaterThan(cueIndex);
+    expect(events.slice(0, cueIndex)).not.toContain("recording:true");
+  });
+
   it("blocks task start when the effective viewport cannot contain the no-scroll layout", () => {
     vi.stubGlobal("navigator", {
       userAgent: "Mozilla/5.0 Chrome/140.0.0.0 Safari/537.36",
@@ -130,36 +337,79 @@ describe("frontend reliability guards", () => {
     expect(countdownState(20_000, 10_000, 21_000).remainingMs).toBe(0);
   });
 
-  it("separates the current trial position from durably completed progress", () => {
+  it("exposes progress only as a percentage without trial counts", () => {
     expect(progressState("Picture Naming 練習", 0, 2, { inProgress: true })).toMatchObject({
       completed: 0,
-      position: 1,
       total: 2,
       percent: 0,
-      labelText: "Picture Naming 練習　1/2 回目",
+      valueText: "進み具合 0パーセント",
     });
     expect(progressState("Picture Naming 練習", 1, 2, { inProgress: true })).toMatchObject({
       completed: 1,
-      position: 2,
       percent: 50,
-      labelText: "Picture Naming 練習　2/2 回目",
+      valueText: "進み具合 50パーセント",
     });
     expect(progressState("Picture Naming 本番", 0, 24, { inProgress: true })).toMatchObject({
       completed: 0,
-      position: 1,
       total: 24,
+      valueText: "進み具合 0パーセント",
     });
-    expect(progressState("語彙学習", 24, 144, { inProgress: true })).toMatchObject({
+    const learning = progressState("語彙学習", 24, 144, { inProgress: true });
+    expect(learning).toMatchObject({
       completed: 24,
-      position: 25,
       total: 144,
+      valueText: "進み具合 17パーセント",
     });
     expect(progressState("L2-to-L1 本番", 24, 24)).toMatchObject({
       completed: 24,
-      position: 24,
       percent: 100,
-      labelText: "L2-to-L1 本番　24/24 完了",
+      valueText: "進み具合 100パーセント",
     });
+    expect(learning.valueText).not.toMatch(/144|24|\//u);
+  });
+
+  it("shows main progress at fixation only and never during practice or a stimulus", () => {
+    const ui = Object.create(ExperimentUi.prototype);
+    Object.assign(ui, {
+      activeImageUrl: null,
+      responseTimerFrame: null,
+      responseTimerRun: 0,
+      stage: interactiveElement({ classList: { remove: vi.fn() } }),
+      fixation: interactiveElement({ hidden: true }),
+      image: interactiveElement({ hidden: true }),
+      emoji: interactiveElement({ hidden: true }),
+      placeholder: interactiveElement({ hidden: true }),
+      placeholderGloss: interactiveElement(),
+      audioCue: interactiveElement({ hidden: true }),
+      recording: interactiveElement({ hidden: true }),
+      responseTimer: interactiveElement({
+        hidden: true,
+        classList: { remove: vi.fn() },
+      }),
+      message: interactiveElement({ hidden: true }),
+      promptKeyboardHint: interactiveElement({ hidden: true }),
+      continueKeyLabel: interactiveElement({ hidden: true }),
+      continueButton: interactiveElement({ hidden: true }),
+      downloadLink: interactiveElement({ hidden: true }),
+      interruptionChoice: interactiveElement({ hidden: true }),
+      interruptionButton: interactiveElement({ hidden: true }),
+      progressTrack: interactiveElement({ hidden: true }),
+      progressFill: interactiveElement({ style: {} }),
+    });
+
+    ui.updateProgress("単語学習 本番", 24, 144, { inProgress: true, practice: false });
+    ui.showFixation();
+    expect(ui.progressTrack.hidden).toBe(false);
+    expect(ui.fixation.hidden).toBe(false);
+
+    ui.showVisual({ protocol: { visualEmoji: "🍎", visualLabel: "りんご" } });
+    expect(ui.progressTrack.hidden).toBe(true);
+    expect(ui.emoji.hidden).toBe(false);
+
+    ui.updateProgress("phase-without-display-label", 1, 2, { inProgress: true, practice: true });
+    ui.showFixation();
+    expect(ui.progressTrack.hidden).toBe(true);
+    expect(ui.fixation.hidden).toBe(false);
   });
 
   it("purges a queued trial only after both remote acknowledgements are durable", () => {
@@ -203,348 +453,7 @@ describe("frontend reliability guards", () => {
     ]);
   });
 
-  it("captures a raw invitation token once and removes it from the visible URL immediately", () => {
-    const historyObject = { replaceState: vi.fn() };
-    const location = {
-      hash: "#t=raw-invitation-token&ignored=value",
-      pathname: "/pre-picture-naming/",
-      search: "?language=ja",
-    };
-
-    expect(consumeInvitationToken(location, historyObject)).toBe("raw-invitation-token");
-    expect(historyObject.replaceState).toHaveBeenCalledWith(
-      null,
-      "",
-      "/pre-picture-naming/?language=ja",
-    );
-
-    historyObject.replaceState.mockClear();
-    expect(consumeInvitationToken({ ...location, hash: "" }, historyObject)).toBeNull();
-    expect(historyObject.replaceState).not.toHaveBeenCalled();
-  });
-
-  it("retains the consumed invitation token only in the API instance", () => {
-    const storage = new Map();
-    const replaceState = vi.fn();
-    vi.stubGlobal("window", {
-      location: {
-        hash: "#t=memory-only-invitation-token",
-        pathname: "/pre-picture-naming/",
-        search: "",
-      },
-      history: { replaceState },
-    });
-    vi.stubGlobal("sessionStorage", {
-      getItem: vi.fn((key) => storage.get(key) ?? null),
-      setItem: vi.fn((key, value) => storage.set(key, value)),
-      removeItem: vi.fn((key) => storage.delete(key)),
-    });
-
-    try {
-      const api = new ExperimentApi("pre");
-      expect(api.hasInvitationToken()).toBe(true);
-      expect(api.invitationToken).toBe("memory-only-invitation-token");
-      expect(replaceState).toHaveBeenCalledWith(null, "", "/pre-picture-naming/");
-      expect([...storage.values()]).not.toContain("memory-only-invitation-token");
-    } finally {
-      vi.unstubAllGlobals();
-    }
-  });
-
-  it("retries participant access mismatches and stale name previews without treating missing Pre registration as correctable", () => {
-    for (const code of [
-      "participant_access_mismatch",
-      "participant_name_state_changed",
-    ]) {
-      expect(isCorrectableParticipantAccessError(
-        new ApiClientError(409, code, "retry participant confirmation"),
-      )).toBe(true);
-    }
-    expect(isCorrectableParticipantAccessError(
-      new ApiClientError(409, "participant_name_not_registered", "contact researcher"),
-    )).toBe(false);
-  });
-
-  it("keeps plaintext names out of preview and confirm-redemption requests", () => {
-    expect(participantNamePreviewPayload({
-      invitationToken: "invite-secret",
-      participantId: " 17 ",
-      expectedVisitType: "immediate",
-    })).toEqual({
-      token: "invite-secret",
-      participant_id: "17",
-      expected_visit_type: "immediate",
-    });
-
-    const registration = invitationRedeemPayload({
-      invitationToken: "invite-secret",
-      clientInstanceId: "client-id",
-      participantId: "17",
-      expectedVisitType: "pre",
-      nameAction: "register",
-      participantName: " 山田 太郎 ",
-    });
-    expect(registration).toMatchObject({
-      name_action: "register",
-      participant_name: "山田 太郎",
-      participant_name_confirmed: true,
-    });
-
-    const confirmation = invitationRedeemPayload({
-      invitationToken: "invite-secret",
-      clientInstanceId: "client-id",
-      participantId: "17",
-      expectedVisitType: "delayed",
-      nameAction: "confirm",
-      participantName: "must-not-be-sent",
-    });
-    expect(confirmation).toMatchObject({
-      name_action: "confirm",
-      participant_name_confirmed: true,
-    });
-    expect(confirmation).not.toHaveProperty("participant_name");
-  });
-
-  it("matches the server display canonicalization for full-width forms and Unicode whitespace", () => {
-    expect(canonicalizeParticipantNameForDisplay(
-      "　ＹＡＭＡＤＡ\u00a0\u2003ＴＡＲＯ　",
-    )).toBe("YAMADA TARO");
-    expect(canonicalizeParticipantNameForDisplay(
-      "  ﾔﾏﾀﾞ　　太郎  ",
-    )).toBe("ヤマダ 太郎");
-
-    const payload = invitationRedeemPayload({
-      invitationToken: "invite-secret",
-      clientInstanceId: "client-id",
-      participantId: "17",
-      expectedVisitType: "pre",
-      nameAction: "register",
-      participantName: "　ＹＡＭＡＤＡ\u00a0\u2003ＴＡＲＯ　",
-    });
-    expect(payload.participant_name).toBe("YAMADA TARO");
-  });
-
-  it("validates canonical names with the server's code-point, UTF-8, control, surrogate, and bidi limits", () => {
-    expect(validateParticipantNameForRegistration("a".repeat(80))).toBe("a".repeat(80));
-    expect(validateParticipantNameForRegistration("😀".repeat(64))).toBe("😀".repeat(64));
-
-    expect(() => validateParticipantNameForRegistration("a".repeat(81)))
-      .toThrow("80文字以内");
-    expect(() => validateParticipantNameForRegistration("😀".repeat(65)))
-      .toThrow("256バイト以内");
-    for (const invalidName of [
-      "　　",
-      "山田\u0000太郎",
-      "山田\ud800太郎",
-      "山田\u202e太郎",
-    ]) {
-      expect(() => validateParticipantNameForRegistration(invalidName))
-        .toThrow(ParticipantNameValidationError);
-    }
-  });
-
-  it("classifies only the server's invalid-name response as an inline-correctable name error", () => {
-    expect(isCorrectableParticipantNameError(
-      new ApiClientError(422, "invalid_participant_name", "invalid name"),
-    )).toBe(true);
-    expect(isCorrectableParticipantNameError(
-      new ApiClientError(409, "participant_name_state_changed", "stale preview"),
-    )).toBe(false);
-  });
-
-  it("registers a Pre name only after local review and supports editing before redemption", async () => {
-    const state = stateWith({});
-    const api = {
-      hasInvitationToken: vi.fn().mockReturnValue(true),
-      previewParticipantName: vi.fn().mockResolvedValue({ name_action: "register" }),
-      bootstrap: vi.fn().mockResolvedValue(state),
-    };
-    const ui = {
-      requestParticipantId: vi.fn().mockResolvedValue("17"),
-      requestParticipantName: vi.fn()
-        .mockResolvedValueOnce("　ﾔﾏﾀﾞ\u00a0\u2003太郎　")
-        .mockResolvedValueOnce("　山田\u2003\u00a0花子　"),
-      confirmParticipantName: vi.fn()
-        .mockResolvedValueOnce("edit")
-        .mockResolvedValueOnce("confirm"),
-      showParticipationSetup: vi.fn(),
-    };
-
-    await expect(bootstrapWithParticipantAccess(api, ui)).resolves.toBe(state);
-    expect(api.previewParticipantName).toHaveBeenCalledWith("17");
-    expect(ui.requestParticipantName).toHaveBeenNthCalledWith(1, "", "");
-    expect(ui.requestParticipantName).toHaveBeenNthCalledWith(2, "ヤマダ 太郎", "");
-    expect(ui.confirmParticipantName).toHaveBeenNthCalledWith(
-      1,
-      "ヤマダ 太郎",
-      { allowEdit: true },
-    );
-    expect(ui.confirmParticipantName).toHaveBeenNthCalledWith(
-      2,
-      "山田 花子",
-      { allowEdit: true },
-    );
-    expect(api.bootstrap).toHaveBeenCalledWith({
-      participant_id: "17",
-      name_action: "register",
-      participant_name_confirmed: true,
-      participant_name: "山田 花子",
-    });
-    expect(ui.showParticipationSetup).toHaveBeenCalledTimes(1);
-  });
-
-  it("keeps an invalid long name on the name step and shows an inline correction message", async () => {
-    const state = stateWith({});
-    const tooLongName = "a".repeat(81);
-    const api = {
-      hasInvitationToken: vi.fn().mockReturnValue(true),
-      previewParticipantName: vi.fn().mockResolvedValue({ name_action: "register" }),
-      bootstrap: vi.fn().mockResolvedValue(state),
-    };
-    const ui = {
-      requestParticipantId: vi.fn().mockResolvedValue("17"),
-      requestParticipantName: vi.fn()
-        .mockResolvedValueOnce(tooLongName)
-        .mockResolvedValueOnce("山田 太郎"),
-      confirmParticipantName: vi.fn().mockResolvedValue("confirm"),
-      showParticipationSetup: vi.fn(),
-    };
-
-    await expect(bootstrapWithParticipantAccess(api, ui)).resolves.toBe(state);
-    expect(ui.requestParticipantId).toHaveBeenCalledTimes(1);
-    expect(api.previewParticipantName).toHaveBeenCalledTimes(1);
-    expect(ui.requestParticipantName).toHaveBeenNthCalledWith(1, "", "");
-    expect(ui.requestParticipantName).toHaveBeenNthCalledWith(
-      2,
-      tooLongName,
-      expect.stringContaining("80文字以内"),
-    );
-    expect(ui.confirmParticipantName).toHaveBeenCalledTimes(1);
-    expect(api.bootstrap).toHaveBeenCalledTimes(1);
-  });
-
-  it("returns a server-rejected Pre name to inline name correction without repeating ID access", async () => {
-    const state = stateWith({});
-    const api = {
-      hasInvitationToken: vi.fn().mockReturnValue(true),
-      previewParticipantName: vi.fn().mockResolvedValue({ name_action: "register" }),
-      bootstrap: vi.fn()
-        .mockRejectedValueOnce(new ApiClientError(
-          422,
-          "invalid_participant_name",
-          "server rejected participant name",
-        ))
-        .mockResolvedValueOnce(state),
-    };
-    const ui = {
-      requestParticipantId: vi.fn().mockResolvedValue("17"),
-      requestParticipantName: vi.fn()
-        .mockResolvedValueOnce("山田 太郎")
-        .mockResolvedValueOnce("山田 花子"),
-      confirmParticipantName: vi.fn().mockResolvedValue("confirm"),
-      showParticipationSetup: vi.fn(),
-    };
-
-    await expect(bootstrapWithParticipantAccess(api, ui)).resolves.toBe(state);
-    expect(ui.requestParticipantId).toHaveBeenCalledTimes(1);
-    expect(api.previewParticipantName).toHaveBeenCalledTimes(1);
-    expect(ui.requestParticipantName).toHaveBeenNthCalledWith(
-      2,
-      "山田 太郎",
-      expect.stringContaining("氏名を登録できませんでした"),
-    );
-    expect(ui.confirmParticipantName).toHaveBeenCalledTimes(2);
-    expect(api.bootstrap).toHaveBeenCalledTimes(2);
-    expect(api.bootstrap).toHaveBeenLastCalledWith({
-      participant_id: "17",
-      name_action: "register",
-      participant_name_confirmed: true,
-      participant_name: "山田 花子",
-    });
-  });
-
-  it("confirms a server-provided name without sending it back during redemption", async () => {
-    const state = stateWith({});
-    const api = {
-      hasInvitationToken: vi.fn().mockReturnValue(true),
-      previewParticipantName: vi.fn().mockResolvedValue({
-        name_action: "confirm",
-        participant_name: "山田 太郎",
-      }),
-      bootstrap: vi.fn().mockResolvedValue(state),
-    };
-    const ui = {
-      requestParticipantId: vi.fn().mockResolvedValue("17"),
-      requestParticipantName: vi.fn(),
-      confirmParticipantName: vi.fn().mockResolvedValue("confirm"),
-      showParticipationSetup: vi.fn(),
-    };
-
-    await expect(bootstrapWithParticipantAccess(api, ui)).resolves.toBe(state);
-    expect(ui.confirmParticipantName).toHaveBeenCalledWith("山田 太郎");
-    expect(ui.requestParticipantName).not.toHaveBeenCalled();
-    expect(api.bootstrap).toHaveBeenCalledWith({
-      participant_id: "17",
-      name_action: "confirm",
-      participant_name_confirmed: true,
-    });
-    expect(api.bootstrap.mock.calls[0][0]).not.toHaveProperty("participant_name");
-  });
-
-  it("returns to ID entry after rejecting a displayed name without redeeming that access", async () => {
-    const state = stateWith({});
-    const api = {
-      hasInvitationToken: vi.fn().mockReturnValue(true),
-      previewParticipantName: vi.fn()
-        .mockResolvedValueOnce({ name_action: "confirm", participant_name: "別の 参加者" })
-        .mockResolvedValueOnce({ name_action: "confirm", participant_name: "山田 太郎" }),
-      bootstrap: vi.fn().mockResolvedValue(state),
-    };
-    const ui = {
-      requestParticipantId: vi.fn()
-        .mockResolvedValueOnce("16")
-        .mockResolvedValueOnce("17"),
-      requestParticipantName: vi.fn(),
-      confirmParticipantName: vi.fn()
-        .mockResolvedValueOnce("reject")
-        .mockResolvedValueOnce("confirm"),
-      showParticipationSetup: vi.fn(),
-    };
-
-    await expect(bootstrapWithParticipantAccess(api, ui)).resolves.toBe(state);
-    expect(api.previewParticipantName).toHaveBeenNthCalledWith(1, "16");
-    expect(api.previewParticipantName).toHaveBeenNthCalledWith(2, "17");
-    expect(ui.requestParticipantId.mock.calls[1][0]).toContain("担当者へ連絡");
-    expect(api.bootstrap).toHaveBeenCalledTimes(1);
-    expect(api.bootstrap).toHaveBeenCalledWith({
-      participant_id: "17",
-      name_action: "confirm",
-      participant_name_confirmed: true,
-    });
-  });
-
-  it("keeps tokenless stored-session bootstrap behavior unchanged", async () => {
-    const state = stateWith({});
-    const api = {
-      hasInvitationToken: vi.fn().mockReturnValue(false),
-      previewParticipantName: vi.fn(),
-      bootstrap: vi.fn().mockResolvedValue(state),
-    };
-    const ui = {
-      requestParticipantId: vi.fn(),
-      requestParticipantName: vi.fn(),
-      confirmParticipantName: vi.fn(),
-      showParticipationSetup: vi.fn(),
-    };
-
-    await expect(bootstrapWithParticipantAccess(api, ui)).resolves.toBe(state);
-    expect(api.bootstrap).toHaveBeenCalledWith();
-    expect(api.previewParticipantName).not.toHaveBeenCalled();
-    expect(ui.requestParticipantId).not.toHaveBeenCalled();
-    expect(ui.showParticipationSetup).toHaveBeenCalledTimes(1);
-  });
-
-  it("keeps participant-access markup IDs unique and exposes each step to assistive technology", async () => {
+    it("keeps participant-access markup IDs unique and exposes each step to assistive technology", async () => {
     const response = await exports.default.fetch(
       new Request("https://experiment.test/js/task-page.js"),
     );
@@ -555,12 +464,10 @@ describe("frontend reliability guards", () => {
     expect(ids.length).toBeGreaterThan(20);
     expect(new Set(ids).size).toBe(ids.length);
     expect(source).toContain('aria-labelledby="participant-id-heading"');
-    expect(source).toContain('aria-labelledby="participant-name-heading"');
-    expect(source).toContain('aria-labelledby="participant-name-confirmation-heading"');
-    expect(source).toContain('id="participant-name-confirmation-heading" tabindex="-1"');
-    expect(source).toContain('id="participant-name-confirmation-value" class="summary" aria-live="polite"');
-    expect(source).toContain('maxlength="256"');
-    expect(source).toContain('aria-describedby="participant-name-status"');
+    expect(source).toContain('aria-labelledby="participant-id-confirmation-heading"');
+    expect(source).toContain('id="participant-id-confirmation-heading" tabindex="-1"');
+    expect(source).toContain('id="participant-id-confirmation-value" class="summary" aria-live="polite"');
+    expect(source).not.toContain('participant-name');
     expect(source).toContain('id="stimulus-emoji"');
     expect(source).toContain('id="prompt-keyboard-hint"');
     expect(source).toContain('id="continue-key-label"');
@@ -580,6 +487,7 @@ describe("frontend reliability guards", () => {
       const ui = Object.create(ExperimentUi.prototype);
       const continueButton = interactiveElement();
       const continueKeyLabel = interactiveElement();
+      const interruptionButton = interactiveElement({ hidden: true });
       const stage = interactiveElement();
       Object.assign(ui, {
         resetStage: vi.fn(),
@@ -587,6 +495,9 @@ describe("frontend reliability guards", () => {
         promptKeyboardHint: interactiveElement(),
         continueKeyLabel,
         continueButton,
+        interruptionButton,
+        interruptionControlEnabled: true,
+        researcherTestMode: false,
         stage,
         activePromptFinish: null,
         spaceHeld: false,
@@ -595,6 +506,7 @@ describe("frontend reliability guards", () => {
       let resolved = false;
       const pending = ui.prompt("確認", "進む").then(() => { resolved = true; });
       expect(stage.getAttribute("aria-keyshortcuts")).toBe("Space");
+      expect(interruptionButton.hidden).toBe(false);
       continueButton.dispatch("click");
       await Promise.resolve();
       expect(resolved).toBe(false);
@@ -638,6 +550,69 @@ describe("frontend reliability guards", () => {
     }
   });
 
+  it("requires Space again after cancelling interruption from a safe prompt", async () => {
+    const listeners = new Map();
+    const stage = interactiveElement();
+    const fakeDocument = {
+      body: interactiveElement(),
+      addEventListener: vi.fn((type, listener) => listeners.set(type, listener)),
+      removeEventListener: vi.fn((type, listener) => {
+        if (listeners.get(type) === listener) listeners.delete(type);
+      }),
+    };
+    vi.stubGlobal("document", fakeDocument);
+    try {
+      const ui = Object.create(ExperimentUi.prototype);
+      const cancel = interactiveElement();
+      Object.assign(ui, {
+        resetStage: vi.fn(),
+        message: interactiveElement(),
+        promptKeyboardHint: interactiveElement(),
+        continueKeyLabel: interactiveElement(),
+        interruptionButton: interactiveElement({ hidden: true }),
+        interruptionControlEnabled: true,
+        interruptionButtons: [interactiveElement()],
+        interruptionChoiceTitle: interactiveElement(),
+        interruptionChoiceDescription: interactiveElement(),
+        pauseParticipationButton: interactiveElement(),
+        terminateParticipationButton: interactiveElement(),
+        cancelInterruptionButton: cancel,
+        interruptionChoice: interactiveElement(),
+        researcherTestMode: false,
+        stage,
+        activePromptFinish: null,
+        interruptedPrompt: null,
+        spaceHeld: false,
+      });
+
+      const initialPrompt = ui.prompt("元の課題説明", "本番を開始");
+      ui.releaseActivePromptForInterruption();
+      await initialPrompt;
+
+      let choiceResolved = false;
+      const choice = ui.chooseInterruptionMode().then((value) => {
+        choiceResolved = true;
+        return value;
+      });
+      cancel.dispatch("click");
+      await Promise.resolve();
+      expect(ui.message.textContent).toBe("元の課題説明");
+      expect(choiceResolved).toBe(false);
+
+      listeners.get("keydown")({
+        code: "Space",
+        key: " ",
+        target: stage,
+        repeat: false,
+        preventDefault: vi.fn(),
+      });
+      await expect(choice).resolves.toBeNull();
+      expect(choiceResolved).toBe(true);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("locks the viewport only while the experiment task is active", async () => {
     const [uiResponse, stylesResponse] = await Promise.all([
       exports.default.fetch(new Request("https://experiment.test/js/ui.js")),
@@ -654,120 +629,7 @@ describe("frontend reliability guards", () => {
     expect(uiSource).toContain('this.stage.classList?.remove("prompt-active")');
   });
 
-  it("renders a participant name with textContent and removes it after either confirmation choice", async () => {
-    const ui = Object.create(ExperimentUi.prototype);
-    Object.assign(ui, {
-      participantIdForm: interactiveElement(),
-      participantNameForm: interactiveElement(),
-      participantNameConfirmation: interactiveElement(),
-      participantIdInput: interactiveElement({ value: "17" }),
-      participantNameInput: interactiveElement({ value: "should-be-cleared" }),
-      participantNameConfirmationHeading: interactiveElement(),
-      participantNameConfirmationPrompt: interactiveElement(),
-      participantNameConfirmationValue: interactiveElement(),
-      participantNameConfirm: interactiveElement(),
-      participantNameEdit: interactiveElement(),
-      participantNameReject: interactiveElement(),
-      participantNameConfirmationStatus: interactiveElement(),
-    });
-    const canaryName = '<img src=x onerror="throw new Error()"> 山田';
-
-    const confirmed = ui.confirmParticipantName(canaryName);
-    expect(ui.participantNameConfirmationValue.textContent).toBe(canaryName);
-    expect(ui.participantNameConfirmationValue.innerHTML).toBe("unchanged-sentinel");
-    expect(ui.participantNameConfirmationHeading.focus).toHaveBeenCalledTimes(1);
-    ui.participantNameConfirm.dispatch("click");
-    await expect(confirmed).resolves.toBe("confirm");
-    expect(ui.participantNameInput.value).toBe("");
-    expect(ui.participantNameConfirmationValue.textContent).toBe("");
-    expect(ui.participantNameConfirmation.hidden).toBe(true);
-
-    const rejected = ui.confirmParticipantName(canaryName);
-    ui.participantNameReject.dispatch("click");
-    await expect(rejected).resolves.toBe("reject");
-    expect(ui.participantNameInput.value).toBe("");
-    expect(ui.participantNameConfirmationValue.textContent).toBe("");
-    expect(ui.participantNameConfirmation.hidden).toBe(true);
-
-    ui.participantNameInput.value = canaryName;
-    ui.participantNameConfirmationValue.textContent = canaryName;
-    ui.clearParticipantAccess();
-    expect(ui.participantIdInput.value).toBe("");
-    expect(ui.participantNameInput.value).toBe("");
-    expect(ui.participantNameConfirmationValue.textContent).toBe("");
-  });
-
-  it("shows name validation feedback inline and clears aria-invalid after resubmission", async () => {
-    const ui = Object.create(ExperimentUi.prototype);
-    const participantNameForm = interactiveElement({ reportValidity: vi.fn(() => true) });
-    const participantNameInput = interactiveElement();
-    Object.assign(ui, {
-      participantIdForm: interactiveElement(),
-      participantNameForm,
-      participantNameConfirmation: interactiveElement(),
-      participantNameInput,
-      participantNameSubmit: interactiveElement(),
-      participantNameStatus: interactiveElement(),
-      participantNameConfirmationValue: interactiveElement(),
-      participantNameConfirmationStatus: interactiveElement(),
-    });
-
-    const submitted = ui.requestParticipantName(
-      "a".repeat(81),
-      "氏名は80文字以内で入力してください。",
-    );
-    expect(ui.participantNameStatus.textContent).toContain("80文字以内");
-    expect(participantNameInput.getAttribute("aria-invalid")).toBe("true");
-    participantNameInput.value = "山田 太郎";
-    participantNameForm.dispatch("submit");
-
-    await expect(submitted).resolves.toBe("山田 太郎");
-    expect(participantNameInput.getAttribute("aria-invalid")).toBe("false");
-    expect(participantNameInput.value).toBe("");
-  });
-
-  it("passes whitespace-only names to the validator instead of ignoring submit", async () => {
-    const ui = Object.create(ExperimentUi.prototype);
-    const participantNameForm = interactiveElement({ reportValidity: vi.fn(() => true) });
-    const participantNameInput = interactiveElement({ value: "\u3000  " });
-    Object.assign(ui, {
-      participantIdForm: interactiveElement(),
-      participantNameForm,
-      participantNameConfirmation: interactiveElement(),
-      participantNameInput,
-      participantNameSubmit: interactiveElement(),
-      participantNameStatus: interactiveElement(),
-      participantNameConfirmationValue: interactiveElement(),
-      participantNameConfirmationStatus: interactiveElement(),
-    });
-
-    const submitted = ui.requestParticipantName();
-    participantNameInput.value = "\u3000  ";
-    participantNameForm.dispatch("submit");
-
-    await expect(submitted).resolves.toBe("\u3000  ");
-    expect(participantNameInput.value).toBe("");
-  });
-
-  it("never writes a participant name to browser storage", async () => {
-    const [apiResponse, uiResponse] = await Promise.all([
-      exports.default.fetch(new Request("https://experiment.test/js/api.js")),
-      exports.default.fetch(new Request("https://experiment.test/js/ui.js")),
-    ]);
-    const apiSource = await apiResponse.text();
-    const uiSource = await uiResponse.text();
-    const storageWrites = apiSource
-      .split("\n")
-      .filter((line) => /(?:localStorage|sessionStorage)\.setItem/u.test(line))
-      .join("\n");
-
-    expect(storageWrites).not.toMatch(/participantName|participant_name/u);
-    expect(uiSource).not.toMatch(/localStorage|sessionStorage/u);
-    expect(uiSource).toContain("this.participantNameConfirmationValue.textContent = String(participantName ?? \"\")");
-    expect(uiSource).not.toContain("participantNameConfirmationValue.innerHTML");
-  });
-
-  it("keeps researcher-only timing and storage vocabulary out of participant copy", async () => {
+    it("keeps researcher-only timing and storage vocabulary out of participant copy", async () => {
     const paths = [
       "/js/learning.js",
       "/js/segment.js",
@@ -783,7 +645,7 @@ describe("frontend reliability guards", () => {
     const participantSource = sources.join("\n");
 
     expect(participantSource).not.toMatch(/750ミリ秒|研究用サーバー|server受付済み|日本語の練習|日本語音声/u);
-    expect(sources[0]).toContain("最初に${practiceTrials.length}回練習");
+    expect(sources[0]).toContain("最初に短い練習をします");
     expect(sources[0]).toContain("英単語の音声");
     expect(sources[1]).toContain("絵を見て英単語を答える課題");
     expect(sources[1]).toContain("英語を聞いて日本語で答える課題");
@@ -811,6 +673,139 @@ describe("frontend reliability guards", () => {
       .toBe("パソコン版Google Chromeで開いてください。");
   });
 
+  it("formats the server admission time in JST without rounding it down", () => {
+    for (const [availableAt, label] of [
+      [1893553200980, "2030年1月2日水曜日 12:00:01"],
+      [1893553200000, "2030年1月2日水曜日 12:00:00"],
+      [Date.UTC(2026, 8, 30, 14, 59, 59, 999), "2026年10月1日木曜日 00:00:00"],
+    ]) {
+      const error = new ApiClientError(403, "visit_not_available", "internal", {
+        available_at_ms: availableAt, server_now_ms: availableAt - 1,
+      });
+      const message = visitAvailabilityMessage(error);
+      expect(message).toContain(`${label}（日本時間）以降`);
+      expect(message).toContain("同じ参加者ID");
+      expect(message).toContain("自動では始まりません");
+      expect(error.details.available_at_ms).toBe(availableAt);
+    }
+    for (const details of [null, {},
+      { available_at_ms: "1893553200980", server_now_ms: 1 },
+      { available_at_ms: Infinity, server_now_ms: 1 },
+      { available_at_ms: Number.MAX_SAFE_INTEGER, server_now_ms: 1 },
+      { available_at_ms: 10, server_now_ms: null },
+      { available_at_ms: 10, server_now_ms: 0 },
+      { available_at_ms: 10, server_now_ms: 10 },
+      { available_at_ms: 10, server_now_ms: 11 },
+    ]) {
+      expect(visitAvailabilityMessage(new ApiClientError(403, "visit_not_available", "internal", details)))
+        .toBeNull();
+    }
+    expect(visitAvailabilityMessage(new ApiClientError(500, "visit_not_available", "internal", {
+      available_at_ms: 10, server_now_ms: 1,
+    }))).toBeNull();
+  });
+
+  it("uses a neutral scheduled-visit card without hiding real errors or interruption uncertainty", () => {
+    vi.stubGlobal("document", { body: { classList: { remove: vi.fn() } } });
+    try {
+      const ui = Object.create(ExperimentUi.prototype);
+      Object.assign(ui, {
+        researcherTestMode: false, stopResponseTimer: vi.fn(),
+        welcome: interactiveElement(), task: interactiveElement(),
+        fatalPanel: interactiveElement(), fatalTitle: interactiveElement(),
+        fatalMessage: interactiveElement(), fatalReload: interactiveElement(),
+        fatalHelp: interactiveElement(),
+      });
+      const error = new ApiClientError(403, "visit_not_available", "internal", {
+        available_at_ms: 1893553200980, server_now_ms: 1893553200979,
+      });
+      ui.fatal(error);
+      expect(ui.fatalTitle.textContent).toBe("まだ開始時刻になっていません");
+      expect(ui.fatalPanel.classList.toggle).toHaveBeenLastCalledWith("error-card", false);
+      expect(ui.fatalPanel.getAttribute("role")).toBe("region");
+      expect(ui.fatalMessage.textContent).toContain("12:00:01（日本時間）以降");
+      expect(ui.fatalMessage.textContent).not.toContain("お問い合わせ番号");
+      expect(ui.fatalReload.hidden).toBe(false);
+      expect(ui.fatalReload.textContent).toBe("受付状況を確認する");
+      expect(ui.fatalPanel.focus).toHaveBeenCalledTimes(1);
+      expect(ui.welcome.hidden && ui.task.hidden).toBe(true);
+
+      ui.fatal(error, { interruptionRequested: true });
+      expect(ui.fatalMessage.textContent).toContain("どれが完了したか確認できていません");
+      expect(ui.fatalPanel.getAttribute("role")).toBe("alert");
+      ui.fatal(new ApiClientError(403, "visit_not_available", "internal"));
+      expect(ui.fatalTitle.textContent).toBe("課題を続行できません");
+      expect(ui.fatalMessage.textContent).toContain("お問い合わせ番号");
+      expect(ui.fatalReload.hidden).toBe(true);
+      ui.researcherTestMode = true;
+      ui.fatal(error);
+      expect(ui.fatalPanel.classList.toggle).toHaveBeenLastCalledWith("error-card", true);
+      expect(ui.fatalMessage.textContent).toContain("研究者用動作確認");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("gives both visibility paths the same stable, noncommittal recovery", () => {
+    const { runner } = runnerFor(stateWith());
+    let interruptionError;
+    try {
+      runner.stopIfVisibilityInterrupted(true);
+    } catch (error) {
+      interruptionError = error;
+    }
+    expect(interruptionError).toMatchObject({ code: "trial_visibility_interrupted" });
+    const message = participantErrorMessage(interruptionError);
+    expect(message).toContain("この回の保存状態は、この画面では確認できません");
+    expect(message).toContain("同じ参加者ID");
+    expect(message).toContain("サーバーで確認できた位置から再開");
+    expect(message).not.toContain("記録済み");
+
+    vi.stubGlobal("document", { visibilityState: "hidden" });
+    try {
+      expect(() => runner.requireVisibleBeforeOnset())
+        .toThrow(expect.objectContaining({ code: "trial_visibility_interrupted" }));
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("shows the same-page reload action only for a recoverable participant interruption", () => {
+    vi.stubGlobal("document", {
+      body: { classList: { remove: vi.fn() } },
+      visibilityState: "hidden",
+    });
+    try {
+      const ui = Object.create(ExperimentUi.prototype);
+      Object.assign(ui, {
+        researcherTestMode: false,
+        stopResponseTimer: vi.fn(),
+        welcome: interactiveElement(),
+        task: interactiveElement(),
+        fatalPanel: interactiveElement(),
+        fatalTitle: interactiveElement(),
+        fatalMessage: interactiveElement(),
+        fatalReload: interactiveElement({ hidden: true }),
+        fatalHelp: interactiveElement(),
+      });
+      const { runner } = runnerFor(stateWith());
+      let interruptionError;
+      try {
+        runner.requireVisibleBeforeOnset();
+      } catch (error) {
+        interruptionError = error;
+      }
+      ui.fatal(interruptionError);
+
+      expect(ui.fatalReload.hidden).toBe(false);
+      expect(ui.fatalReload.textContent).toBe("同じ課題を開き直す");
+      expect(ui.fatalMessage.textContent).toContain("同じ参加者ID");
+      expect(ui.fatalHelp.textContent).toContain("開き直せない場合");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("renders an opaque inquiry number instead of a raw error code on the fatal screen", () => {
     vi.stubGlobal("document", {
       body: { classList: { remove: vi.fn() } },
@@ -822,6 +817,7 @@ describe("frontend reliability guards", () => {
         welcome: interactiveElement(),
         task: interactiveElement(),
         fatalPanel: interactiveElement(),
+        fatalTitle: interactiveElement(),
         fatalMessage: interactiveElement(),
       });
       ui.fatal({
@@ -843,8 +839,6 @@ describe("frontend reliability guards", () => {
     Object.assign(ui, {
       resetStage: vi.fn(),
       setInterruptionControlEnabled: vi.fn(),
-      progressDetail: interactiveElement(),
-      saveState: { textContent: "", classList: { add: vi.fn() } },
       interruptionChoiceTitle: interactiveElement(),
       interruptionChoiceDescription: interactiveElement(),
       pauseParticipationButton: interactiveElement(),
@@ -855,13 +849,16 @@ describe("frontend reliability guards", () => {
 
     const choice = ui.confirmTerminationWithPartialData();
     expect(cancel.focus).toHaveBeenCalledTimes(1);
-    expect(ui.progressDetail.textContent).toContain("保存できていません");
-    expect(ui.saveState.textContent).toBe("一部未保存");
+    expect(ui.interruptionChoiceDescription.textContent).toContain("一部の回答または録音を保存できません");
     cancel.dispatch("click");
     await expect(choice).resolves.toBe(false);
   });
 
   it("shows participant-facing Japanese guidance for common server errors", () => {
+    expect(participantErrorMessage({
+      code: "development_participants_blocked",
+      message: "Development participant access is disabled",
+    })).toContain("通常の参加者ID");
     expect(participantErrorMessage({
       code: "session_superseded",
       message: "This session is no longer active",
@@ -899,9 +896,8 @@ describe("frontend reliability guards", () => {
 
     expect(message).toContain("通常完了、一時中断、参加終了のどれが完了したか確認できていません");
     expect(message).toContain("どこまで保存されたかも確認できていません");
-    expect(message).toContain("同じ有効な招待リンクを開き直し");
+    expect(message).toContain("同じ課題ページを開き直し");
     expect(message).toContain("参加者IDを入力");
-    expect(message).toContain("表示される氏名を確認");
     expect(message).toContain("新しい問題を始める前に「中断・終了」");
     expect(message).toContain("担当者へ連絡");
     expect(message).not.toContain("保存は完了");
@@ -1026,82 +1022,83 @@ describe("frontend reliability guards", () => {
       .toBe("accentedness_results.zip");
   });
 
-  it("claims local ZIP completion only after a confirmed direct file write", () => {
-    const direct = participantCopyCompletionMessage(
-      PARTICIPANT_COPY_DELIVERY.DIRECT_WRITE_CONFIRMED,
-    );
-    expect(direct).toContain("回答と録音は保存されました");
-    expect(direct).toContain("選択した保存先へのZIP書き込みも完了");
-    expect(direct).not.toContain("ダウンロードを開始しました");
-
-    const fallback = participantCopyCompletionMessage(
-      PARTICIPANT_COPY_DELIVERY.DOWNLOAD_STARTED,
-      { alreadyCompleted: true, filename: "accentedness_results.zip" },
-    );
-    expect(fallback).toContain("回答と録音も保存済み");
-    expect(fallback).toContain("ZIPのダウンロードを開始しました");
-    expect(fallback).toContain("Chromeのダウンロード一覧");
-    expect(fallback).toContain("accentedness_results.zip");
-    expect(fallback).not.toContain("ZIP書き込みも完了");
-  });
-
-  it("refuses to render participant ZIP completion for an unknown delivery state", () => {
-    expect(() => participantCopyCompletionMessage("unknown"))
-      .toThrow("受け渡し状態を確認できません");
-  });
-
-  it("streams a ZIP response to a selected file without creating a Blob", async () => {
-    const written = [];
-    const writable = {
-      write: vi.fn(async (chunk) => written.push(new Uint8Array(chunk))),
-      close: vi.fn(async () => {}),
-      abort: vi.fn(async () => {}),
-    };
-    const fileHandle = { createWritable: vi.fn(async () => writable) };
-    const bytes = new Uint8Array([1, 2, 3, 4, 5]);
-    const response = new Response(bytes, {
-      headers: { "Content-Length": String(bytes.byteLength) },
+  it("describes automatic download without claiming a completed disk save", () => {
+    const message = participantCopyCompletionMessage({
+      alreadyCompleted: true, filename: "accentedness_p901_20260905.zip",
     });
-
-    await expect(writeResponseToFile(response, fileHandle)).resolves.toBe(bytes.byteLength);
-    expect(fileHandle.createWritable).toHaveBeenCalledTimes(1);
-    expect(written.reduce((sum, chunk) => sum + chunk.byteLength, 0)).toBe(bytes.byteLength);
-    expect(writable.close).toHaveBeenCalledTimes(1);
-    expect(writable.abort).not.toHaveBeenCalled();
+    expect(message).toContain("回答と録音も保存済み");
+    expect(message).toContain("自動ダウンロードを開始");
+    expect(message).toContain("Chromeのダウンロード一覧");
+    expect(message).toContain("accentedness_p901_20260905.zip");
+    expect(message).toContain("参加者IDと録音");
+    expect(message).not.toContain("ZIP書き込みも完了");
+    expect(participantCopyCompletionMessage({ filename: "../../unsafe.zip" }))
+      .toContain("accentedness_results.zip");
   });
 
-  it("aborts a direct file save when the ZIP response is truncated", async () => {
-    const writable = {
-      write: vi.fn(async () => {}),
-      close: vi.fn(async () => {}),
-      abort: vi.fn(async () => {}),
-    };
+  it.each([
+    ["pre", "事前テスト", "単語学習のリンク"],
+    ["immediate", "直後テスト", "遅延テストの案内"],
+    ["delayed", "遅延テスト", "ご協力ありがとうございました"],
+  ])("gives %s-specific download and next-step guidance", (visitType, label, nextStep) => {
+    for (const alreadyCompleted of [false, true]) {
+      const message = participantCopyCompletionMessage({ visitType, alreadyCompleted });
+      expect(message).toContain(label);
+      expect(message).toContain(nextStep);
+      expect(message).toContain("ここまでの回答と録音");
+      expect(message).toContain("自動ダウンロードを開始");
+      expect(message.includes("録音を聞き返したりせず")).toBe(visitType !== "delayed");
+    }
+  });
+
+  it("automatically clicks the named ZIP link and keeps it available for manual retry", () => {
+    const blob = new Blob(["zip"]);
+    const filename = "accentedness_p901_20260905.zip";
+    const link = interactiveElement();
+    link.click = vi.fn(() => {
+      expect(link.download).toBe(filename);
+      expect(link.href).toBe("blob:synthetic-copy");
+      expect(link.hidden).toBe(false);
+    });
+    const ui = { resetStage: vi.fn(), activeDownloadUrl: "blob:old-copy", downloadLink: link };
+    const createObjectURL = vi.fn(() => "blob:synthetic-copy");
+    const revokeObjectURL = vi.fn();
+    vi.stubGlobal("URL", { createObjectURL, revokeObjectURL });
+    try {
+      ExperimentUi.prototype.downloadParticipantCopy.call(ui, { blob, filename });
+      expect(createObjectURL).toHaveBeenCalledWith(blob);
+      expect(revokeObjectURL).toHaveBeenCalledWith("blob:old-copy");
+      expect(link.click).toHaveBeenCalledTimes(1);
+      expect(link.textContent).toBe("ZIPをもう一度ダウンロード");
+      link.click();
+      expect(link.click).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it.each([3, 5])("checks complete ZIP reception before download (expected bytes: %s)", async (expectedBytes) => {
     const response = new Response(new Uint8Array([1, 2, 3]), {
-      headers: { "Content-Length": "5" },
+      headers: {
+        "Content-Type": "application/zip",
+        "Content-Length": String(expectedBytes),
+        "Content-Disposition": 'attachment; filename="accentedness_p901_20260905.zip"',
+      },
     });
-
-    await expect(writeResponseToFile(response, {
-      createWritable: vi.fn(async () => writable),
-    })).rejects.toThrow("最後まで受信");
-    expect(writable.close).not.toHaveBeenCalled();
-    expect(writable.abort).toHaveBeenCalledTimes(1);
-  });
-
-  it("labels a file-system write failure so the participant can choose another target", async () => {
-    const response = new Response(new Uint8Array([1, 2, 3]), {
-      headers: { "Content-Length": "3" },
-    });
-    const writable = {
-      write: vi.fn().mockRejectedValue(new DOMException("disk full", "QuotaExceededError")),
-      close: vi.fn(),
-      abort: vi.fn(async () => {}),
-    };
-
-    await expect(writeResponseToFile(response, {
-      createWritable: vi.fn(async () => writable),
-    })).rejects.toMatchObject({ code: "participant_copy_file_write_failed" });
-    expect(writable.abort).toHaveBeenCalledTimes(1);
-    expect(writable.close).not.toHaveBeenCalled();
+    vi.stubGlobal("window", { setTimeout, clearTimeout });
+    vi.stubGlobal("fetch", vi.fn(async () => response));
+    try {
+      const result = ExperimentApi.prototype.fetchParticipantCopy.call({ sessionToken: "local-test" });
+      if (expectedBytes === 3) {
+        await expect(result).resolves.toMatchObject({
+          filename: "accentedness_p901_20260905.zip", byteCount: 3,
+        });
+      } else {
+        await expect(result).rejects.toThrow("最後まで受信");
+      }
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("retries participant ZIP preparation without changing visit completion", async () => {
@@ -1110,14 +1107,13 @@ describe("frontend reliability guards", () => {
       .mockRejectedValueOnce(new TypeError("temporary copy failure"))
       .mockResolvedValue({ blob: new Blob(["zip"]), filename: "accentedness_results.zip" });
     const { runner, ui } = runnerFor(state, { fetchParticipantCopy });
-    const fileHandle = { createWritable: vi.fn() };
 
-    await expect(runner.prepareParticipantCopyWithRetry(fileHandle)).resolves.toMatchObject({
+    await expect(runner.prepareParticipantCopyWithRetry()).resolves.toMatchObject({
       filename: "accentedness_results.zip",
     });
     expect(fetchParticipantCopy).toHaveBeenCalledTimes(2);
-    expect(fetchParticipantCopy).toHaveBeenNthCalledWith(1, fileHandle);
-    expect(fetchParticipantCopy).toHaveBeenNthCalledWith(2, fileHandle);
+    expect(fetchParticipantCopy).toHaveBeenNthCalledWith(1);
+    expect(fetchParticipantCopy).toHaveBeenNthCalledWith(2);
     expect(ui.prompt).toHaveBeenCalledWith(
       expect.stringContaining("実験データは保存されています"),
       "ZIPを再準備する",

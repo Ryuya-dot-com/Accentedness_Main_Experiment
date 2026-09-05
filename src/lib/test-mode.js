@@ -2,14 +2,33 @@ import {
   bytesToHex,
 } from "./crypto.js";
 import { buildParticipantDesign } from "./manifest.js";
+import {
+  ACCENTS,
+  LEARNING_PRACTICE_STIMULI,
+  L2_TO_L1_CONTROL_STIMULI,
+  L2_TO_L1_CONTROL_TALKER,
+  L2_TO_L1_PRACTICE_STIMULI,
+  MAIN_STIMULI,
+  PICTURE_NAMING_PRACTICE_STIMULI,
+  PRACTICE_TALKER,
+  TEST_TALKERS,
+  TRAINING_TALKERS,
+} from "./stimuli.js";
 
 const TEST_DESIGN_CELL_COUNT = 72;
 const UINT32_RANGE = 0x1_0000_0000;
 const TEST_DESIGN_CELL_LIMIT = Math.floor(UINT32_RANGE / TEST_DESIGN_CELL_COUNT)
   * TEST_DESIGN_CELL_COUNT;
 const TEST_ASSIGNMENT_SUFFIX = "test-mode-v2";
-const TEST_ASSET_VERSION = "test-static-placeholder-v1";
-const GENERIC_AUDIO_URL = "/placeholder-audio/book.wav";
+
+const MAIN_WORDS = new Set(MAIN_STIMULI.map((item) => item.word));
+const IMAGE_WORDS = new Set([
+  ...MAIN_STIMULI,
+  ...PICTURE_NAMING_PRACTICE_STIMULI,
+].map((item) => item.word));
+const LEARNING_PRACTICE_WORDS = new Set(LEARNING_PRACTICE_STIMULI.map((item) => item.word));
+const L2_PRACTICE_WORDS = new Set(L2_TO_L1_PRACTICE_STIMULI.map((item) => item.word));
+const L2_CONTROL_WORDS = new Set(L2_TO_L1_CONTROL_STIMULI.map((item) => item.word));
 
 export const TEST_MODE_SCOPES = Object.freeze({
   pre: Object.freeze(["picture_naming"]),
@@ -36,28 +55,10 @@ export function isAllowedTestModeScope(visitType, segment) {
   return TEST_MODE_SCOPES[visitType]?.includes(segment) === true;
 }
 
-function staticAudioUrl(trial) {
-  if (!trial.audioKey) return null;
-  const fileName = String(trial.audioKey).split("/").at(-1);
-  return /^[a-z]+\.wav$/u.test(fileName)
-    ? `/placeholder-audio/${fileName}`
-    : GENERIC_AUDIO_URL;
-}
-
-function escapeXml(value) {
-  return String(value)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&apos;");
-}
-
-function staticImageUrl(trial) {
-  if (!trial.imageKey) return null;
-  const escapedGloss = escapeXml(trial.itemGloss);
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="800" viewBox="0 0 1200 800"><rect width="1200" height="800" rx="28" fill="#f7faf8"/><rect x="24" y="24" width="1152" height="752" rx="22" fill="none" stroke="#8fa39a" stroke-width="6" stroke-dasharray="18 14"/><text x="600" y="300" text-anchor="middle" font-family="sans-serif" font-size="30" font-weight="700" fill="#596963">画像プレースホルダー</text><text x="600" y="475" text-anchor="middle" font-family="sans-serif" font-size="96" font-weight="800" fill="#17211e">${escapedGloss}</text></svg>`;
-  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+function testStimulusUrl(key, kind) {
+  return key
+    ? `/api/test/stimuli/${kind}?key=${encodeURIComponent(key)}`
+    : null;
 }
 
 function clientSafeTrial(trial, current) {
@@ -67,13 +68,12 @@ function clientSafeTrial(trial, current) {
     segment: trial.segment,
     segment_ordinal: trial.segmentOrdinal,
     practice: trial.practice,
-    exclude_from_analysis: trial.excludeFromAnalysis,
-    placeholder_asset: true,
+    placeholder_asset: false,
     expects_recording: trial.expectsRecording,
     has_audio: Boolean(trial.audioKey),
     has_image: Boolean(trial.imageKey),
-    audio_endpoint: staticAudioUrl(trial),
-    image_endpoint: staticImageUrl(trial),
+    audio_endpoint: testStimulusUrl(trial.audioKey, "audio"),
+    image_endpoint: testStimulusUrl(trial.imageKey, "image"),
     protocol: {
       timing: trial.protocol?.timing ?? {},
       ...(trial.protocol?.visualEmoji
@@ -87,11 +87,51 @@ function clientSafeTrial(trial, current) {
   };
 }
 
+export function isCanonicalTestModeAssetKey(keyInput, kind, assetVersion) {
+  const key = String(keyInput ?? "");
+  const version = String(assetVersion ?? "");
+  const parts = key.split("/");
+  if (!version || parts[0] !== "stimuli" || parts[1] !== version) return false;
+
+  if (kind === "image") {
+    return parts.length === 4
+      && parts[2] === "images"
+      && /^[a-z]+\.webp$/u.test(parts[3])
+      && IMAGE_WORDS.has(parts[3].slice(0, -5));
+  }
+  if (kind !== "audio" || parts.length !== 6 || !/^[a-z]+\.wav$/u.test(parts[5])) {
+    return false;
+  }
+
+  const [, , category, accent, talker, fileName] = parts;
+  const word = fileName.slice(0, -4);
+  if (!ACCENTS.includes(accent)) return false;
+  if (category === "learning") {
+    return MAIN_WORDS.has(word) && TRAINING_TALKERS[accent]?.includes(talker) === true;
+  }
+  if (category === "learning-practice") {
+    return accent === "english" && talker === PRACTICE_TALKER
+      && LEARNING_PRACTICE_WORDS.has(word);
+  }
+  if (category === "test") {
+    return MAIN_WORDS.has(word) && TEST_TALKERS[accent] === talker;
+  }
+  if (category === "test-control") {
+    return accent === "english" && talker === L2_TO_L1_CONTROL_TALKER
+      && L2_CONTROL_WORDS.has(word);
+  }
+  return category === "practice"
+    && accent === "english"
+    && talker === PRACTICE_TALKER
+    && L2_PRACTICE_WORDS.has(word);
+}
+
 export async function buildTestModeBootstrap({
   visitType,
   segment,
   assignmentVersion,
   seedAlgorithmVersion,
+  assetVersion,
 }) {
   if (!isAllowedTestModeScope(visitType, segment)) {
     throw new TypeError("Unsupported test-mode visit and segment scope");
@@ -104,7 +144,7 @@ export async function buildTestModeBootstrap({
     participantUuid: entropy.runId,
     assignmentVersion: testAssignmentVersion,
     seedAlgorithmVersion,
-    assetVersion: TEST_ASSET_VERSION,
+    assetVersion,
     randomizationSecret: entropy.designSecret,
   });
   const scopedTrials = design[visitType].trials.filter((trial) => trial.segment === segment);
@@ -125,7 +165,7 @@ export async function buildTestModeBootstrap({
       visit_type: visitType,
       status: "active",
     },
-    participant: { id: "test" },
+    participant: { id: "999" },
     manifest,
     accepted: [],
     participation_control: {

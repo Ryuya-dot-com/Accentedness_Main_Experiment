@@ -1,4 +1,5 @@
 import { stableJson } from "./crypto.js";
+import { RESEARCHER_TEST_PARTICIPANT_ID } from "./manifest.js";
 
 const CANONICAL_ROUTES = Object.freeze({
   pre: Object.freeze({ picture_naming: "/pre-picture-naming/" }),
@@ -54,12 +55,9 @@ function trialInsertStatement(db, visitUuid, trial) {
 export async function findParticipantByNumericId(db, numericId) {
   return db.prepare(`
     SELECT p.*,
-      CASE WHEN pn.participant_uuid IS NULL THEN 0 ELSE 1 END AS participant_name_registered,
       vp.visit_uuid AS pre_visit_uuid,
       vi.visit_uuid AS immediate_visit_uuid, vd.visit_uuid AS delayed_visit_uuid
     FROM participants p
-    LEFT JOIN participant_names pn
-      ON pn.participant_uuid = p.participant_uuid
     LEFT JOIN visits vp ON vp.participant_uuid = p.participant_uuid AND vp.visit_type = 'pre'
     LEFT JOIN visits vi ON vi.participant_uuid = p.participant_uuid AND vi.visit_type = 'immediate'
     LEFT JOIN visits vd ON vd.participant_uuid = p.participant_uuid AND vd.visit_type = 'delayed'
@@ -68,7 +66,18 @@ export async function findParticipantByNumericId(db, numericId) {
   `).bind(numericId).first();
 }
 
-export async function insertParticipantDesign(db, design, nowMs) {
+export async function insertParticipantDesign(
+  db,
+  design,
+  nowMs,
+  { actorType = "system", source = "internal" } = {},
+) {
+  if (!new Set(["admin", "participant", "system"]).has(actorType)) {
+    throw new TypeError("Unsupported participant design actor type");
+  }
+  if (design.assignment.numericId === RESEARCHER_TEST_PARTICIPANT_ID) {
+    throw new TypeError("Participant ID 999 cannot be persisted");
+  }
   const existing = await findParticipantByNumericId(db, design.assignment.numericId);
   if (existing) return { existing: true, participant: existing };
 
@@ -191,13 +200,15 @@ export async function insertParticipantDesign(db, design, nowMs) {
   statements.push(db.prepare(`
     INSERT INTO audit_log (
       audit_uuid, actor_type, action, participant_uuid, server_at_ms, details_json
-    ) VALUES (?, 'admin', 'participant_created', ?, ?, ?)
+    ) VALUES (?, ?, 'participant_created', ?, ?, ?)
   `).bind(
     crypto.randomUUID(),
+    actorType,
     assignment.participantUuid,
     nowMs,
     stableJson({
       numeric_id: assignment.numericId,
+      source,
       assignment_version: assignment.assignmentVersion,
       pre_manifest_hash: design.pre.manifestHash,
       immediate_manifest_hash: design.immediate.manifestHash,
@@ -224,25 +235,6 @@ export async function insertParticipantDesign(db, design, nowMs) {
       delayed_visit_uuid: delayedVisitUuid,
     },
   };
-}
-
-export async function getVisitForInvitation(db, tokenHash) {
-  return db.prepare(`
-    SELECT
-      i.invite_uuid, i.visit_uuid, i.status AS invitation_status, i.generation,
-      v.visit_type, v.status AS visit_status, v.target_at_ms, v.available_at_ms,
-      v.first_started_at_ms, v.behavioral_completed_at_ms, v.finalized_at_ms,
-      v.active_session_epoch, v.participant_uuid, v.manifest_hash,
-      p.numeric_id, p.assignment_version, p.asset_version, p.status AS participant_status,
-      pn.participant_name, pn.registered_visit_uuid, pn.registered_at_ms
-    FROM invitations i
-    JOIN visits v ON v.visit_uuid = i.visit_uuid
-    JOIN participants p ON p.participant_uuid = v.participant_uuid
-    LEFT JOIN participant_names pn
-      ON pn.participant_uuid = p.participant_uuid
-    WHERE i.token_hash = ?
-    LIMIT 1
-  `).bind(tokenHash).first();
 }
 
 export async function getSessionByTokenHash(db, tokenHash) {
@@ -320,7 +312,6 @@ export async function getVisitState(db, session) {
       segment: row.segment,
       segment_ordinal: row.segment_ordinal,
       practice: Boolean(row.practice),
-      exclude_from_analysis: Boolean(row.exclude_from_analysis),
       placeholder_asset: Boolean(row.placeholder_asset),
       expects_recording: Boolean(row.expects_recording),
       has_audio: Boolean(row.audio_key),

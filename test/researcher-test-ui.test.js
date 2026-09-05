@@ -51,11 +51,15 @@ function testUi() {
     participantIdInput: interactiveElement(),
     participantIdSubmit: interactiveElement(),
     participantIdStatus: interactiveElement(),
-    participantNameForm: interactiveElement(),
-    participantNameInput: interactiveElement(),
-    participantNameConfirmation: interactiveElement(),
-    participantNameConfirmationValue: interactiveElement(),
-    participantNameConfirmationStatus: interactiveElement(),
+    participantIdConfirmation: interactiveElement(),
+    participantIdConfirmationHeading: interactiveElement(),
+    participantIdConfirmationValue: interactiveElement(),
+    participantIdConfirm: interactiveElement(),
+    participantIdEdit: interactiveElement(),
+    researcherTokenForm: interactiveElement(),
+    researcherTokenInput: interactiveElement(),
+    researcherTokenSubmit: interactiveElement(),
+    researcherTokenStatus: interactiveElement(),
     participationSetup: interactiveElement(),
     welcomeStatus: interactiveElement(),
   });
@@ -63,59 +67,86 @@ function testUi() {
 }
 
 describe("researcher test mode UI", () => {
-  it("uses the existing participant ID field without adding a separate test form or banner", async () => {
+  it("uses exact ID 999 and a password field without adding a normal-ID or name shortcut", async () => {
     const taskPageResponse = await exports.default.fetch(
       new Request("https://experiment.test/js/task-page.js"),
     );
     const taskPage = await taskPageResponse.text();
 
     expect(taskPage).toContain('id="participant-id-input"');
-    expect(taskPage).toContain('pattern="test|[1-9][0-9]*"');
+    expect(taskPage).toContain('pattern="[1-9][0-9]*"');
+    expect(taskPage).not.toContain('pattern="test|');
     expect(taskPage).not.toContain("researcher-test-banner");
-    expect(taskPage).not.toContain("researcher-test-form");
-    expect(taskPage).not.toContain("researcher-test-passphrase-input");
+    expect(taskPage).toContain('id="researcher-token-form"');
+    expect(taskPage).toContain('id="researcher-token-input"');
+    expect(taskPage).toContain('type="password"');
     expect(taskPage).not.toContain("researcher-test-id-input");
+    expect(taskPage).not.toContain("氏名「動作確認」");
+    expect(taskPage).not.toContain('id="participant-name-input"');
+    expect(taskPage).toContain('id="participant-id-confirmation"');
   });
 
-  it("shows explicit researcher-test entry copy while preserving normal invitation copy", async () => {
+  it("shows explicit researcher-test entry copy while preserving normal common-link copy", async () => {
     const ui = testUi();
     const testAccess = ui.requestParticipantId("", { researcherTest: true });
     expect(ui.participantIdForm.hidden).toBe(false);
     expect(ui.participantIdHeading.textContent).toBe("研究者用動作確認");
-    expect(ui.participantIdGuidance.textContent).toContain("「test」と入力");
-    expect(ui.participantIdGuidance.textContent).toContain("氏名の入力・確認は行いません");
+    expect(ui.participantIdGuidance.textContent).toContain("「999」と入力");
     expect(ui.welcomeStatus.textContent).toContain("保存・送信されません");
 
-    ui.participantIdInput.value = "Test";
+    ui.participantIdInput.value = "17";
     ui.participantIdForm.dispatch("submit");
-    expect(ui.participantIdStatus.textContent).toContain("半角小文字で「test」");
+    expect(ui.participantIdStatus.textContent).toContain("半角数字で「999」");
     expect(ui.participantIdInput.getAttribute("aria-invalid")).toBe("true");
 
-    ui.participantIdInput.value = "test";
+    ui.participantIdInput.value = "999";
     ui.participantIdForm.dispatch("submit");
-    await expect(testAccess).resolves.toBe("test");
+    await expect(testAccess).resolves.toBe("999");
     expect(ui.participantIdStatus.textContent).toBe("研究者用テストモードを準備しています。");
 
     const numericUi = testUi();
     const numericAccess = numericUi.requestParticipantId();
-    expect(numericUi.participantIdHeading.textContent).toBe("参加者情報の確認");
+    expect(numericUi.participantIdHeading.textContent).toBe("参加者IDの確認");
     expect(numericUi.participantIdGuidance.textContent).toBe(
-      "担当者から案内された参加者IDを入力してください。次の画面で、ご自身の氏名が表示されることを確認します。",
+      "担当者から案内された参加者IDを入力してください。",
     );
     expect(numericUi.welcomeStatus.textContent).toBe(
-      "氏名は参加者記録の確認に使用します。このブラウザには保存しません。",
+      "参加者IDは担当者から案内された番号を入力してください。",
     );
     numericUi.participantIdInput.value = "test";
     numericUi.participantIdForm.dispatch("submit");
     expect(numericUi.participantIdInput.getAttribute("aria-invalid")).toBe("true");
-    expect(numericUi.participantIdStatus.textContent).toContain("正整数");
+    expect(numericUi.participantIdStatus.textContent).toContain("半角数字だけ");
     numericUi.participantIdInput.value = "21";
     numericUi.participantIdForm.dispatch("submit");
     await expect(numericAccess).resolves.toBe("21");
-    expect(numericUi.participantIdStatus.textContent).toBe("招待リンクと参加者IDを確認しています。");
+    expect(numericUi.participantIdStatus.textContent).toBe("参加者IDを確認しています。");
   });
 
-  it("uses a simple badge, summary, and no-save state", () => {
+  it("confirms the displayed ID without a second text input", async () => {
+    const ui = testUi();
+    const confirmation = ui.confirmParticipantId("1");
+    expect(ui.participantIdConfirmation.hidden).toBe(false);
+    expect(ui.participantIdConfirmationValue.textContent).toBe("1");
+    ui.participantIdConfirm.dispatch("click");
+    await expect(confirmation).resolves.toBe("confirm");
+    expect(ui.participantIdConfirmationValue.textContent).toBe("");
+  });
+
+  it("collects the admin token only in memory and clears the password field immediately", async () => {
+    const ui = testUi();
+    const tokenAccess = ui.requestResearcherToken();
+    expect(ui.researcherTokenForm.hidden).toBe(false);
+    expect(ui.researcherTokenStatus.textContent).toContain("ID 999");
+
+    ui.researcherTokenInput.value = "test-admin-token-that-is-long-and-private";
+    ui.researcherTokenForm.dispatch("submit");
+    await expect(tokenAccess).resolves.toBe("test-admin-token-that-is-long-and-private");
+    expect(ui.researcherTokenInput.value).toBe("");
+    expect(ui.researcherTokenSubmit.disabled).toBe(true);
+  });
+
+  it("uses a simple badge and summary while hiding all exit controls", () => {
     const bodyClassList = fakeClassList();
     vi.stubGlobal("document", {
       body: {
@@ -129,13 +160,11 @@ describe("researcher test mode UI", () => {
         researcherTestMode: false,
         badge: interactiveElement(),
         summary: interactiveElement(),
-        saveState: interactiveElement(),
         interruptionButton: interactiveElement(),
         welcomeInterruptionButton: interactiveElement(),
-        progressLabel: interactiveElement(),
+        fixation: interactiveElement({ hidden: true }),
         progressFill: interactiveElement(),
         progressTrack: interactiveElement(),
-        progressDetail: interactiveElement(),
       });
       ui.interruptionButtons = [ui.interruptionButton, ui.welcomeInterruptionButton];
 
@@ -147,76 +176,30 @@ describe("researcher test mode UI", () => {
       });
       expect(ui.badge.textContent).toBe("研究者用テスト");
       expect(ui.summary.textContent).toBe("研究者用動作確認　／　直後課題");
-      expect(ui.saveState.textContent).toBe("保存・送信なし");
-      expect(ui.interruptionButtons.every((button) => button.textContent === "テストを終了"))
-        .toBe(true);
+      expect(ui.interruptionButtons.every((button) => button.hidden && button.disabled)).toBe(true);
 
       ui.setConnected(true);
       ui.setSaveState("saving");
-      ui.updateProgress("単語学習", 1, 3);
+      ui.updateProgress("単語学習", 1, 3, { practice: false });
       ui.clearInterruptionPending();
       expect(ui.badge.textContent).toBe("研究者用テスト");
-      expect(ui.saveState.textContent).toBe("保存・送信なし");
-      expect(ui.progressDetail.textContent).toContain("保存・送信されません");
-      expect(ui.progressDetail.textContent).toContain("テストを終了");
-      expect(ui.interruptionButtons.every((button) => button.textContent === "テストを終了"))
-        .toBe(true);
+      expect(ui.saveStateValue).toBe("not_persisted");
+      expect(ui.progressTrack.getAttribute("aria-valuetext")).toBe("進み具合 33パーセント");
+      expect(ui.interruptionButtons.every((button) => button.hidden && button.disabled)).toBe(true);
     } finally {
       vi.unstubAllGlobals();
     }
   });
 
-  it("offers a test-only exit choice and ends without participant pause or persistence copy", async () => {
-    const bodyClassList = fakeClassList(["experiment-active"]);
-    vi.stubGlobal("document", { body: { classList: bodyClassList } });
-    try {
-      const ui = Object.create(ExperimentUi.prototype);
-      const exitButton = interactiveElement();
-      const returnButton = interactiveElement();
-      Object.assign(ui, {
-        resetStage: vi.fn(),
-        setInterruptionControlEnabled: vi.fn(),
-        interruptionChoiceTitle: interactiveElement(),
-        interruptionChoiceDescription: interactiveElement(),
-        interruptionChoice: interactiveElement(),
-        pauseParticipationButton: interactiveElement(),
-        terminateParticipationButton: exitButton,
-        cancelInterruptionButton: returnButton,
-        stage: interactiveElement(),
-      });
+  it("does not expose a researcher-test exit button or dialog flow", async () => {
+    const taskPageResponse = await exports.default.fetch(
+      new Request("https://experiment.test/js/task-page.js"),
+    );
+    const taskPage = await taskPageResponse.text();
 
-      const cancelled = ui.chooseResearcherTestExit();
-      expect(ui.interruptionChoiceTitle.textContent).toBe("動作確認を終了しますか？");
-      expect(ui.interruptionChoiceDescription.textContent).toBe("この画面の研究者用テストモードを終了します。");
-      expect(ui.interruptionChoiceDescription.textContent).not.toMatch(/一時中断|保存|送信/u);
-      expect(ui.pauseParticipationButton.hidden).toBe(true);
-      expect(exitButton.textContent).toBe("テストを終了");
-      expect(returnButton.textContent).toBe("テストに戻る");
-      expect(returnButton.focus).toHaveBeenCalledTimes(1);
-      returnButton.dispatch("click");
-      await expect(cancelled).resolves.toBe(false);
-
-      const confirmed = ui.chooseResearcherTestExit();
-      exitButton.dispatch("click");
-      await expect(confirmed).resolves.toBe(true);
-
-      Object.assign(ui, {
-        interruptionButtons: [exitButton],
-        progressLabel: interactiveElement(),
-        progressTrack: interactiveElement(),
-        progressDetail: interactiveElement(),
-        saveState: interactiveElement(),
-        message: interactiveElement(),
-      });
-      ui.researcherTestInterrupted();
-      expect(bodyClassList.contains("experiment-active")).toBe(false);
-      expect(ui.progressLabel.textContent).toBe("動作確認終了");
-      expect(ui.saveState.textContent).toBe("保存・送信なし");
-      expect(exitButton.textContent).toBe("テスト終了済み");
-      expect(ui.message.textContent).toBe("動作確認を終了しました。このページは閉じて構いません。");
-    } finally {
-      vi.unstubAllGlobals();
-    }
+    expect(taskPage).not.toContain("テストを終了");
+    expect(ExperimentUi.prototype.chooseResearcherTestExit).toBeUndefined();
+    expect(ExperimentUi.prototype.researcherTestInterrupted).toBeUndefined();
   });
 
   it("uses researcher-only fatal copy with a certain no-save outcome", () => {
@@ -230,15 +213,25 @@ describe("researcher test mode UI", () => {
         welcome: interactiveElement(),
         task: interactiveElement(),
         fatalPanel: interactiveElement(),
+        fatalTitle: interactiveElement(),
         fatalMessage: interactiveElement(),
+        fatalReload: interactiveElement({ hidden: true }),
+        fatalHelp: interactiveElement(),
       });
 
-      ui.fatal(new Error("trial failed"), { interruptionRequested: true });
+      const interrupted = new Error("trial failed");
+      interrupted.code = "trial_visibility_interrupted";
+      ui.fatal(interrupted, { interruptionRequested: true });
 
       expect(ui.fatalMessage.textContent).toContain("研究者用動作確認");
+      expect(ui.fatalMessage.textContent).toContain("試行中にこの画面が非表示");
       expect(ui.fatalMessage.textContent).toContain("保存・送信されていません");
-      expect(ui.fatalMessage.textContent).toContain("「test」と入力");
+      expect(ui.fatalMessage.textContent).toContain("参加者ID「999」");
+      expect(ui.fatalMessage.textContent).toContain("管理トークン");
       expect(ui.fatalMessage.textContent).not.toMatch(/保存範囲|氏名|招待リンク/u);
+      expect(ui.fatalReload.hidden).toBe(false);
+      expect(ui.fatalReload.textContent).toBe("動作確認を最初からやり直す");
+      expect(ui.fatalHelp.textContent).toContain("同じ問題が繰り返される場合");
       expect(ui.fatalPanel.focus).toHaveBeenCalledTimes(1);
     } finally {
       vi.unstubAllGlobals();

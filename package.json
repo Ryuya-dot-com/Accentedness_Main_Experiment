@@ -5,15 +5,18 @@
   "type": "module",
   "scripts": {
     "dev": "wrangler dev --local",
+    "preview:participant-copy": "node scripts/preview-participant-copy.mjs",
     "deploy:check": "wrangler deploy --env=\"\" --dry-run",
     "deploy:check:production": "wrangler deploy --env production --dry-run",
     "db:migrate:local": "wrangler d1 migrations apply main-experiment --local",
     "test": "vitest run",
     "audit:randomization": "node scripts/audit-randomization.mjs",
+    "backup:watch": "node --env-file-if-exists=.dev.vars --env-file-if-exists=../.env scripts/backup-results.mjs",
+    "backup:check": "node scripts/backup-results.mjs --self-test",
     "test:watch": "vitest",
     "types": "wrangler types --env-file /dev/null",
     "types:check": "wrangler types --check --env-file /dev/null",
-    "verify": "npm run types:check && npm test && npm run audit:randomization && npm run deploy:check && npm run deploy:check:production"
+    "verify": "npm run types:check && npm test && npm run audit:randomization && npm run backup:check && npm run deploy:check && npm run deploy:check:production"
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "^1.0.0",

@@ -3,7 +3,6 @@ import { describe, expect, it } from "vitest";
 
 const ORIGIN = "https://experiment.test";
 const ADMIN_TOKEN = "test-admin-token-that-is-long-and-private";
-const PARTICIPANT_NAME = "Test Participant";
 
 async function api(path, {
   method = "GET",
@@ -28,42 +27,32 @@ async function adminApi(path, options = {}) {
   return api(path, { ...options, token: ADMIN_TOKEN });
 }
 
-function invitationToken(invitationUrl) {
-  return new URLSearchParams(new URL(invitationUrl).hash.slice(1)).get("t");
-}
-
 async function createParticipant(participantId) {
-  const created = await adminApi("/api/admin/participants", {
-    method: "POST",
-    body: {
-      participant_id: participantId,
-    },
-  });
-  expect(created.response.status).toBe(201);
-  expect(created.json.participant.participant_name_registered).toBe(false);
-  return created.json;
+  const started = await startVisit("pre", participantId);
+  expect(started.response.status).toBe(200);
+  const rows = await env.DB.prepare(`
+    SELECT p.participant_uuid, v.visit_uuid, v.visit_type
+    FROM participants p JOIN visits v ON v.participant_uuid = p.participant_uuid
+    WHERE p.numeric_id = ?
+  `).bind(participantId).all();
+  const participant = {
+    participant_id: participantId,
+    participant_uuid: rows.results[0].participant_uuid,
+  };
+  for (const visit of rows.results) participant[`${visit.visit_type}_visit_id`] = visit.visit_uuid;
+  return { participant, start: started };
 }
 
-async function redeem(
-  invitationUrl,
-  expectedVisitType,
-  participantId,
-  nameAction = "register",
-) {
-  const redeemed = await api("/api/invitations/redeem", {
+async function startVisit(expectedVisitType, participantId) {
+  return api("/api/participant-access/start", {
     method: "POST",
     body: {
-      token: invitationToken(invitationUrl),
       participant_id: participantId,
-      name_action: nameAction,
-      participant_name_confirmed: true,
-      ...(nameAction === "register" ? { participant_name: PARTICIPANT_NAME } : {}),
+      participant_id_confirmed: true,
       client_instance_id: crypto.randomUUID(),
       expected_visit_type: expectedVisitType,
     },
   });
-  expect(redeemed.response.status).toBe(200);
-  return redeemed;
 }
 
 async function startTrial(sessionToken, trialId, resumeAfterStimulus = false) {
@@ -194,6 +183,44 @@ async function uploadSilenceRecording(sessionToken, attemptId) {
   return { response, json, bytes, digest };
 }
 
+async function completeLeadingNonRecordingPractice(redemption) {
+  const firstRecordedTrial = redemption.json.manifest.find(
+    (trial) => trial.expects_recording,
+  );
+  const leadingPractice = redemption.json.manifest.filter(
+    (trial) => trial.ordinal < firstRecordedTrial.ordinal,
+  );
+  expect(leadingPractice.length).toBeGreaterThan(0);
+  expect(leadingPractice.every((trial) => (
+    trial.practice
+    && trial.segment === "picture_naming"
+    && trial.expects_recording === false
+  ))).toBe(true);
+
+  for (const trial of leadingPractice) {
+    const started = await startTrial(redemption.json.session_token, trial.trial_id);
+    expect(started.response.status).toBe(201);
+    const saved = await savePictureNamingResponse(
+      redemption.json.session_token,
+      trial.trial_id,
+      started.json.attempt_id,
+    );
+    expect(saved.response.status).toBe(200);
+    expect(saved.json.expects_recording).toBe(false);
+    const recordingCount = await env.DB.prepare(`
+      SELECT COUNT(*) AS count FROM recordings WHERE attempt_uuid = ?
+    `).bind(started.json.attempt_id).first();
+    expect(Number(recordingCount.count)).toBe(0);
+  }
+
+  return {
+    firstRecordedTrial,
+    secondRecordedTrial: redemption.json.manifest.find(
+      (trial) => trial.ordinal === firstRecordedTrial.ordinal + 1,
+    ),
+  };
+}
+
 async function requestInterruption(sessionToken, mode, requestId = crypto.randomUUID()) {
   return api("/api/participation/interruptions", {
     method: "POST",
@@ -238,11 +265,12 @@ describe("participant interruption lifecycle", () => {
     const baseline = (await adminApi("/api/admin/summary")).json;
     const participantId = 930_001;
     const created = await createParticipant(participantId);
-    const invitationUrl = created.invitation.invitation_url;
-    const firstRedemption = await redeem(invitationUrl, "pre", participantId);
-    const firstTrial = firstRedemption.json.manifest.find((trial) => trial.ordinal === 1);
-    const secondTrial = firstRedemption.json.manifest.find((trial) => trial.ordinal === 2);
-    expect(firstTrial).toMatchObject({ current: true, expects_recording: true });
+    const firstRedemption = created.start;
+    const {
+      firstRecordedTrial: firstTrial,
+      secondRecordedTrial: secondTrial,
+    } = await completeLeadingNonRecordingPractice(firstRedemption);
+    expect(firstTrial).toMatchObject({ practice: false, expects_recording: true });
 
     const firstStart = await startTrial(
       firstRedemption.json.session_token,
@@ -262,8 +290,8 @@ describe("participant interruption lifecycle", () => {
       request_id: requestId,
       mode: "pause",
       state: "requested",
-      accepted_trial_count: 0,
-      next_ordinal: 1,
+      accepted_trial_count: firstTrial.ordinal - 1,
+      next_ordinal: firstTrial.ordinal,
     });
 
     const duplicatedRequest = await requestInterruption(
@@ -279,8 +307,8 @@ describe("participant interruption lifecycle", () => {
         request_id: requestId,
         mode: "pause",
         state: "requested",
-        accepted_trial_count: 0,
-        next_ordinal: 1,
+        accepted_trial_count: firstTrial.ordinal - 1,
+        next_ordinal: firstTrial.ordinal,
       },
     });
 
@@ -386,25 +414,21 @@ describe("participant interruption lifecycle", () => {
       SELECT status, withdrawn_at_ms FROM participants WHERE participant_uuid = ?
     `).bind(created.participant.participant_uuid).first();
     expect(participantAfterPause).toEqual({ status: "active", withdrawn_at_ms: null });
-    const invitationAfterPause = await env.DB.prepare(`
-      SELECT status FROM invitations WHERE invite_uuid = ?
-    `).bind(created.invitation.invite_id).first();
-    expect(invitationAfterPause.status).toBe("active");
-
-    const resumed = await redeem(invitationUrl, "pre", participantId, "confirm");
+    const resumed = await startVisit("pre", participantId);
     expect(resumed.json.next_trial_id).toBe(secondTrial.trial_id);
     expect(resumed.json.manifest.find((trial) => trial.current)).toMatchObject({
       trial_id: secondTrial.trial_id,
-      ordinal: 2,
+      ordinal: secondTrial.ordinal,
     });
-    expect(resumed.json.accepted).toEqual([
+    expect(resumed.json.accepted).toHaveLength(firstTrial.ordinal);
+    expect(resumed.json.accepted).toEqual(expect.arrayContaining([
       expect.objectContaining({
         trial_id: firstTrial.trial_id,
-        ordinal: 1,
+        ordinal: firstTrial.ordinal,
         attempt_id: firstStart.json.attempt_id,
         recording_state: "uploaded",
       }),
-    ]);
+    ]));
     const resumedInterruption = await env.DB.prepare(`
       SELECT state, resumed_at_ms FROM participation_interruptions
       WHERE interruption_uuid = ?
@@ -435,8 +459,8 @@ describe("participant interruption lifecycle", () => {
     );
     expect(secondPause.response.status).toBe(202);
     expect(secondPause.json.interruption).toMatchObject({
-      accepted_trial_count: 1,
-      next_ordinal: 2,
+      accepted_trial_count: firstTrial.ordinal,
+      next_ordinal: secondTrial.ordinal,
     });
     const secondFinalize = await finalizeInterruption(
       resumed.json.session_token,
@@ -456,7 +480,7 @@ describe("participant interruption lifecycle", () => {
       abandon_reason: null,
     });
 
-    const resumedAgain = await redeem(invitationUrl, "pre", participantId, "confirm");
+    const resumedAgain = await startVisit("pre", participantId);
     expect(resumedAgain.json.next_trial_id).toBe(secondTrial.trial_id);
     const unfinishedAfterRedeem = await env.DB.prepare(`
       SELECT abandoned_at_ms FROM trial_attempts WHERE attempt_uuid = ?
@@ -551,10 +575,11 @@ describe("participant interruption lifecycle", () => {
   it("re-authenticates only to finish a requested termination after the original tab is lost", async () => {
     const participantId = 930_003;
     const created = await createParticipant(participantId);
-    const invitationUrl = created.invitation.invitation_url;
-    const firstRedemption = await redeem(invitationUrl, "pre", participantId);
-    const firstTrial = firstRedemption.json.manifest.find((trial) => trial.ordinal === 1);
-    const secondTrial = firstRedemption.json.manifest.find((trial) => trial.ordinal === 2);
+    const firstRedemption = created.start;
+    const {
+      firstRecordedTrial: firstTrial,
+      secondRecordedTrial: secondTrial,
+    } = await completeLeadingNonRecordingPractice(firstRedemption);
     const started = await startTrial(firstRedemption.json.session_token, firstTrial.trial_id);
     expect(started.response.status).toBe(201);
     const saved = await savePictureNamingResponse(
@@ -580,11 +605,11 @@ describe("participant interruption lifecycle", () => {
       request_id: requestId,
       mode: "terminate",
       state: "requested",
-      accepted_trial_count: 1,
-      next_ordinal: 2,
+      accepted_trial_count: firstTrial.ordinal,
+      next_ordinal: secondTrial.ordinal,
     });
 
-    const reopened = await redeem(invitationUrl, "pre", participantId, "confirm");
+    const reopened = await startVisit("pre", participantId);
     expect(reopened.json.session.session_id).not.toBe(
       firstRedemption.json.session.session_id,
     );
@@ -682,8 +707,7 @@ describe("participant interruption lifecycle", () => {
   it("keeps a requested pause closed to trials and idempotently escalates it to termination", async () => {
     const participantId = 930_004;
     const created = await createParticipant(participantId);
-    const invitationUrl = created.invitation.invitation_url;
-    const firstRedemption = await redeem(invitationUrl, "pre", participantId);
+    const firstRedemption = created.start;
     const firstTrial = firstRedemption.json.manifest.find((trial) => trial.ordinal === 1);
     const requestId = crypto.randomUUID();
     const requestedPause = await requestInterruption(
@@ -700,7 +724,7 @@ describe("participant interruption lifecycle", () => {
       next_ordinal: 1,
     });
 
-    const reopened = await redeem(invitationUrl, "pre", participantId, "confirm");
+    const reopened = await startVisit("pre", participantId);
     expect(reopened.json.participation_control).toMatchObject({
       trial_start_allowed: false,
       interruption: {
@@ -850,14 +874,10 @@ describe("participant interruption lifecycle", () => {
     }]);
   });
 
-  it("prevents completion or invitation revocation from leaving a stale open interruption", async () => {
+  it("prevents completion from leaving a stale open interruption", async () => {
     const requestWinsId = 930_005;
     const requestWins = await createParticipant(requestWinsId);
-    const requestWinsRedemption = await redeem(
-      requestWins.invitation.invitation_url,
-      "pre",
-      requestWinsId,
-    );
+    const requestWinsRedemption = requestWins.start;
     const openRequest = await requestInterruption(
       requestWinsRedemption.json.session_token,
       "pause",
@@ -869,19 +889,9 @@ describe("participant interruption lifecycle", () => {
       body: {},
     });
     expectApiError(blockedCompletion, 409, "participation_interruption_open");
-    const blockedRevoke = await adminApi(
-      `/api/admin/invitations/${requestWins.invitation.invite_id}/revoke`,
-      { method: "POST", body: {} },
-    );
-    expectApiError(blockedRevoke, 409, "participation_interruption_open");
-
     const completionWinsId = 930_006;
     const completionWins = await createParticipant(completionWinsId);
-    const completionWinsRedemption = await redeem(
-      completionWins.invitation.invitation_url,
-      "pre",
-      completionWinsId,
-    );
+    const completionWinsRedemption = completionWins.start;
     const completedAt = Date.now();
     await env.DB.prepare(`
       UPDATE visits SET status = 'completed', finalized_at_ms = ?, updated_at_ms = ?
@@ -906,55 +916,21 @@ describe("participant interruption lifecycle", () => {
       Date.now(),
     ).run()).rejects.toThrow("interruption_blocked_by_visit_or_session_state");
 
-    const revokeWinsId = 930_007;
-    const revokeWins = await createParticipant(revokeWinsId);
-    const revokeWinsRedemption = await redeem(
-      revokeWins.invitation.invitation_url,
-      "pre",
-      revokeWinsId,
-    );
-    const revoked = await adminApi(
-      `/api/admin/invitations/${revokeWins.invitation.invite_id}/revoke`,
-      { method: "POST", body: {} },
-    );
-    expect(revoked.response.status).toBe(200);
-    await expect(env.DB.prepare(`
-      INSERT INTO participation_interruptions (
-        interruption_uuid, request_uuid, participant_uuid, visit_uuid,
-        requested_session_uuid, mode, state, requested_at_ms,
-        accepted_trial_count, next_ordinal
-      ) VALUES (?, ?, ?, ?, ?, 'terminate', 'requested', ?, 0, 1)
-    `).bind(
-      crypto.randomUUID(),
-      crypto.randomUUID(),
-      revokeWins.participant.participant_uuid,
-      revokeWins.participant.pre_visit_id,
-      revokeWinsRedemption.json.session.session_id,
-      Date.now(),
-    ).run()).rejects.toThrow("interruption_blocked_by_visit_or_session_state");
-
-    for (const participantUuid of [
-      completionWins.participant.participant_uuid,
-      revokeWins.participant.participant_uuid,
-    ]) {
-      const count = await env.DB.prepare(`
-        SELECT COUNT(*) AS count FROM participation_interruptions
-        WHERE participant_uuid = ?
-      `).bind(participantUuid).first();
-      expect(Number(count.count)).toBe(0);
-    }
+    const count = await env.DB.prepare(`
+      SELECT COUNT(*) AS count FROM participation_interruptions
+      WHERE participant_uuid = ?
+    `).bind(completionWins.participant.participant_uuid).first();
+    expect(Number(count.count)).toBe(0);
   });
 
   it("terminates idempotently while preserving completed visits and canonical D1/R2 data", async () => {
     const baseline = (await adminApi("/api/admin/summary")).json;
     const participantId = 930_002;
     const created = await createParticipant(participantId);
-    const preRedemption = await redeem(
-      created.invitation.invitation_url,
-      "pre",
-      participantId,
+    const preRedemption = created.start;
+    const { firstRecordedTrial: preTrial } = await completeLeadingNonRecordingPractice(
+      preRedemption,
     );
-    const preTrial = preRedemption.json.manifest.find((trial) => trial.ordinal === 1);
     const preStart = await startTrial(preRedemption.json.session_token, preTrial.trial_id);
     expect(preStart.response.status).toBe(201);
     const preSaved = await savePictureNamingResponse(
@@ -1019,19 +995,12 @@ describe("participant interruption lifecycle", () => {
       `).bind(Date.now(), created.participant.delayed_visit_id),
     ]);
 
-    const delayedInvitation = await adminApi(
-      `/api/admin/visits/${created.participant.delayed_visit_id}/invitations`,
-      { method: "POST", body: {} },
-    );
-    expect(delayedInvitation.response.status).toBe(201);
-    const delayedRedemption = await redeem(
-      delayedInvitation.json.invitation.invitation_url,
-      "delayed",
-      participantId,
-      "confirm",
-    );
-    const delayedTrial = delayedRedemption.json.manifest.find((trial) => trial.ordinal === 1);
-    const delayedSecondTrial = delayedRedemption.json.manifest.find((trial) => trial.ordinal === 2);
+    const delayedRedemption = await startVisit("delayed", participantId);
+    expect(delayedRedemption.response.status).toBe(200);
+    const {
+      firstRecordedTrial: delayedTrial,
+      secondRecordedTrial: delayedSecondTrial,
+    } = await completeLeadingNonRecordingPractice(delayedRedemption);
     const delayedStart = await startTrial(
       delayedRedemption.json.session_token,
       delayedTrial.trial_id,
@@ -1069,8 +1038,8 @@ describe("participant interruption lifecycle", () => {
     expect(terminateRequest.json.interruption).toMatchObject({
       mode: "terminate",
       state: "requested",
-      accepted_trial_count: 1,
-      next_ordinal: 2,
+      accepted_trial_count: delayedTrial.ordinal,
+      next_ordinal: delayedSecondTrial.ordinal,
     });
 
     const blockedAfterTerminationRequest = await startTrial(
@@ -1210,11 +1179,8 @@ describe("participant interruption lifecycle", () => {
     expect(delayedCanonicalAfter.abandoned_at_ms).not.toBeNull();
     expect(await env.RECORDINGS.head(delayedCanonicalAfter.r2_key)).toBeNull();
 
-    const futureIssue = await adminApi(
-      `/api/admin/visits/${created.participant.delayed_visit_id}/invitations`,
-      { method: "POST", body: {} },
-    );
-    expectApiError(futureIssue, 409, "participant_withdrawn");
+    const futureStart = await startVisit("delayed", participantId);
+    expectApiError(futureStart, 409, "participant_withdrawn");
     const dueAfterTermination = await adminApi("/api/admin/delayed/due");
     expect(dueAfterTermination.response.status).toBe(200);
     expect(dueAfterTermination.json.visits.some(

@@ -37,15 +37,16 @@ function encodeWav(samples, sampleRate) {
   return new Blob([buffer], { type: "audio/wav" });
 }
 
-function analyzeSamples(samples, sampleRate, analysisStartSeconds = 0) {
+export function analyzeSamples(samples, sampleRate, analysisStartSeconds = 0) {
   const startIndex = Math.max(0, Math.min(samples.length, Math.floor(analysisStartSeconds * sampleRate)));
   let sumSquares = 0;
   let peak = 0;
   let clipped = 0;
   const count = Math.max(1, samples.length - startIndex);
   for (let index = startIndex; index < samples.length; index += 1) {
-    const absolute = Math.abs(samples[index]);
-    sumSquares += samples[index] * samples[index];
+    const sample = Math.max(-1, Math.min(1, samples[index]));
+    const absolute = Math.abs(sample);
+    sumSquares += sample * sample;
     if (absolute > peak) peak = absolute;
     if (absolute >= 0.98) clipped += 1;
   }

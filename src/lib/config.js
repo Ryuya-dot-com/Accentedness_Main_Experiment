@@ -29,6 +29,14 @@ export function collectionConfiguration(env) {
     && randomizationReady
     && env.ADMIN_TOKEN !== env.RANDOMIZATION_SECRET;
   const production = environment === "production";
+  const developmentParticipantsAllowed = !production
+    && String(env.ALLOW_DEVELOPMENT_PARTICIPANTS ?? "").toLowerCase() === "true";
+  const collectionReady = !placeholder
+    && !placeholderAllowed
+    && tokenPolicyReady
+    && adminAuthenticationReady
+    && randomizationReady
+    && secretsIndependent;
   return {
     environment,
     production,
@@ -39,19 +47,8 @@ export function collectionConfiguration(env) {
     adminAuthenticationReady,
     randomizationReady,
     secretsIndependent,
-    collectionReady: !placeholder
-      && !placeholderAllowed
-      && tokenPolicyReady
-      && adminAuthenticationReady
-      && randomizationReady
-      && secretsIndependent,
-    blocked: production && (
-      placeholder
-      || placeholderAllowed
-      || !tokenPolicyReady
-      || !adminAuthenticationReady
-      || !randomizationReady
-      || !secretsIndependent
-    ),
+    developmentParticipantsAllowed,
+    collectionReady,
+    blocked: production ? !collectionReady : !developmentParticipantsAllowed,
   };
 }

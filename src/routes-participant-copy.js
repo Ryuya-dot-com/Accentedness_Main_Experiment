@@ -3,6 +3,7 @@ import { ApiError, requireMethod } from "./lib/http.js";
 import { crc32, createStoredZipStream, storedZipSize } from "./lib/stored-zip.js";
 
 const encoder = new TextEncoder();
+const VISIT_TYPES = ["pre", "immediate", "delayed"];
 
 function parseStoredPayload(payloadJson) {
   try {
@@ -18,8 +19,10 @@ function recordingEntryName(row) {
   return `recordings/${row.visit_type}/${row.segment}/recording_${String(row.segment_ordinal).padStart(3, "0")}.wav`;
 }
 
-function participantCopyFilename() {
-  return "accentedness_results.zip";
+export function participantCopyFilename(numericId, visitType, generatedAtMs) {
+  const date = new Date(generatedAtMs + 9 * 60 * 60 * 1000)
+    .toISOString().slice(0, 10).replaceAll("-", "");
+  return `accentedness_p${numericId}_${visitType}_${date}.zip`;
 }
 
 function adminCopyFilename(numericId) {
@@ -83,9 +86,34 @@ async function canonicalParticipantRows(env, session) {
   return result.results;
 }
 
-function assertCopyReady(visits, rows) {
-  const requiredVisitTypes = ["pre", "immediate", "delayed"];
-  if (visits.length !== requiredVisitTypes.length
+async function participantItemAssignments(env, participantUuid) {
+  const result = await env.DB.prepare(`
+    WITH item_labels AS (
+      SELECT v.participant_uuid, tm.item_id, tm.item_word, tm.item_gloss
+      FROM visits v
+      JOIN trial_manifest tm ON tm.visit_uuid = v.visit_uuid
+      WHERE v.participant_uuid = ?
+        AND v.visit_type = 'immediate'
+        AND tm.segment = 'learning'
+        AND tm.practice = 0
+        AND tm.exposure = 1
+    )
+    SELECT ia.item_id, labels.item_word, labels.item_gloss,
+           ia.list_id, ia.list_rank, ia.variability,
+           ia.no_talker_id, ia.test_accent, ia.test_talker_id,
+           ia.asset_version
+    FROM item_assignments ia
+    LEFT JOIN item_labels labels
+      ON labels.participant_uuid = ia.participant_uuid
+     AND labels.item_id = ia.item_id
+    WHERE ia.participant_uuid = ?
+    ORDER BY ia.item_id
+  `).bind(participantUuid, participantUuid).all();
+  return result.results;
+}
+
+function assertCopyReady(visits, rows, requiredVisitTypes) {
+  if (requiredVisitTypes.length === 0 || visits.length !== requiredVisitTypes.length
       || visits.some((visit, index) => (
         visit.visit_type !== requiredVisitTypes[index]
         || visit.status !== "completed"
@@ -94,7 +122,7 @@ function assertCopyReady(visits, rows) {
     throw new ApiError(
       409,
       "participant_copy_visits_incomplete",
-      "All three visits must be completed before the participant copy is available",
+      "Every included visit must be completed before the participant copy is available",
     );
   }
   let missingResponses = 0;
@@ -461,13 +489,62 @@ function buildLearningCsv(rows, participant) {
   return `\uFEFF${lines.join("\r\n")}\r\n`;
 }
 
+const ITEM_ASSIGNMENT_CSV_COLUMNS = Object.freeze([
+  "participant_id",
+  "training_accent",
+  "counterbalance_cell",
+  "list_cell",
+  "order_cell",
+  "talker_cell",
+  "item_id",
+  "item_word",
+  "item_gloss",
+  "list_id",
+  "list_rank",
+  "variability",
+  "no_training_talker_id",
+  "test_accent",
+  "test_talker_id",
+  "assignment_version",
+  "asset_version",
+]);
+
+function buildItemAssignmentsCsv(rows, participant) {
+  const records = rows.map((row) => ({
+    participant_id: Number(participant.numeric_id),
+    training_accent: participant.training_accent,
+    counterbalance_cell: Number(participant.counterbalance_cell),
+    list_cell: Number(participant.list_cell),
+    order_cell: Number(participant.order_cell),
+    talker_cell: Number(participant.talker_cell),
+    item_id: Number(row.item_id),
+    item_word: row.item_word,
+    item_gloss: row.item_gloss,
+    list_id: Number(row.list_id),
+    list_rank: Number(row.list_rank),
+    variability: row.variability,
+    no_training_talker_id: row.variability === "no" ? row.no_talker_id : null,
+    test_accent: row.test_accent,
+    test_talker_id: row.test_talker_id,
+    assignment_version: participant.assignment_version,
+    asset_version: row.asset_version,
+  }));
+  const lines = [
+    ITEM_ASSIGNMENT_CSV_COLUMNS.join(","),
+    ...records.map((record) => (
+      ITEM_ASSIGNMENT_CSV_COLUMNS.map((column) => csvCell(record[column])).join(",")
+    )),
+  ];
+  return `\uFEFF${lines.join("\r\n")}\r\n`;
+}
+
 function copyEntries(
   visits,
   rows,
   participant,
   generatedAtMs,
   purpose,
-  { learningRows = rows } = {},
+  { learningRows = rows, itemAssignmentRows = [] } = {},
 ) {
   const responseDocument = buildResponseDocument(
     visits,
@@ -480,8 +557,13 @@ function copyEntries(
     "英単語学習実験：結果ファイル",
     "",
     "このZIPは、実験で記録した回答と録音のコピーです。実験担当者側にも保存されています。",
-    "共用パソコンでは、他の利用者に見えない保存先を選び、担当者の案内に従って削除してください。",
-    "氏名、招待リンクの情報、刺激語、訳語、アクセント・話者条件は含まれていません。",
+    `収録範囲：${visits.map((visit) => visit.visit_type).join(" + ")}。未実施の課題は含まれません。`,
+    ...(visits.at(-1)?.visit_type !== "delayed"
+      ? ["すべての課題が終わるまで、ZIPを開いたり録音を聞き返したりせずに保管してください。"]
+      : []),
+    "Chromeの設定に従って保存されています。共用パソコンでは、担当者の案内に従い他の利用者に見えない場所へ移動するか削除してください。",
+    "参加者IDと録音が含まれます。他の人へ共有しないでください。",
+    "内部session情報、刺激語、訳語、アクセント・話者条件は含まれていません。",
     "responses.jsonは回答と計時情報、recordingsフォルダは録音です。",
     "",
   ].join("\n") : [
@@ -490,13 +572,15 @@ function copyEntries(
     "responses.jsonのresearch欄に採点・照合用の刺激、条件、内部ID、録音QCを含みます。",
     "responses.jsonには試行順、計時情報、録音ファイルのSHA-256が含まれます。",
     ...[
-      "design.jsonには参加者単位の割付・versionとvisit別manifest hashを含み、氏名とraw root seedは含みません。",
+      "design.jsonには参加者単位の割付・versionとvisit別manifest hashを含み、raw root seedは含みません。",
+      "item_assignments.csvは24語それぞれの学習条件・テストaccent・固定テスト話者を含むUTF-8の割付表です。no_training_talker_idはNo Variability語のみ固定学習話者を示し、High Variability語では空欄です。High語の各6曝露の実際の話者はlearning_trials.csvを確認してください。",
       "learning_trials.csvは保存済みmanifestの全Learning計画試行を含み、planned_列とcanonical runtime_列を分けたUTF-8の学習ログです。未実施のruntime欄は空欄で、全attempt数とnoncanonical attempt数も含みます。",
     ],
     "",
   ].join("\n");
   const researchEntries = purpose === "research_admin_copy" ? [
     inlineEntry("design.json", `${JSON.stringify(buildDesignDocument(visits, participant), null, 2)}\n`),
+    inlineEntry("item_assignments.csv", buildItemAssignmentsCsv(itemAssignmentRows, participant)),
     inlineEntry("learning_trials.csv", buildLearningCsv(learningRows, participant)),
   ] : [];
   return [
@@ -513,7 +597,7 @@ function copyEntries(
   ];
 }
 
-function zipResponse(env, entries, generatedAtMs, filename = participantCopyFilename()) {
+function zipResponse(env, entries, generatedAtMs, filename) {
   const { readable, completion } = createStoredZipStream({
     bucket: env.RECORDINGS,
     entries,
@@ -538,31 +622,29 @@ function zipResponse(env, entries, generatedAtMs, filename = participantCopyFile
 export async function downloadParticipantCopy(request, env) {
   requireMethod(request, ["GET"]);
   const session = await requireSession(request, env, { allowCompleted: true });
-  if (session.visit_type !== "delayed") {
-    throw new ApiError(
-      403,
-      "participant_copy_unavailable",
-      "Participant result copies are available only after the final delayed session",
-    );
-  }
   if (session.visit_status !== "completed") {
     throw new ApiError(
       409,
       "participant_copy_before_completion",
-      "The delayed visit must be completed before the participant copy is available",
+      "The current visit must be completed before the participant copy is available",
     );
   }
-  const [visits, rows] = await Promise.all([
+  const [allVisits, allRows] = await Promise.all([
     participantVisits(env, session),
     canonicalParticipantRows(env, session),
   ]);
-  assertCopyReady(visits, rows);
+  // Scope comes from the authenticated session, never from a requested visit or participant ID.
+  const requiredVisitTypes = VISIT_TYPES.slice(0, VISIT_TYPES.indexOf(session.visit_type) + 1);
+  const visits = allVisits.filter((visit) => requiredVisitTypes.includes(visit.visit_type));
+  const rows = allRows.filter((row) => requiredVisitTypes.includes(row.visit_type));
+  assertCopyReady(visits, rows, requiredVisitTypes);
 
   const generatedAtMs = Date.now();
   return zipResponse(
     env,
     copyEntries(visits, rows, session, generatedAtMs, "participant_local_copy"),
     generatedAtMs,
+    participantCopyFilename(session.numeric_id, session.visit_type, generatedAtMs),
   );
 }
 
@@ -582,9 +664,10 @@ export async function downloadAdminParticipantCopy(request, env, numericIdInput)
   `).bind(numericId).first();
   if (!participant) throw new ApiError(404, "participant_not_found", "Participant was not found");
   const sessionLike = { participant_uuid: participant.participant_uuid };
-  const [visits, allRows] = await Promise.all([
+  const [visits, allRows, itemAssignmentRows] = await Promise.all([
     participantVisits(env, sessionLike),
     canonicalParticipantRows(env, sessionLike),
+    participantItemAssignments(env, participant.participant_uuid),
   ]);
   const rows = allRows.filter((row) => row.response_state === "response_saved" && row.payload_json);
   const adminVisits = visits.map((visit) => ({
@@ -601,7 +684,7 @@ export async function downloadAdminParticipantCopy(request, env, numericIdInput)
       participant,
       generatedAtMs,
       "research_admin_copy",
-      { learningRows: allRows },
+      { learningRows: allRows, itemAssignmentRows },
     ),
     generatedAtMs,
     adminCopyFilename(numericId),

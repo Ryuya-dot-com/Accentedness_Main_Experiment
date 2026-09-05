@@ -1,11 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
-import { ParticipantExitRequested } from "../public/js/runner.js";
 import {
   ResearcherTestApi,
   ResearcherTestModeError,
   ResearcherTestRunner,
   researcherTestModeAvailable,
 } from "../public/js/test-mode.js";
+
+const ADMIN_TOKEN = "test-admin-token-that-is-long-and-private";
 
 function jsonResponse(body, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -35,7 +36,7 @@ function testState({
       persistence: "none",
     },
     visit: { visit_id: "test-run-1", visit_type: visitType, status: "active" },
-    participant: { id: "test" },
+    participant: { id: "999" },
     manifest: resolvedManifest,
     accepted: [],
     participation_control: { trial_start_allowed: true, interruption: null },
@@ -80,13 +81,13 @@ describe("researcher test-mode client boundary", () => {
     const api = new ResearcherTestApi("immediate", "picture_naming", {
       fetchImpl,
       origin: "https://experiment.test",
+      adminToken: ADMIN_TOKEN,
     });
 
     expect(api.isTestMode).toBe(true);
-    expect(api.hasInvitationToken()).toBe(false);
     expect(api.hasStoredSession()).toBe(false);
     const bootstrapped = await api.bootstrap();
-    await expect(api.bootstrap("test")).resolves.toBe(bootstrapped);
+    await expect(api.bootstrap("999")).resolves.toBe(bootstrapped);
     await expect(api.state()).resolves.toBe(bootstrapped);
     expect(bootstrapped).toStrictEqual(state);
 
@@ -95,19 +96,23 @@ describe("researcher test-mode client boundary", () => {
     expect(path).toBe("/api/test/bootstrap");
     expect(options).toMatchObject({
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        Authorization: `Bearer ${ADMIN_TOKEN}`,
+        "Content-Type": "application/json",
+      },
       cache: "no-store",
     });
     expect(JSON.parse(options.body)).toEqual({
-      participant_id: "test",
+      participant_id: "999",
       expected_visit_type: "immediate",
       expected_segment: "picture_naming",
     });
     expect(Object.keys(JSON.parse(options.body))).toHaveLength(3);
+    await expect(api.bootstrap("test")).rejects.toBeInstanceOf(ResearcherTestModeError);
     await expect(api.bootstrap("17")).rejects.toBeInstanceOf(ResearcherTestModeError);
   });
 
-  it("uses unauthenticated GET only for static stimuli and blocks persistence endpoints", async () => {
+  it("uses authenticated GET only for protected same-origin stimuli and blocks persistence", async () => {
     const state = testState();
     const fetchImpl = vi.fn()
       .mockResolvedValueOnce(jsonResponse(state))
@@ -118,23 +123,22 @@ describe("researcher test-mode client boundary", () => {
     const api = new ResearcherTestApi("immediate", "picture_naming", {
       fetchImpl,
       origin: "https://experiment.test",
+      adminToken: ADMIN_TOKEN,
     });
     await api.bootstrap();
 
-    const stimulus = await api.fetchStimulus("/placeholder-audio/book.wav");
+    const endpoint = "/api/test/stimuli/audio?key=stimuli%2Fmain-assets-v2%2Fpractice%2Fenglish%2Ftts_us_bella%2Fbook.wav";
+    const stimulus = await api.fetchStimulus(endpoint);
     expect(await stimulus.text()).toBe("static-wave");
     expect(fetchImpl).toHaveBeenNthCalledWith(
       2,
-      "/placeholder-audio/book.wav",
-      { method: "GET" },
+      endpoint,
+      {
+        method: "GET",
+        headers: { Authorization: `Bearer ${ADMIN_TOKEN}` },
+        cache: "no-store",
+      },
     );
-    expect(fetchImpl.mock.calls[1][1].headers).toBeUndefined();
-    const inlineImage = await api.fetchStimulus(
-      "data:image/svg+xml;charset=utf-8,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%3E%3C%2Fsvg%3E",
-    );
-    expect(inlineImage.type).toBe("image/svg+xml;charset=utf-8");
-    expect(await inlineImage.text()).toContain("<svg");
-    expect(fetchImpl).toHaveBeenCalledTimes(2);
 
     for (const operation of [
       () => api.startTrial("trial-1"),
@@ -153,7 +157,7 @@ describe("researcher test-mode client boundary", () => {
       .rejects.toBeInstanceOf(ResearcherTestModeError);
     await expect(api.fetchStimulus("data:image/png;base64,AAAA"))
       .rejects.toBeInstanceOf(ResearcherTestModeError);
-    await expect(api.fetchStimulus("https://other.test/placeholder-audio/book.wav"))
+    await expect(api.fetchStimulus(`https://other.test${endpoint}`))
       .rejects.toBeInstanceOf(ResearcherTestModeError);
     await expect(api.heartbeat()).resolves.toMatchObject({ test_mode: true });
     await expect(api.events([])).resolves.toMatchObject({ test_mode: true });
@@ -180,7 +184,10 @@ describe("researcher test-mode client boundary", () => {
     ];
     const state = testState({ manifest });
     const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(state));
-    const api = new ResearcherTestApi("immediate", "picture_naming", { fetchImpl });
+    const api = new ResearcherTestApi("immediate", "picture_naming", {
+      fetchImpl,
+      adminToken: ADMIN_TOKEN,
+    });
     await api.bootstrap();
     const ui = runnerUi();
     const runner = new ResearcherTestRunner(api, ui, {}, state);
@@ -232,15 +239,16 @@ describe("researcher test-mode client boundary", () => {
     }
   });
 
-  it("uses only the dedicated researcher-test exit decision and never claims data was saved", async () => {
+  it("does not enter any interruption or test-exit flow", async () => {
     const state = testState();
     const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(state));
-    const api = new ResearcherTestApi("immediate", "picture_naming", { fetchImpl });
+    const api = new ResearcherTestApi("immediate", "picture_naming", {
+      fetchImpl,
+      adminToken: ADMIN_TOKEN,
+    });
     await api.bootstrap();
     const ui = runnerUi({
-      chooseResearcherTestExit: vi.fn()
-        .mockResolvedValueOnce(false)
-        .mockResolvedValueOnce(true),
+      chooseResearcherTestExit: vi.fn(),
       researcherTestInterrupted: vi.fn(),
       chooseInterruptionMode: vi.fn(() => {
         throw new Error("Participant interruption copy must not be used");
@@ -250,43 +258,11 @@ describe("researcher test-mode client boundary", () => {
 
     runner.participantExitRequested = true;
     await expect(runner.handleParticipantExit()).resolves.toBe(false);
+    expect(runner.participantExitRequested).toBe(false);
     expect(ui.chooseInterruptionMode).not.toHaveBeenCalled();
-
-    runner.participantExitRequested = true;
-    await expect(runner.handleParticipantExit()).rejects.toBeInstanceOf(
-      ParticipantExitRequested,
-    );
-    expect(ui.researcherTestInterrupted).toHaveBeenCalledWith(
-      expect.stringContaining("保存・送信していません"),
-    );
+    expect(ui.chooseResearcherTestExit).not.toHaveBeenCalled();
+    expect(ui.researcherTestInterrupted).not.toHaveBeenCalled();
     expect(ui.completed).not.toHaveBeenCalled();
-    expect(ui.chooseInterruptionMode).not.toHaveBeenCalled();
     expect(fetchImpl).toHaveBeenCalledTimes(1);
-
-    const fallbackState = testState();
-    const fallbackFetch = vi.fn().mockResolvedValue(jsonResponse(fallbackState));
-    const fallbackApi = new ResearcherTestApi("immediate", "picture_naming", {
-      fetchImpl: fallbackFetch,
-    });
-    await fallbackApi.bootstrap();
-    const fallbackUi = runnerUi({
-      chooseInterruptionMode: vi.fn(() => {
-        throw new Error("Participant interruption copy must not be used");
-      }),
-    });
-    const fallbackRunner = new ResearcherTestRunner(
-      fallbackApi,
-      fallbackUi,
-      {},
-      fallbackState,
-    );
-    fallbackRunner.participantExitRequested = true;
-    await expect(fallbackRunner.handleParticipantExit()).rejects.toBeInstanceOf(
-      ParticipantExitRequested,
-    );
-    expect(fallbackUi.completed).toHaveBeenCalledWith(
-      expect.stringContaining("保存・送信していません"),
-    );
-    expect(fallbackUi.chooseInterruptionMode).not.toHaveBeenCalled();
   });
 });

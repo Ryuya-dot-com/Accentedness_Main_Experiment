@@ -5,6 +5,7 @@ const DB_VERSION = 3;
 const OUTBOX_STORE = "trial_outbox";
 const START_STORE = "trial_starts";
 const VISIT_INDEX = "visitId";
+const RECORDING_QUALITY_VERSION = "pcm16-v1";
 
 function ascii(view, offset, length) {
   let output = "";
@@ -37,6 +38,41 @@ async function validateRecordingBeforeCanonicalization(blob, payload) {
       || Math.abs(sampleCount / sampleRate - payload.duration_seconds) > 0.01) {
     throw preflightError("録音WAVと試行メタデータが一致しません。");
   }
+  return { view, sampleRate, sampleCount };
+}
+
+export async function canonicalRecordingPayload(blob, payload) {
+  const { view, sampleRate, sampleCount } = await validateRecordingBeforeCanonicalization(blob, payload);
+  const analysisStartSeconds = payload?.quality?.analysis_start_seconds;
+  if (!Number.isFinite(analysisStartSeconds) || analysisStartSeconds < 0) {
+    throw preflightError("録音品質の解析開始位置が不正です。");
+  }
+  const startIndex = Math.max(
+    0,
+    Math.min(sampleCount, Math.floor(analysisStartSeconds * sampleRate)),
+  );
+  const analyzedSampleCount = Math.max(1, sampleCount - startIndex);
+  let sumSquares = 0;
+  let peak = 0;
+  let clipped = 0;
+  for (let index = startIndex; index < sampleCount; index += 1) {
+    const raw = view.getInt16(44 + index * 2, true);
+    const sample = raw < 0 ? raw / 32_768 : raw / 32_767;
+    const absolute = Math.abs(sample);
+    sumSquares += sample * sample;
+    if (absolute > peak) peak = absolute;
+    if (absolute >= 0.98) clipped += 1;
+  }
+  return {
+    ...payload,
+    quality: {
+      ...payload.quality,
+      analyzed_sample_count: analyzedSampleCount,
+      rms_amplitude: Math.sqrt(sumSquares / analyzedSampleCount),
+      peak_amplitude: peak,
+      clipping_ratio: clipped / analyzedSampleCount,
+    },
+  };
 }
 
 function openDatabase() {
@@ -86,18 +122,33 @@ async function withStore(storeName, mode, operation) {
 
 export async function queueTrial(record) {
   if (!record.visitId) throw new Error("visitId is required for durable trial storage");
+  const enriched = await buildDurableTrialRecord(record);
+  await withStore(OUTBOX_STORE, "readwrite", (store) => store.put(enriched));
+  return enriched;
+}
+
+export async function buildDurableTrialRecord(record) {
+  const recordingBlob = recordingBlobForDurableQueue(
+    record.expectsRecording,
+    record.recordingBlob,
+  );
   if (record.expectsRecording) {
-    await validateRecordingBeforeCanonicalization(record.recordingBlob, record.payload);
+    await validateRecordingBeforeCanonicalization(recordingBlob, record.payload);
   }
   const enriched = {
     ...record,
+    recordingBlob,
+    recordingQualityVersion: record.expectsRecording ? RECORDING_QUALITY_VERSION : null,
     responseAck: false,
     recordingAck: !record.expectsRecording,
-    recordingSha256: record.recordingBlob ? await sha256Blob(record.recordingBlob) : null,
+    recordingSha256: recordingBlob ? await sha256Blob(recordingBlob) : null,
     queuedAtMs: Date.now(),
   };
-  await withStore(OUTBOX_STORE, "readwrite", (store) => store.put(enriched));
   return enriched;
+}
+
+export function recordingBlobForDurableQueue(expectsRecording, recordingBlob) {
+  return expectsRecording === true ? (recordingBlob ?? null) : null;
 }
 
 export async function listQueuedTrials(visitId) {
@@ -187,12 +238,29 @@ export async function acknowledgeTrialResponse(api, attemptId) {
     throw error;
   }
   if (!record.responseAck) {
-    await api.saveResponse(record.trialId, record.attemptId, record.responseKey, record.payload);
+    await saveResponseWithLegacyQualityRepair(api, record);
     record.responseAck = true;
     await updateQueued(record);
   }
   if (isQueuedTrialFullyAcknowledged(record)) await deleteQueued(record.attemptId);
   return record;
+}
+
+export async function saveResponseWithLegacyQualityRepair(api, record, persist = updateQueued) {
+  try {
+    await api.saveResponse(record.trialId, record.attemptId, record.responseKey, record.payload);
+  } catch (error) {
+    const repairable = Number(error?.status) === 422
+      && error?.code === "invalid_response_payload"
+      && record.recordingQualityVersion !== RECORDING_QUALITY_VERSION
+      && record.expectsRecording === true
+      && record.recordingBlob instanceof Blob;
+    if (!repairable) throw error;
+    record.payload = await canonicalRecordingPayload(record.recordingBlob, record.payload);
+    record.recordingQualityVersion = RECORDING_QUALITY_VERSION;
+    await persist(record);
+    await api.saveResponse(record.trialId, record.attemptId, record.responseKey, record.payload);
+  }
 }
 
 export async function uploadQueuedRecording(api, attemptId) {

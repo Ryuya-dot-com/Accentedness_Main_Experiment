@@ -4,8 +4,10 @@ import {
   readJson,
   requireMethod,
 } from "./lib/http.js";
+import { requireAdmin } from "./lib/auth.js";
 import {
   buildTestModeBootstrap,
+  isCanonicalTestModeAssetKey,
   isAllowedTestModeScope,
 } from "./lib/test-mode.js";
 
@@ -16,12 +18,16 @@ const TEST_BOOTSTRAP_FIELDS = new Set([
   "expected_segment",
 ]);
 
-function requireConfiguration(configuration) {
-  if (configuration.enabled !== true) {
+function requireConfiguration(env) {
+  if (String(env.ENVIRONMENT ?? "").toLowerCase() !== "development") {
     throw new ApiError(404, "api_route_not_found", "API route was not found");
   }
-  for (const field of ["assignmentVersion", "seedAlgorithmVersion"]) {
-    if (typeof configuration[field] !== "string" || !configuration[field]) {
+  for (const field of [
+    "ASSIGNMENT_VERSION",
+    "SEED_ALGORITHM_VERSION",
+    "RESEARCHER_TEST_ASSET_VERSION",
+  ]) {
+    if (typeof env[field] !== "string" || !env[field]) {
       throw new ApiError(
         503,
         "test_mode_configuration_incomplete",
@@ -38,11 +44,11 @@ function validateFields(body) {
       fields: unknown,
     });
   }
-  if (body.participant_id !== "test") {
+  if (body.participant_id !== "999") {
     throw new ApiError(
       422,
       "test_mode_participant_id_required",
-      "Test mode requires the exact participant ID 'test'",
+      "Test mode requires the exact participant ID '999'",
     );
   }
 
@@ -60,16 +66,43 @@ function validateFields(body) {
   return { visitType, segment };
 }
 
-export async function bootstrapTestMode(request, configuration = {}) {
+export async function bootstrapTestMode(request, env) {
+  requireConfiguration(env);
   requireMethod(request, ["POST"]);
-  requireConfiguration(configuration);
+  await requireAdmin(request, env);
   const body = await readJson(request, MAX_TEST_BOOTSTRAP_BODY_BYTES);
   const { visitType, segment } = validateFields(body);
   const state = await buildTestModeBootstrap({
     visitType,
     segment,
-    assignmentVersion: configuration.assignmentVersion,
-    seedAlgorithmVersion: configuration.seedAlgorithmVersion,
+    assignmentVersion: env.ASSIGNMENT_VERSION,
+    seedAlgorithmVersion: env.SEED_ALGORITHM_VERSION,
+    assetVersion: env.RESEARCHER_TEST_ASSET_VERSION,
   });
   return jsonResponse(state);
+}
+
+export async function serveTestModeStimulus(request, env, kind) {
+  requireConfiguration(env);
+  requireMethod(request, ["GET"]);
+  await requireAdmin(request, env);
+  const url = new URL(request.url);
+  const keys = url.searchParams.getAll("key");
+  if ([...url.searchParams.keys()].some((name) => name !== "key") || keys.length !== 1
+      || !isCanonicalTestModeAssetKey(keys[0], kind, env.RESEARCHER_TEST_ASSET_VERSION)) {
+    throw new ApiError(404, "stimulus_not_found", "Stimulus was not found");
+  }
+
+  const object = await env.STIMULI.get(keys[0]);
+  if (!object) {
+    throw new ApiError(503, "stimulus_asset_missing", "The stimulus file has not been uploaded");
+  }
+  const headers = new Headers();
+  object.writeHttpMetadata(headers);
+  headers.set("Cache-Control", "private, no-store");
+  headers.set("Content-Type", kind === "audio" ? "audio/wav" : "image/webp");
+  headers.set("Referrer-Policy", "no-referrer");
+  headers.set("X-Content-Type-Options", "nosniff");
+  headers.set("ETag", object.httpEtag);
+  return new Response(object.body, { headers });
 }

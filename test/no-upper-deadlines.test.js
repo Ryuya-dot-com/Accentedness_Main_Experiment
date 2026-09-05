@@ -1,5 +1,5 @@
 import { env, exports } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 const ORIGIN = "https://experiment.test";
 const ADMIN_TOKEN = "test-admin-token-that-is-long-and-private";
@@ -20,52 +20,37 @@ async function api(path, { method = "GET", token = null, body = null } = {}) {
   return { response, json };
 }
 
-async function createParticipant(participantId, issuePreInvitation = true) {
-  const result = await api("/api/admin/participants", {
-    method: "POST",
-    token: ADMIN_TOKEN,
-    body: {
-      participant_id: participantId,
-      issue_pre_invitation: issuePreInvitation,
-    },
-  });
-  expect(result.response.status).toBe(201);
-  return result.json;
-}
-
-function invitationToken(url) {
-  return new URLSearchParams(new URL(url).hash.slice(1)).get("t");
-}
-
-async function redeem(
-  url,
-  expectedVisitType,
-  participantId,
-  clientInstanceId = crypto.randomUUID(),
-  nameAction = "register",
-) {
-  return api("/api/invitations/redeem", {
+async function startVisit(participantId, expectedVisitType, clientInstanceId = crypto.randomUUID()) {
+  return api("/api/participant-access/start", {
     method: "POST",
     body: {
-      token: invitationToken(url),
       participant_id: participantId,
-      name_action: nameAction,
-      participant_name_confirmed: true,
-      ...(nameAction === "register" ? { participant_name: "Test Participant" } : {}),
-      client_instance_id: clientInstanceId,
+      participant_id_confirmed: true,
       expected_visit_type: expectedVisitType,
+      client_instance_id: clientInstanceId,
     },
   });
+}
+
+async function createParticipant(participantId) {
+  const result = await startVisit(participantId, "pre");
+  expect(result.response.status).toBe(200);
+  const visits = await env.DB.prepare(`
+    SELECT p.participant_uuid, v.visit_uuid, v.visit_type
+    FROM participants p JOIN visits v ON v.participant_uuid = p.participant_uuid
+    WHERE p.numeric_id = ?
+  `).bind(participantId).all();
+  const participant = {
+    participant_id: participantId,
+    participant_uuid: visits.results[0].participant_uuid,
+  };
+  for (const visit of visits.results) participant[`${visit.visit_type}_visit_id`] = visit.visit_uuid;
+  return { participant, start: result.json };
 }
 
 describe("no upper participation deadlines", () => {
-  it("issues an immediate invitation long after pre completion", async () => {
+  it("starts the immediate visit long after pre completion", async () => {
     const created = await createParticipant(820_001);
-    expect((await redeem(
-      created.invitation.invitation_url,
-      "pre",
-      820_001,
-    )).response.status).toBe(200);
     const agedCompletionAt = Date.now() - 365 * DAY_MS;
     await env.DB.prepare(`
       UPDATE visits
@@ -77,34 +62,13 @@ describe("no upper participation deadlines", () => {
       created.participant.pre_visit_id,
     ).run();
 
-    const issued = await api(
-      `/api/admin/visits/${created.participant.immediate_visit_id}/invitations`,
-      { method: "POST", token: ADMIN_TOKEN, body: {} },
-    );
-
-    expect(issued.response.status).toBe(201);
-    expect(issued.json.invitation.visit_type).toBe("immediate");
+    const started = await startVisit(820_001, "immediate");
+    expect(started.response.status).toBe(200);
+    expect(started.json.visit.visit_type).toBe("immediate");
   });
 
-  it("redeems an active invitation regardless of how long ago it was issued", async () => {
-    const created = await createParticipant(820_002);
-    await env.DB.prepare(`
-      UPDATE invitations SET issued_at_ms = ? WHERE invite_uuid = ?
-    `).bind(Date.now() - 365 * DAY_MS, created.invitation.invite_id).run();
-
-    const redeemed = await redeem(created.invitation.invitation_url, "pre", 820_002);
-
-    expect(redeemed.response.status).toBe(200);
-    expect(redeemed.json.visit.visit_type).toBe("pre");
-  });
-
-  it("issues and redeems a delayed invitation long after the five-day minimum", async () => {
+  it("starts a delayed visit long after the five-day minimum", async () => {
     const created = await createParticipant(820_003);
-    expect((await redeem(
-      created.invitation.invitation_url,
-      "pre",
-      820_003,
-    )).response.status).toBe(200);
     const immediateCompletionAt = Date.now() - 400 * DAY_MS;
     const delayedTargetAt = immediateCompletionAt + 5 * DAY_MS;
     await env.DB.batch([
@@ -123,25 +87,13 @@ describe("no upper participation deadlines", () => {
       `).bind(delayedTargetAt, delayedTargetAt, created.participant.delayed_visit_id),
     ]);
 
-    const issued = await api(
-      `/api/admin/visits/${created.participant.delayed_visit_id}/invitations`,
-      { method: "POST", token: ADMIN_TOKEN, body: {} },
-    );
-    expect(issued.response.status).toBe(201);
-
-    const redeemed = await redeem(
-      issued.json.invitation.invitation_url,
-      "delayed",
-      820_003,
-      crypto.randomUUID(),
-      "confirm",
-    );
-    expect(redeemed.response.status).toBe(200);
-    expect(redeemed.json.visit.target_at_ms).toBe(delayedTargetAt);
+    const started = await startVisit(820_003, "delayed");
+    expect(started.response.status).toBe(200);
+    expect(started.json.visit.target_at_ms).toBe(delayedTargetAt);
   });
 
   it("lists a delayed visit as due only after the immediate data are finalized", async () => {
-    const created = await createParticipant(820_005, false);
+    const created = await createParticipant(820_005);
     const delayedTargetAt = Date.now() - DAY_MS;
     await env.DB.batch([
       env.DB.prepare(`
@@ -179,15 +131,57 @@ describe("no upper participation deadlines", () => {
     expect(dueVisit).not.toHaveProperty("immediate_missing_recordings");
   });
 
-  it("rejects an expired session but resumes the same unfinished trial from the active invitation", async () => {
+  it("opens Delayed at exactly 120 hours only after Immediate is finalized, without rerandomizing", async () => {
+    const { participant } = await createParticipant(820_006);
+    const immediateCompletionAt = Date.now();
+    const availableAt = immediateCompletionAt + 120 * 60 * 60 * 1000;
+    const manifestQuery = env.DB.prepare(`
+      SELECT visit_type, manifest_hash FROM visits
+      WHERE participant_uuid = ? ORDER BY visit_type
+    `).bind(participant.participant_uuid);
+    const manifestBefore = await manifestQuery.all();
+    await env.DB.batch([
+      env.DB.prepare(`
+        UPDATE visits SET status = 'awaiting_uploads', behavioral_completed_at_ms = ?
+        WHERE visit_uuid = ?
+      `).bind(immediateCompletionAt, participant.immediate_visit_id),
+      env.DB.prepare(`
+        UPDATE visits SET target_at_ms = ?, available_at_ms = ? WHERE visit_uuid = ?
+      `).bind(availableAt, availableAt, participant.delayed_visit_id),
+    ]);
+    const clock = vi.spyOn(Date, "now").mockReturnValue(availableAt + 1);
+    try {
+      const pendingUploads = await startVisit(820_006, "delayed");
+      expect(pendingUploads.response.status).toBe(409);
+      expect(pendingUploads.json.error.code).toBe("immediate_not_completed");
+
+      await env.DB.prepare(`
+        UPDATE visits SET status = 'completed', finalized_at_ms = ? WHERE visit_uuid = ?
+      `).bind(immediateCompletionAt + 60_000, participant.immediate_visit_id).run();
+      clock.mockReturnValue(availableAt - 1);
+      const tooEarly = await startVisit(820_006, "delayed");
+      expect(tooEarly.response.status).toBe(403);
+      expect(tooEarly.json.error).toMatchObject({
+        code: "visit_not_available",
+        details: { available_at_ms: availableAt, server_now_ms: availableAt - 1 },
+      });
+      expect(await env.DB.prepare(`
+        SELECT COUNT(*) AS count FROM sessions WHERE visit_uuid = ?
+      `).bind(participant.delayed_visit_id).first()).toEqual({ count: 0 });
+
+      clock.mockReturnValue(availableAt);
+      const onTime = await startVisit(820_006, "delayed");
+      expect(onTime.response.status).toBe(200);
+      expect(onTime.json.visit).toMatchObject({ visit_type: "delayed", target_at_ms: availableAt });
+      expect((await manifestQuery.all()).results).toEqual(manifestBefore.results);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it("rejects an expired session but resumes the same unfinished trial by ID", async () => {
     const created = await createParticipant(820_004);
-    const firstRedemption = await redeem(
-      created.invitation.invitation_url,
-      "pre",
-      820_004,
-      "82000004-0000-4000-8000-000000000001",
-    );
-    expect(firstRedemption.response.status).toBe(200);
+    const firstRedemption = { response: { status: 200 }, json: created.start };
     const unfinishedTrialId = firstRedemption.json.next_trial_id;
 
     const started = await api(`/api/trials/${unfinishedTrialId}/start`, {
@@ -208,12 +202,10 @@ describe("no upper participation deadlines", () => {
     expect(expired.response.status).toBe(401);
     expect(expired.json.error.code).toBe("session_expired");
 
-    const resumed = await redeem(
-      created.invitation.invitation_url,
-      "pre",
+    const resumed = await startVisit(
       820_004,
+      "pre",
       "82000004-0000-4000-8000-000000000003",
-      "confirm",
     );
     expect(resumed.response.status).toBe(200);
     expect(resumed.json.next_trial_id).toBe(unfinishedTrialId);

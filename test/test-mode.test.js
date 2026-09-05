@@ -1,34 +1,37 @@
 import { exports } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import worker from "../src/index.js";
-import {
-  L2_TO_L1_PRACTICE_STIMULI,
-  LEARNING_PRACTICE_STIMULI,
-  MAIN_STIMULI,
-  PICTURE_NAMING_PRACTICE_STIMULI,
-} from "../src/lib/stimuli.js";
 
 const ORIGIN = "https://experiment.test";
+const ADMIN_TOKEN = "test-admin-token-that-is-long-and-private";
 const TEST_CONFIG = Object.freeze({
   ENVIRONMENT: "development",
   ASSIGNMENT_VERSION: "test-assignment-v1",
   SEED_ALGORITHM_VERSION: "hmac-sha256+xoshiro128ss-v1",
+  RESEARCHER_TEST_ASSET_VERSION: "main-assets-v2",
+  ADMIN_TOKEN,
 });
 const VALID_SCOPES = Object.freeze([
   ["pre", "picture_naming", 26],
   ["immediate", "learning", 146],
   ["immediate", "picture_naming", 26],
-  ["immediate", "l2_to_l1", 27],
+  ["immediate", "l2_to_l1", 33],
   ["delayed", "picture_naming", 26],
-  ["delayed", "l2_to_l1", 27],
+  ["delayed", "l2_to_l1", 33],
 ]);
 
-function request(body, method = "POST") {
+function request(body, method = "POST", token = ADMIN_TOKEN) {
+  const headers = new Headers({ "Content-Type": "application/json" });
+  if (token) headers.set("Authorization", `Bearer ${token}`);
   return new Request(`${ORIGIN}/api/test/bootstrap`, {
     method,
-    headers: { "Content-Type": "application/json" },
+    headers,
     body: method === "POST" ? JSON.stringify(body) : null,
   });
+}
+
+function assetKey(endpoint) {
+  return new URL(endpoint, ORIGIN).searchParams.get("key");
 }
 
 async function bootstrap(body, runtimeEnv = null) {
@@ -69,14 +72,14 @@ describe("non-persistent test-mode bootstrap", () => {
     "returns only the requested %s/%s manifest",
     async (visitType, segment, trialCount) => {
       const { response, json } = await bootstrap({
-        participant_id: "test",
+        participant_id: "999",
         expected_visit_type: visitType,
         expected_segment: segment,
       });
 
       expect(response.status).toBe(200);
       expect(json.test_mode).toBe(true);
-      expect(json.participant).toEqual({ id: "test" });
+      expect(json.participant).toEqual({ id: "999" });
       expect(json.test_run).toEqual({
         training_accent: expect.stringMatching(/^(?:english|chinese|japanese)$/u),
         visit_type: visitType,
@@ -92,24 +95,25 @@ describe("non-persistent test-mode bootstrap", () => {
       expect(json.next_trial_id).toBe(json.manifest[0].trial_id);
       expect(json.next_route).toBeNull();
       expect(json.manifest.filter((trial) => trial.current)).toEqual([json.manifest[0]]);
-      expect(json.manifest.every((trial) => trial.placeholder_asset)).toBe(true);
+      expect(json.manifest.every((trial) => trial.placeholder_asset === false)).toBe(true);
 
       const serialized = JSON.stringify(json.manifest);
       expect(serialized).not.toContain("/api/stimuli/");
       for (const trial of json.manifest) {
         if (trial.has_audio) {
-          expect(trial.audio_endpoint).toMatch(/^\/placeholder-audio\/[a-z]+\.wav$/u);
+          expect(trial.audio_endpoint).toMatch(/^\/api\/test\/stimuli\/audio\?key=/u);
         } else {
           expect(trial.audio_endpoint).toBeNull();
         }
         if (trial.has_image) {
-          expect(trial.image_endpoint).toMatch(/^data:image\/svg\+xml/u);
+          expect(trial.image_endpoint).toMatch(/^\/api\/test\/stimuli\/image\?key=/u);
         } else {
           expect(trial.image_endpoint).toBeNull();
         }
       }
 
       const forbiddenManifestKeys = new Set([
+        "exclude_from_analysis",
         "item_id",
         "item_word",
         "item_gloss",
@@ -130,19 +134,19 @@ describe("non-persistent test-mode bootstrap", () => {
     },
   );
 
-  it("maps every learning and L2 audio to its matching static placeholder file", async () => {
+  it("maps every test-mode trial to its real versioned R2 asset category", async () => {
     const learning = await bootstrap({
-      participant_id: "test",
+      participant_id: "999",
       expected_visit_type: "immediate",
       expected_segment: "learning",
     });
     const l2 = await bootstrap({
-      participant_id: "test",
+      participant_id: "999",
       expected_visit_type: "immediate",
       expected_segment: "l2_to_l1",
     });
     const pictureNaming = await bootstrap({
-      participant_id: "test",
+      participant_id: "999",
       expected_visit_type: "immediate",
       expected_segment: "picture_naming",
     });
@@ -150,44 +154,25 @@ describe("non-persistent test-mode bootstrap", () => {
     expect(l2.response.status).toBe(200);
     expect(pictureNaming.response.status).toBe(200);
 
-    const expectedLearningUrls = new Set(
-      [...LEARNING_PRACTICE_STIMULI, ...MAIN_STIMULI]
-        .map((item) => `/placeholder-audio/${item.word}.wav`),
-    );
-    const expectedL2Urls = new Set(
-      [...L2_TO_L1_PRACTICE_STIMULI, ...MAIN_STIMULI]
-        .map((item) => `/placeholder-audio/${item.word}.wav`),
-    );
-    expect(new Set(learning.json.manifest.map((trial) => trial.audio_endpoint)))
-      .toEqual(expectedLearningUrls);
-    expect(new Set(l2.json.manifest.map((trial) => trial.audio_endpoint)))
-      .toEqual(expectedL2Urls);
+    const learningKeys = learning.json.manifest.map((trial) => assetKey(trial.audio_endpoint));
+    expect(learningKeys.filter((key) => key.includes("/learning-practice/"))).toHaveLength(2);
+    expect(learningKeys.filter((key) => key.includes("/learning/"))).toHaveLength(144);
+    expect(learningKeys.every((key) => key.startsWith("stimuli/main-assets-v2/"))).toBe(true);
 
-    for (const url of new Set([...expectedLearningUrls, ...expectedL2Urls])) {
-      const response = await exports.default.fetch(new Request(`${ORIGIN}${url}`));
-      expect(response.status, url).toBe(200);
-      expect(response.headers.get("Content-Type"), url).toContain("audio/wav");
-      const bytes = new Uint8Array(await response.arrayBuffer());
-      expect(new TextDecoder().decode(bytes.slice(0, 4)), url).toBe("RIFF");
-      expect(new TextDecoder().decode(bytes.slice(8, 12)), url).toBe("WAVE");
-    }
+    const l2Keys = l2.json.manifest.map((trial) => assetKey(trial.audio_endpoint));
+    expect(l2Keys.filter((key) => key.includes("/practice/"))).toHaveLength(3);
+    expect(l2Keys.filter((key) => key.includes("/test/"))).toHaveLength(24);
+    expect(l2Keys.filter((key) => key.includes("/test-control/"))).toHaveLength(6);
 
-    const decodedLearningImages = learning.json.manifest
-      .filter((trial) => trial.image_endpoint)
-      .map((trial) => decodeURIComponent(trial.image_endpoint));
-    for (const item of MAIN_STIMULI) {
-      expect(decodedLearningImages.some((svg) => svg.includes(item.gloss))).toBe(true);
-    }
-    const decodedPictureImages = pictureNaming.json.manifest
-      .map((trial) => decodeURIComponent(trial.image_endpoint));
-    for (const item of [...PICTURE_NAMING_PRACTICE_STIMULI, ...MAIN_STIMULI]) {
-      expect(decodedPictureImages.some((svg) => svg.includes(item.gloss))).toBe(true);
-    }
+    const imageKeys = pictureNaming.json.manifest.map((trial) => assetKey(trial.image_endpoint));
+    expect(imageKeys).toHaveLength(26);
+    expect(imageKeys.every((key) => /^stimuli\/main-assets-v2\/images\/[a-z]+\.webp$/u.test(key)))
+      .toBe(true);
   });
 
   it("draws fresh per-run seed state and never accesses D1 or R2", async () => {
     const body = {
-      participant_id: "test",
+      participant_id: "999",
       expected_visit_type: "immediate",
       expected_segment: "learning",
     };
@@ -211,7 +196,7 @@ describe("non-persistent test-mode bootstrap", () => {
 
   it("is POST-only, validates exact trigger fields, and rejects invalid scopes", async () => {
     const valid = {
-      participant_id: "test",
+      participant_id: "999",
       expected_visit_type: "pre",
       expected_segment: "picture_naming",
     };
@@ -219,8 +204,8 @@ describe("non-persistent test-mode bootstrap", () => {
     expect(getResponse.status).toBe(405);
 
     for (const invalid of [
-      { ...valid, participant_id: "Test" },
-      { ...valid, participant_id: " test" },
+      { ...valid, participant_id: "test" },
+      { ...valid, participant_id: "999 " },
       { ...valid, participant_id: 1 },
       { ...valid, expected_visit_type: "pre", expected_segment: "l2_to_l1" },
       { ...valid, expected_visit_type: "delayed", expected_segment: "learning" },
@@ -229,9 +214,94 @@ describe("non-persistent test-mode bootstrap", () => {
       expect(response.status).toBe(422);
     }
 
-    const unexpectedField = await bootstrap({ ...valid, name: "test" });
+    const unexpectedField = await bootstrap({ ...valid, name: "999" });
     expect(unexpectedField.response.status).toBe(400);
     expect(unexpectedField.json.error.code).toBe("unexpected_fields");
+  });
+
+  it("requires admin authorization for bootstrap without touching storage", async () => {
+    const body = {
+      participant_id: "999",
+      expected_visit_type: "pre",
+      expected_segment: "picture_naming",
+    };
+    const runtimeEnv = poisonStorageBindings();
+    const missing = await worker.fetch(request(body, "POST", null), runtimeEnv);
+    expect(missing.status).toBe(401);
+    const wrong = await worker.fetch(
+      request(body, "POST", "wrong-token-that-is-long-enough"),
+      runtimeEnv,
+    );
+    expect(wrong.status).toBe(403);
+  });
+
+  it("streams only canonical real test assets from STIMULI with admin authorization", async () => {
+    const calls = [];
+    const body = new Uint8Array([1, 2, 3, 4]);
+    const runtimeEnv = {
+      ...TEST_CONFIG,
+      STIMULI: {
+        async get(key) {
+          calls.push(key);
+          return {
+            body,
+            httpEtag: '"test-etag"',
+            writeHttpMetadata(headers) {
+              headers.set("Content-Language", "en");
+            },
+          };
+        },
+      },
+    };
+    const key = "stimuli/main-assets-v2/images/dog.webp";
+    const response = await worker.fetch(new Request(
+      `${ORIGIN}/api/test/stimuli/image?key=${encodeURIComponent(key)}`,
+      { headers: { Authorization: `Bearer ${ADMIN_TOKEN}` } },
+    ), runtimeEnv);
+
+    expect(response.status).toBe(200);
+    expect(calls).toEqual([key]);
+    expect(response.headers.get("Content-Type")).toBe("image/webp");
+    expect(response.headers.get("Cache-Control")).toBe("private, no-store");
+    expect(response.headers.get("ETag")).toBe('"test-etag"');
+    expect(new Uint8Array(await response.arrayBuffer())).toEqual(body);
+  });
+
+  it("rejects unauthenticated, noncanonical, and missing test assets", async () => {
+    let reads = 0;
+    const runtimeEnv = {
+      ...TEST_CONFIG,
+      STIMULI: {
+        async get() {
+          reads += 1;
+          return null;
+        },
+      },
+    };
+    const validKey = "stimuli/main-assets-v2/practice/english/tts_us_bella/book.wav";
+    const validUrl = `${ORIGIN}/api/test/stimuli/audio?key=${encodeURIComponent(validKey)}`;
+    const unauthenticated = await worker.fetch(new Request(validUrl), runtimeEnv);
+    expect(unauthenticated.status).toBe(401);
+    expect(reads).toBe(0);
+
+    for (const key of [
+      "stimuli/other-version/images/dog.webp",
+      "stimuli/main-assets-v2/images/not-a-stimulus.webp",
+      "recordings/private.wav",
+    ]) {
+      const response = await worker.fetch(new Request(
+        `${ORIGIN}/api/test/stimuli/image?key=${encodeURIComponent(key)}`,
+        { headers: { Authorization: `Bearer ${ADMIN_TOKEN}` } },
+      ), runtimeEnv);
+      expect(response.status).toBe(404);
+    }
+    expect(reads).toBe(0);
+
+    const missing = await worker.fetch(new Request(validUrl, {
+      headers: { Authorization: `Bearer ${ADMIN_TOKEN}` },
+    }), runtimeEnv);
+    expect(missing.status).toBe(503);
+    expect(reads).toBe(1);
   });
 
   it("is unavailable in production without touching storage bindings", async () => {
@@ -239,11 +309,12 @@ describe("non-persistent test-mode bootstrap", () => {
       ...TEST_CONFIG,
       ENVIRONMENT: "production",
     });
-    const { response, json } = await bootstrap({
-      participant_id: "test",
+    const response = await worker.fetch(request({
+      participant_id: "999",
       expected_visit_type: "pre",
       expected_segment: "picture_naming",
-    }, runtimeEnv);
+    }, "POST", null), runtimeEnv);
+    const json = await response.json();
     expect(response.status).toBe(404);
     expect(json.error.code).toBe("api_route_not_found");
   });

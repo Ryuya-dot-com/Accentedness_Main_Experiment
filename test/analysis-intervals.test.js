@@ -2,22 +2,28 @@ import { env, exports } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
 const ORIGIN = "https://experiment.test";
-const ADMIN_TOKEN = "test-admin-token-that-is-long-and-private";
 const DAY_MS = 86_400_000;
 
 async function createParticipant(participantId) {
-  const response = await exports.default.fetch(new Request(`${ORIGIN}/api/admin/participants`, {
+  const response = await exports.default.fetch(new Request(`${ORIGIN}/api/participant-access/start`, {
     method: "POST",
-    headers: {
-      Authorization: `Bearer ${ADMIN_TOKEN}`,
-      "Content-Type": "application/json",
-    },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       participant_id: participantId,
+      participant_id_confirmed: true,
+      expected_visit_type: "pre",
+      client_instance_id: crypto.randomUUID(),
     }),
   }));
-  expect(response.status).toBe(201);
-  return (await response.json()).participant;
+  expect(response.status).toBe(200);
+  return env.DB.prepare(`
+    SELECT p.participant_uuid,
+      MAX(CASE WHEN v.visit_type = 'pre' THEN v.visit_uuid END) AS pre_visit_id,
+      MAX(CASE WHEN v.visit_type = 'immediate' THEN v.visit_uuid END) AS immediate_visit_id,
+      MAX(CASE WHEN v.visit_type = 'delayed' THEN v.visit_uuid END) AS delayed_visit_id
+    FROM participants p JOIN visits v ON v.participant_uuid = p.participant_uuid
+    WHERE p.numeric_id = ? GROUP BY p.participant_uuid
+  `).bind(participantId).first();
 }
 
 async function intervalRow(participantId) {

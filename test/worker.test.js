@@ -21,42 +21,41 @@ async function api(path, { method = "GET", token = null, body = null } = {}) {
 }
 
 async function createParticipant(id = 1, visitType = "immediate") {
-  const result = await api("/api/admin/participants", {
-    method: "POST",
-    token: ADMIN_TOKEN,
-    body: { participant_id: id },
-  });
-  expect(result.response.status).toBe(201);
-  const created = result.json;
-  if (visitType === "pre") return created;
-  const registeredName = await api("/api/invitations/redeem", {
-    method: "POST",
-    body: {
-      token: tokenFromInvitation(created.invitation.invitation_url),
-      participant_id: id,
-      name_action: "register",
-      participant_name_confirmed: true,
-      participant_name: "Test Participant",
-      client_instance_id: crypto.randomUUID(),
-      expected_visit_type: "pre",
-    },
-  });
-  expect(registeredName.response.status).toBe(200);
+  const pre = await startVisit(id, "pre");
+  expect(pre.response.status).toBe(200);
+  const rows = await env.DB.prepare(`
+    SELECT p.participant_uuid, p.training_accent, p.counterbalance_cell,
+           v.visit_uuid, v.visit_type
+    FROM participants p JOIN visits v ON v.participant_uuid = p.participant_uuid
+    WHERE p.numeric_id = ?
+  `).bind(id).all();
+  const participant = {
+    participant_id: id,
+    participant_uuid: rows.results[0].participant_uuid,
+    training_accent: rows.results[0].training_accent,
+    counterbalance_cell: rows.results[0].counterbalance_cell,
+  };
+  for (const visit of rows.results) participant[`${visit.visit_type}_visit_id`] = visit.visit_uuid;
+  if (visitType === "pre") return { participant, start: pre.json };
   await env.DB.prepare(`
     UPDATE visits SET status = 'completed', finalized_at_ms = ?, updated_at_ms = ?
     WHERE visit_uuid = ?
-  `).bind(Date.now(), Date.now(), created.participant.pre_visit_id).run();
-  const issued = await api(`/api/admin/visits/${created.participant.immediate_visit_id}/invitations`, {
-    method: "POST",
-    token: ADMIN_TOKEN,
-    body: {},
-  });
-  expect(issued.response.status).toBe(201);
-  return { ...created, invitation: issued.json.invitation };
+  `).bind(Date.now(), Date.now(), participant.pre_visit_id).run();
+  const started = await startVisit(id, visitType);
+  expect(started.response.status).toBe(200);
+  return { participant, start: started.json };
 }
 
-function tokenFromInvitation(url) {
-  return new URLSearchParams(new URL(url).hash.slice(1)).get("t");
+async function startVisit(id, visitType, clientInstanceId = crypto.randomUUID()) {
+  return api("/api/participant-access/start", {
+    method: "POST",
+    body: {
+      participant_id: id,
+      participant_id_confirmed: true,
+      client_instance_id: clientInstanceId,
+      expected_visit_type: visitType,
+    },
+  });
 }
 
 function validLearningPayload() {
@@ -206,60 +205,33 @@ function silenceWav(sampleRate = 48_000, sampleCount = 480_000) {
 }
 
 describe("Worker API", () => {
-  it("creates an immutable pre manifest with no L2-to-L1 and a separate pre invitation", async () => {
+  it("creates an immutable pre manifest with no L2-to-L1", async () => {
     const created = await createParticipant(1, "pre");
     expect(created.participant.participant_id).toBe(1);
     expect(created.participant).toMatchObject({
       training_accent: "english",
       counterbalance_cell: 1,
     });
-    const existingParticipant = await api("/api/admin/participants", {
-      method: "POST",
-      token: ADMIN_TOKEN,
-      body: {
-        participant_id: 1,
-        issue_pre_invitation: false,
-      },
-    });
-    expect(existingParticipant.response.status).toBe(200);
-    expect(existingParticipant.json.participant).toMatchObject({
-      training_accent: "english",
-      counterbalance_cell: 1,
-    });
-    expect(created.invitation.invitation_url).toContain("/pre-picture-naming/#t=");
-    const inviteToken = tokenFromInvitation(created.invitation.invitation_url);
-    const redeemed = await api("/api/invitations/redeem", {
-      method: "POST",
-      body: {
-        token: inviteToken,
-        participant_id: 1,
-        name_action: "register",
-        participant_name_confirmed: true,
-        participant_name: "Test Participant",
-        client_instance_id: "11111111-1111-4111-8111-111111111111",
-        expected_visit_type: "pre",
-      },
-    });
-    expect(redeemed.response.status).toBe(200);
-    expect(redeemed.json.visit.visit_type).toBe("pre");
-    expect(redeemed.json.manifest).toHaveLength(26);
-    expect(redeemed.json.manifest.filter((trial) => trial.segment === "learning")).toHaveLength(0);
-    expect(redeemed.json.manifest.filter((trial) => trial.segment === "l2_to_l1")).toHaveLength(0);
-    expect(redeemed.json.next_route).toBe("/pre-picture-naming/");
-    expect(redeemed.json.manifest.some((trial) => trial.segment === "picture_matching")).toBe(false);
-    expect(redeemed.json.session_token).toMatch(/^[A-Za-z0-9_-]+$/u);
-    expect(redeemed.json.manifest[0]).not.toHaveProperty("item");
-    expect(redeemed.json.manifest[0].protocol).toEqual({
+    const started = created.start;
+    expect(started.visit.visit_type).toBe("pre");
+    expect(started.manifest).toHaveLength(26);
+    expect(started.manifest.filter((trial) => trial.segment === "learning")).toHaveLength(0);
+    expect(started.manifest.filter((trial) => trial.segment === "l2_to_l1")).toHaveLength(0);
+    expect(started.next_route).toBe("/pre-picture-naming/");
+    expect(started.manifest.some((trial) => trial.segment === "picture_matching")).toBe(false);
+    expect(started.session_token).toMatch(/^[A-Za-z0-9_-]+$/u);
+    expect(started.manifest[0]).not.toHaveProperty("item");
+    expect(started.manifest[0].protocol).toEqual({
       timing: { responseWindowMs: 10000, interTrialMs: 650 },
     });
 
-    const futureStimulus = await api(redeemed.json.manifest[1].image_endpoint, {
-      token: redeemed.json.session_token,
+    const futureStimulus = await api(started.manifest[1].image_endpoint, {
+      token: started.session_token,
     });
     expect(futureStimulus.response.status).toBe(409);
     expect(futureStimulus.json.error.code).toBe("stimulus_not_current");
-    const currentPlaceholderImage = await api(redeemed.json.manifest[0].image_endpoint, {
-      token: redeemed.json.session_token,
+    const currentPlaceholderImage = await api(started.manifest[0].image_endpoint, {
+      token: started.session_token,
     });
     expect(currentPlaceholderImage.response.status).toBe(200);
     expect(currentPlaceholderImage.response.headers.get("Content-Type")).toContain("image/svg+xml");
@@ -267,49 +239,19 @@ describe("Worker API", () => {
     const storedSeeds = await env.DB.prepare(`SELECT root_seed_hex FROM participants WHERE numeric_id = 1`).first();
     expect(storedSeeds.root_seed_hex).toMatch(/^[0-9a-f]{64}$/u);
     const manifestRows = await env.DB.prepare(`SELECT COUNT(*) AS count FROM trial_manifest`).first();
-    expect(Number(manifestRows.count)).toBe(278);
-    const prematureMain = await api(`/api/admin/visits/${created.participant.immediate_visit_id}/invitations`, {
-      method: "POST",
-      token: ADMIN_TOKEN,
-      body: {},
-    });
+    expect(Number(manifestRows.count)).toBe(290);
+    const prematureMain = await startVisit(1, "immediate", "11111111-1111-4111-8111-111111111111");
     expect(prematureMain.response.status).toBe(409);
     expect(prematureMain.json.error.code).toBe("pre_not_completed");
   });
 
-  it("rejects an invitation on the wrong visit URL and another participant's stimulus", async () => {
+  it("rejects the wrong visit URL and another participant's stimulus", async () => {
     const first = await createParticipant(101, "pre");
     const second = await createParticipant(102, "pre");
-    const firstToken = tokenFromInvitation(first.invitation.invitation_url);
-
-    const wrongRoute = await api("/api/invitations/redeem", {
-      method: "POST",
-      body: {
-        token: firstToken,
-        participant_id: 101,
-        name_action: "register",
-        participant_name_confirmed: true,
-        participant_name: "Test Participant",
-        client_instance_id: "10110110-1101-4101-8101-101101101101",
-        expected_visit_type: "immediate",
-      },
-    });
+    const wrongRoute = await startVisit(101, "immediate", "10110110-1101-4101-8101-101101101101");
     expect(wrongRoute.response.status).toBe(409);
-    expect(wrongRoute.json.error.code).toBe("wrong_visit_route");
-
-    const redeemed = await api("/api/invitations/redeem", {
-      method: "POST",
-      body: {
-        token: firstToken,
-        participant_id: 101,
-        name_action: "register",
-        participant_name_confirmed: true,
-        participant_name: "Test Participant",
-        client_instance_id: "10110110-1101-4101-8101-101101101102",
-        expected_visit_type: "pre",
-      },
-    });
-    expect(redeemed.response.status).toBe(200);
+    expect(wrongRoute.json.error.code).toBe("pre_not_completed");
+    const redeemed = { json: first.start };
 
     const otherTrial = await env.DB.prepare(`
       SELECT trial_uuid FROM trial_manifest
@@ -349,23 +291,7 @@ describe("Worker API", () => {
     await env.DB.prepare(`
       UPDATE visits SET available_at_ms = 0, target_at_ms = 0 WHERE visit_uuid = ?
     `).bind(created.participant.delayed_visit_id).run();
-    const issued = await api(`/api/admin/visits/${created.participant.delayed_visit_id}/invitations`, {
-      method: "POST",
-      token: ADMIN_TOKEN,
-      body: {},
-    });
-    expect(issued.response.status).toBe(201);
-    const redeemed = await api("/api/invitations/redeem", {
-      method: "POST",
-      body: {
-        token: tokenFromInvitation(issued.json.invitation.invitation_url),
-        participant_id: 109,
-        name_action: "confirm",
-        participant_name_confirmed: true,
-        client_instance_id: "10910910-9109-4109-8109-109109109109",
-        expected_visit_type: "delayed",
-      },
-    });
+    const redeemed = await startVisit(109, "delayed", "10910910-9109-4109-8109-109109109109");
     expect(redeemed.response.status).toBe(200);
     await env.DB.prepare(`
       UPDATE trial_manifest SET canonical_attempt_uuid = 'test-skip-picture-naming-for-practice-audio'
@@ -393,24 +319,12 @@ describe("Worker API", () => {
     expect(new Set(hashes)).toEqual(new Set([
       "57d9978e795cf0d7ba2f45fc86a9f4881c97b4a2112a2331674c001be251062c",
       "536c8c11ad042f46c8a6a9ce0ce3eac0f6a0c0e2e51f052824f5f17315d15422",
-      "c5f171836beb4ed2b1d3d13d6b8e81e184903526c64e59e025a275c707704da5",
     ]));
   });
 
   it("makes trial start and response idempotent and rejects a conflicting retry", async () => {
     const created = await createParticipant(2);
-    const inviteToken = tokenFromInvitation(created.invitation.invitation_url);
-    const redeemed = await api("/api/invitations/redeem", {
-      method: "POST",
-      body: {
-        token: inviteToken,
-        participant_id: 2,
-        name_action: "confirm",
-        participant_name_confirmed: true,
-        client_instance_id: "22222222-2222-4222-8222-222222222222",
-        expected_visit_type: "immediate",
-      },
-    });
+    const redeemed = { json: created.start };
     const sessionToken = redeemed.json.session_token;
     const trial = redeemed.json.manifest[0];
     const startKey = "33333333-3333-4333-8333-333333333333";
@@ -554,31 +468,10 @@ describe("Worker API", () => {
     expect(Number(attempts.count)).toBe(1);
   });
 
-  it("supersedes the old tab when the same invitation is redeemed again", async () => {
+  it("supersedes the old tab when the same visit is started again", async () => {
     const created = await createParticipant(3);
-    const inviteToken = tokenFromInvitation(created.invitation.invitation_url);
-    const first = await api("/api/invitations/redeem", {
-      method: "POST",
-      body: {
-        token: inviteToken,
-        participant_id: 3,
-        name_action: "confirm",
-        participant_name_confirmed: true,
-        client_instance_id: "55555555-5555-4555-8555-555555555555",
-        expected_visit_type: "immediate",
-      },
-    });
-    const second = await api("/api/invitations/redeem", {
-      method: "POST",
-      body: {
-        token: inviteToken,
-        participant_id: 3,
-        name_action: "confirm",
-        participant_name_confirmed: true,
-        client_instance_id: "66666666-6666-4666-8666-666666666666",
-        expected_visit_type: "immediate",
-      },
-    });
+    const first = { json: created.start };
+    const second = await startVisit(3, "immediate", "66666666-6666-4666-8666-666666666666");
     expect(Number(second.json.session.epoch)).toBe(Number(first.json.session.epoch) + 1);
     const oldHeartbeat = await api("/api/session/heartbeat", { method: "POST", token: first.json.session_token, body: {} });
     expect(oldHeartbeat.response.status).toBe(409);
@@ -587,13 +480,9 @@ describe("Worker API", () => {
     expect(newHeartbeat.response.status).toBe(200);
   });
 
-  it("does not issue the delayed invitation before the immediate behavioral endpoint plus five days", async () => {
+  it("does not start delayed before the immediate behavioral endpoint plus five days", async () => {
     const created = await createParticipant(4);
-    const delayedIssue = await api(`/api/admin/visits/${created.participant.delayed_visit_id}/invitations`, {
-      method: "POST",
-      token: ADMIN_TOKEN,
-      body: {},
-    });
+    const delayedIssue = await startVisit(4, "delayed");
     expect(delayedIssue.response.status).toBe(409);
     expect(delayedIssue.json.error.code).toBe("immediate_not_completed");
 
@@ -608,29 +497,14 @@ describe("Worker API", () => {
         WHERE visit_uuid = ?
       `).bind(futureTarget, futureTarget, created.participant.delayed_visit_id),
     ]);
-    const tooEarly = await api(`/api/admin/visits/${created.participant.delayed_visit_id}/invitations`, {
-      method: "POST",
-      token: ADMIN_TOKEN,
-      body: {},
-    });
-    expect(tooEarly.response.status).toBe(409);
-    expect(tooEarly.json.error.code).toBe("delayed_not_available");
+    const tooEarly = await startVisit(4, "delayed");
+    expect(tooEarly.response.status).toBe(403);
+    expect(tooEarly.json.error.code).toBe("visit_not_available");
   });
 
   it("schedules delayed exactly five days after the immediate behavioral endpoint", async () => {
     const created = await createParticipant(40);
-    const redeemed = await api("/api/invitations/redeem", {
-      method: "POST",
-      body: {
-        token: tokenFromInvitation(created.invitation.invitation_url),
-        participant_id: 40,
-        name_action: "confirm",
-        participant_name_confirmed: true,
-        client_instance_id: "40404040-4040-4040-8040-404040404040",
-        expected_visit_type: "immediate",
-      },
-    });
-    expect(redeemed.response.status).toBe(200);
+    const redeemed = { response: { status: 200 }, json: created.start };
 
     const lastTrial = redeemed.json.manifest.at(-1);
     expect(lastTrial.segment).toBe("l2_to_l1");
@@ -686,24 +560,12 @@ describe("Worker API", () => {
       UPDATE visits SET available_at_ms = 0, target_at_ms = 0
       WHERE visit_uuid = ?
     `).bind(created.participant.delayed_visit_id).run();
-    const issued = await api(`/api/admin/visits/${created.participant.delayed_visit_id}/invitations`, {
-      method: "POST",
-      token: ADMIN_TOKEN,
-      body: {},
-    });
-    expect(issued.response.status).toBe(201);
-    const redeemed = await api("/api/invitations/redeem", {
-      method: "POST",
-      body: {
-        token: tokenFromInvitation(issued.json.invitation.invitation_url),
-        participant_id: 5,
-        name_action: "confirm",
-        participant_name_confirmed: true,
-        client_instance_id: "88888888-8888-4888-8888-888888888888",
-        expected_visit_type: "delayed",
-      },
-    });
-    const trial = redeemed.json.manifest[0];
+    const redeemed = await startVisit(5, "delayed", "88888888-8888-4888-8888-888888888888");
+    const trial = redeemed.json.manifest.find((candidate) => candidate.expects_recording);
+    await env.DB.prepare(`
+      UPDATE trial_manifest SET canonical_attempt_uuid = 'test-skip-nonrecorded-practice'
+      WHERE visit_uuid = ? AND ordinal < ?
+    `).bind(created.participant.delayed_visit_id, trial.ordinal).run();
     const startKey = "99999999-9999-4999-8999-999999999999";
     const started = await api(`/api/trials/${trial.trial_id}/start`, {
       method: "POST",
@@ -870,28 +732,16 @@ describe("Worker API", () => {
       UPDATE visits SET available_at_ms = 0, target_at_ms = 0
       WHERE visit_uuid = ?
     `).bind(created.participant.delayed_visit_id).run();
-    const issued = await api(`/api/admin/visits/${created.participant.delayed_visit_id}/invitations`, {
-      method: "POST",
-      token: ADMIN_TOKEN,
-      body: {},
-    });
-    const redeemed = await api("/api/invitations/redeem", {
-      method: "POST",
-      body: {
-        token: tokenFromInvitation(issued.json.invitation.invitation_url),
-        participant_id: 7,
-        name_action: "confirm",
-        participant_name_confirmed: true,
-        client_instance_id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
-        expected_visit_type: "delayed",
-      },
-    });
+    const redeemed = await startVisit(7, "delayed", "dddddddd-dddd-4ddd-8ddd-dddddddddddd");
     await env.DB.prepare(`
       UPDATE trial_manifest
-      SET canonical_attempt_uuid = 'test-skip-picture-naming', expects_recording = 0
-      WHERE visit_uuid = ? AND segment = 'picture_naming'
+      SET canonical_attempt_uuid = 'test-skip-prior-test-trials', expects_recording = 0
+      WHERE visit_uuid = ?
+        AND (segment = 'picture_naming' OR (segment = 'l2_to_l1' AND practice = 1))
     `).bind(created.participant.delayed_visit_id).run();
-    const trial = redeemed.json.manifest.find((candidate) => candidate.segment === "l2_to_l1");
+    const trial = redeemed.json.manifest.find(
+      (candidate) => candidate.segment === "l2_to_l1" && candidate.expects_recording,
+    );
     const started = await api(`/api/trials/${trial.trial_id}/start`, {
       method: "POST",
       token: redeemed.json.session_token,
@@ -933,17 +783,7 @@ describe("Worker API", () => {
 
   it("returns the recorded completion result when a closed session retries", async () => {
     const created = await createParticipant(6);
-    const redeemed = await api("/api/invitations/redeem", {
-      method: "POST",
-      body: {
-        token: tokenFromInvitation(created.invitation.invitation_url),
-        participant_id: 6,
-        name_action: "confirm",
-        participant_name_confirmed: true,
-        client_instance_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
-        expected_visit_type: "immediate",
-      },
-    });
+    const redeemed = { json: created.start };
     const finalizedAt = Date.now() - 100;
     await env.DB.batch([
       env.DB.prepare(`UPDATE visits SET status = 'completed', finalized_at_ms = ? WHERE visit_uuid = ?`)
@@ -965,10 +805,14 @@ describe("Worker API", () => {
   });
 
   it("rejects ambiguous participant IDs as a client error", async () => {
-    const result = await api("/api/admin/participants", {
+    const result = await api("/api/participant-access/start", {
       method: "POST",
-      token: ADMIN_TOKEN,
-      body: { participant_id: "001" },
+      body: {
+        participant_id: "001",
+        participant_id_confirmed: true,
+        client_instance_id: crypto.randomUUID(),
+        expected_visit_type: "pre",
+      },
     });
     expect(result.response.status).toBe(400);
   });
@@ -995,7 +839,15 @@ describe("Worker API", () => {
     }
   });
 
-  it("serves the participant-visible progress, fixation, timer, and completion-state contract", async () => {
+  it("does not describe the shared participant entry pages as individual links", async () => {
+    const response = await exports.default.fetch(new Request(`${ORIGIN}/`));
+    expect(response.status).toBe(200);
+    const html = await response.text();
+    expect(html).toContain("担当者から案内された課題ページを開いてください");
+    expect(html).not.toContain("個別に送られた専用リンク");
+  });
+
+  it("serves the fixation-only progress bar and minimal measurement HUD contract", async () => {
     const taskPageResponse = await exports.default.fetch(new Request(`${ORIGIN}/js/task-page.js`));
     expect(taskPageResponse.status).toBe(200);
     const taskPage = await taskPageResponse.text();
@@ -1006,7 +858,12 @@ describe("Worker API", () => {
     expect(taskPage).toContain('id="response-timer"');
     expect(taskPage).toContain('role="timer" aria-live="off"');
     expect(taskPage).toContain('id="welcome-interruption-button"');
-    expect(taskPage).toContain("進み具合は上のバーで確認できます");
+    expect(taskPage).toContain('id="interruption-button" class="interruption-button safe-screen-control" type="button" hidden');
+    expect(taskPage).not.toContain('id="progress-label"');
+    expect(taskPage).not.toContain('id="progress-detail"');
+    expect(taskPage).not.toContain('id="save-state"');
+    expect(taskPage).not.toContain('id="task-status"');
+    expect(taskPage).not.toContain("テストを終了");
 
     const uiResponse = await exports.default.fetch(new Request(`${ORIGIN}/js/ui.js`));
     expect(uiResponse.status).toBe(200);
@@ -1014,8 +871,10 @@ describe("Worker API", () => {
     expect(ui).toContain('document.getElementById("interruption-button")');
     expect(ui).toContain('document.getElementById("welcome-interruption-button")');
     expect(ui).toContain("for (const button of this.interruptionButtons)");
-    expect(ui).toContain('this.progressLabel.textContent = "課題完了"');
-    expect(ui).toContain('"この課題の回答と録音を保存済み"');
+    expect(ui).toContain("this.progressTrack.hidden = false");
+    expect(ui).toContain("this.progressTrack.hidden = this.progressIsPractice || !fixationVisible");
+    expect(ui).not.toContain("テストを終了");
+    expect(ui).not.toMatch(/現在 .*\/|完了 .*\//u);
 
     for (const path of ["/js/learning.js", "/js/segment.js"]) {
       const entryResponse = await exports.default.fetch(new Request(`${ORIGIN}${path}`));
@@ -1027,7 +886,8 @@ describe("Worker API", () => {
     const stylesResponse = await exports.default.fetch(new Request(`${ORIGIN}/styles.css`));
     expect(stylesResponse.status).toBe(200);
     const styles = await stylesResponse.text();
-    expect(styles).toContain(".task-progress");
+    expect(styles).toContain(".stage-progress");
+    expect(styles).not.toContain(".task-progress");
     expect(styles).toContain(".response-timer");
   });
 
@@ -1039,22 +899,7 @@ describe("Worker API", () => {
     await env.DB.prepare(`
       UPDATE visits SET available_at_ms = 0, target_at_ms = 0 WHERE visit_uuid = ?
     `).bind(created.participant.delayed_visit_id).run();
-    const issued = await api(`/api/admin/visits/${created.participant.delayed_visit_id}/invitations`, {
-      method: "POST",
-      token: ADMIN_TOKEN,
-      body: {},
-    });
-    const redeemed = await api("/api/invitations/redeem", {
-      method: "POST",
-      body: {
-        token: tokenFromInvitation(issued.json.invitation.invitation_url),
-        participant_id: 9,
-        name_action: "confirm",
-        participant_name_confirmed: true,
-        client_instance_id: "abcdefab-cdef-4abc-8def-abcdefabcdef",
-        expected_visit_type: "delayed",
-      },
-    });
+    const redeemed = await startVisit(9, "delayed", "abcdefab-cdef-4abc-8def-abcdefabcdef");
     const pictureTrials = redeemed.json.manifest.filter((trial) => trial.segment === "picture_naming");
     const lastPicture = pictureTrials.at(-1);
     await env.DB.prepare(`

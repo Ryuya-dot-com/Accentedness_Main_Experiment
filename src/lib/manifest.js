@@ -1,21 +1,24 @@
 import {
   ACCENTS,
   LEARNING_PRACTICE_STIMULI,
-  LEARNING_PRACTICE_TALKERS,
+  L2_TO_L1_CONTROL_STIMULI,
+  L2_TO_L1_CONTROL_TALKER,
   L2_TO_L1_PRACTICE_STIMULI,
   MAIN_STIMULI,
   PICTURE_NAMING_PRACTICE_STIMULI,
-  PRACTICE_TEST_TALKERS,
+  PRACTICE_TALKER,
   TEST_TALKERS,
   TRAINING_TALKERS,
 } from "./stimuli.js";
 import { deterministicUuid, hmacSha256, bytesToHex, sha256Hex, stableJson } from "./crypto.js";
-import { constrainedShuffle, maxRun, permutations, scopedShuffle } from "./randomization.js";
+import { maxRun, permutations, scopedShuffle } from "./randomization.js";
 
 export const CELL_PERMUTATION = Object.freeze([
   1, 8, 15, 22, 5, 12, 13, 20, 3, 10, 17, 24,
   2, 7, 16, 21, 6, 11, 14, 19, 4, 9, 18, 23,
 ]);
+
+export const RESEARCHER_TEST_PARTICIPANT_ID = 999;
 
 const LEARNING_CYCLES = 6;
 const TEST_RESPONSE_WINDOW_MS = 10_000;
@@ -23,7 +26,6 @@ const LEARNING_VISUAL_MS = 5_000;
 const VISUAL_TO_AUDIO_MS = 750;
 const INTER_TRIAL_MS = 650;
 const TEST_ACCENT_BASE = Object.freeze([0, 1, 2, 0, 1, 2, 1, 2, 0, 1, 2, 0]);
-const SECOND_HIGH_ITEM_CYCLE = Object.freeze([0, 2, 4, 1, 3, 5]);
 
 export function canonicalParticipantId(value) {
   if (typeof value === "number") {
@@ -36,6 +38,14 @@ export function canonicalParticipantId(value) {
   }
   const numericId = Number(text);
   if (!Number.isSafeInteger(numericId)) throw new Error("participant_id exceeds the JavaScript safe integer range");
+  return numericId;
+}
+
+export function canonicalCollectionParticipantId(value) {
+  const numericId = canonicalParticipantId(value);
+  if (numericId === RESEARCHER_TEST_PARTICIPANT_ID) {
+    throw new Error("participant_id 999 is reserved for non-persistent researcher testing");
+  }
   return numericId;
 }
 
@@ -105,7 +115,7 @@ async function createItemAssignments(counterbalance, assetVersion) {
   return provisional.map((item) => {
     const testTalkerId = TEST_TALKERS[item.testAccent];
     if (typeof testTalkerId !== "string" || testTalkerId.length === 0) {
-      throw new Error(`Exactly one fixed female test talker is required for ${item.testAccent}`);
+      throw new Error(`Exactly one fixed test talker is required for ${item.testAccent}`);
     }
     return {
       ...item,
@@ -114,61 +124,42 @@ async function createItemAssignments(counterbalance, assetVersion) {
   });
 }
 
-async function orderLearningBlock(
-  items,
-  rootSeedHex,
-  domain,
-  priorItemId,
-  priorHighTalkerId,
-  talkerForItem,
-  highVariability,
-) {
-  return constrainedShuffle(
-    items,
-    rootSeedHex,
-    domain,
-    (candidate) => {
-      if (candidate[0]?.id === priorItemId) return false;
-      if (!highVariability) return true;
-      const talkers = candidate.map(talkerForItem);
-      return maxRun(talkers) <= 1 && (!priorHighTalkerId || talkers[0] !== priorHighTalkerId);
-    },
-  );
-}
-
 async function buildLearningTrials(itemAssignments, counterbalance, rootSeedHex, assetVersion) {
-  const noItems = itemAssignments.filter((item) => item.variability === "no");
-  const highItems = itemAssignments.filter((item) => item.variability === "high");
-  const trials = [];
-  let priorItemId = null;
-  let priorHighTalkerId = null;
-  let priorVariability = null;
-  let globalBlock = 0;
-
-  for (let cycleIndex = 0; cycleIndex < LEARNING_CYCLES; cycleIndex += 1) {
-    const startsNo = (counterbalance.orderCell + cycleIndex) % 2 === 0;
-    const blockOrder = startsNo ? ["no", "high"] : ["high", "no"];
-    for (const variability of blockOrder) {
-      globalBlock += 1;
-      const items = variability === "no" ? noItems : highItems;
-      const talkerForItem = (item) => {
-        if (variability === "no") return item.noTalkerId;
-        const withinHalfRank = item.listRank % 6;
-        const cycleOffset = item.listRank < 6 ? cycleIndex : SECOND_HIGH_ITEM_CYCLE[cycleIndex];
-        const talkerIndex = (withinHalfRank + cycleOffset + counterbalance.talkerCell) % 6;
-        return TRAINING_TALKERS[counterbalance.trainingAccent][talkerIndex];
-      };
-      const ordered = await orderLearningBlock(
-        items,
+  const itemsByVariability = new Map();
+  for (const variability of ["no", "high"]) {
+    itemsByVariability.set(
+      variability,
+      await scopedShuffle(
+        itemAssignments.filter((item) => item.variability === variability),
         rootSeedHex,
-        `learning/cycle/${cycleIndex}/condition/${variability}/order`,
-        priorItemId,
-        variability === "high" && priorVariability === "high" ? priorHighTalkerId : null,
-        talkerForItem,
-        variability === "high",
-      );
+        `learning/condition/${variability}/item_order`,
+      ),
+    );
+  }
+  const highTalkersByItem = new Map();
+  for (const item of itemsByVariability.get("high")) {
+    highTalkersByItem.set(
+      item.id,
+      await scopedShuffle(
+        TRAINING_TALKERS[counterbalance.trainingAccent],
+        rootSeedHex,
+        `learning/condition/high/item/${item.id}/talker_order`,
+      ),
+    );
+  }
+
+  const trials = [];
+  let globalBlock = 0;
+  const conditionOrder = counterbalance.orderCell === 0 ? ["no", "high"] : ["high", "no"];
+
+  for (let exposureIndex = 0; exposureIndex < LEARNING_CYCLES; exposureIndex += 1) {
+    for (const variability of conditionOrder) {
+      const ordered = itemsByVariability.get(variability);
+      globalBlock += 1;
       ordered.forEach((item, blockIndex) => {
-        const talkerId = talkerForItem(item);
+        const talkerId = variability === "no"
+          ? item.noTalkerId
+          : highTalkersByItem.get(item.id)[exposureIndex];
         trials.push({
           segment: "learning",
           practice: false,
@@ -179,8 +170,8 @@ async function buildLearningTrials(itemAssignments, counterbalance, rootSeedHex,
           listId: item.list,
           listRank: item.listRank,
           variability,
-          exposure: cycleIndex + 1,
-          cycle: cycleIndex + 1,
+          exposure: exposureIndex + 1,
+          cycle: exposureIndex + 1,
           learningBlock: globalBlock,
           blockIndex: blockIndex + 1,
           miniblock: null,
@@ -196,17 +187,12 @@ async function buildLearningTrials(itemAssignments, counterbalance, rootSeedHex,
           },
         });
       });
-      priorItemId = ordered.at(-1).id;
-      priorHighTalkerId = variability === "high" ? talkerForItem(ordered.at(-1)) : null;
-      priorVariability = variability;
     }
   }
   return trials;
 }
 
-function buildLearningPracticeTrials(assetVersion, trainingAccent) {
-  const talkerId = LEARNING_PRACTICE_TALKERS[trainingAccent];
-  if (!talkerId) throw new Error(`Unsupported learning practice accent: ${trainingAccent}`);
+function buildLearningPracticeTrials(assetVersion) {
   return LEARNING_PRACTICE_STIMULI.map((item) => ({
     segment: "learning",
     practice: true,
@@ -222,13 +208,13 @@ function buildLearningPracticeTrials(assetVersion, trainingAccent) {
     learningBlock: null,
     blockIndex: null,
     miniblock: null,
-    testAccent: null,
-    talkerId,
+    testAccent: "english",
+    talkerId: PRACTICE_TALKER,
     audioKey: audioKey(
       assetVersion,
       "learning-practice",
-      trainingAccent,
-      talkerId,
+      "english",
+      PRACTICE_TALKER,
       item.word,
     ),
     imageKey: null,
@@ -386,7 +372,83 @@ async function buildL2Order(itemAssignments, rootSeedHex, timepoint, alternate =
   return trials;
 }
 
-async function practiceTrials(segment, timepoint, assetVersion, rootSeedHex, firstMainTestAccent = null) {
+async function addL2Controls(experimentalTrials, rootSeedHex, timepoint, assetVersion, alternate = 0) {
+  const suffix = alternate ? `/alternate/${alternate}` : "";
+  const controls = await scopedShuffle(
+    L2_TO_L1_CONTROL_STIMULI,
+    rootSeedHex,
+    `l2_to_l1/${timepoint}/controls/order${suffix}`,
+  );
+  const controlTrials = controls.map((item) => ({
+    segment: "l2_to_l1",
+    practice: false,
+    excludeFromAnalysis: true,
+    itemId: item.id,
+    itemWord: item.word,
+    itemGloss: item.gloss,
+    listId: null,
+    listRank: null,
+    variability: null,
+    exposure: null,
+    cycle: null,
+    learningBlock: null,
+    miniblock: null,
+    withinMiniblock: null,
+    testAccent: "english",
+    talkerId: L2_TO_L1_CONTROL_TALKER,
+    audioKey: audioKey(assetVersion, "test-control", "english", L2_TO_L1_CONTROL_TALKER, item.word),
+    imageKey: null,
+    expectsRecording: true,
+    controlType: "untrained_easy",
+    timing: {
+      preAudioRecordingMs: 150,
+      responseWindowAfterAudioMs: TEST_RESPONSE_WINDOW_MS,
+      interTrialMs: INTER_TRIAL_MS,
+    },
+  }));
+
+  const controlFirstPositions = new Set((await scopedShuffle(
+    Array.from({ length: experimentalTrials.length + controlTrials.length }, (_, index) => index),
+    rootSeedHex,
+    `l2_to_l1/${timepoint}/controls/merge${suffix}`,
+  )).slice(0, 15));
+  const failed = new Set();
+  const search = (experimentalIndex, controlIndex, previousType, previousAccent, accentRun) => {
+    if (experimentalIndex === experimentalTrials.length && controlIndex === controlTrials.length) {
+      return [];
+    }
+    const state = [experimentalIndex, controlIndex, previousType, previousAccent, accentRun].join("|");
+    if (failed.has(state)) return null;
+    const position = experimentalIndex + controlIndex;
+    const options = controlFirstPositions.has(position)
+      ? ["control", "experimental"]
+      : ["experimental", "control"];
+    for (const type of options) {
+      if (type === "control" && (controlIndex === controlTrials.length || previousType === "control")) continue;
+      if (type === "experimental" && experimentalIndex === experimentalTrials.length) continue;
+      const trial = type === "control"
+        ? controlTrials[controlIndex]
+        : experimentalTrials[experimentalIndex];
+      const nextRun = trial.testAccent === previousAccent ? accentRun + 1 : 1;
+      if (nextRun > 2) continue;
+      const rest = search(
+        experimentalIndex + (type === "experimental" ? 1 : 0),
+        controlIndex + (type === "control" ? 1 : 0),
+        type,
+        trial.testAccent,
+        nextRun,
+      );
+      if (rest) return [trial, ...rest];
+    }
+    failed.add(state);
+    return null;
+  };
+  const merged = search(0, 0, null, null, 0);
+  if (!merged) throw new Error(`Unable to interleave L2-to-L1 controls: ${timepoint}`);
+  return merged;
+}
+
+function practiceTrials(segment, timepoint, assetVersion) {
   if (segment === "picture_naming") {
     return PICTURE_NAMING_PRACTICE_STIMULI.map((item) => ({
       segment,
@@ -406,47 +468,37 @@ async function practiceTrials(segment, timepoint, assetVersion, rootSeedHex, fir
       talkerId: null,
       audioKey: null,
       imageKey: imageKey(assetVersion, item.word),
-      expectsRecording: true,
+      expectsRecording: false,
       timing: { responseWindowMs: TEST_RESPONSE_WINDOW_MS, interTrialMs: INTER_TRIAL_MS },
       timepoint,
     }));
   }
-  const practiceAccents = await constrainedShuffle(
-    ACCENTS,
-    rootSeedHex,
-    `l2_to_l1/${timepoint}/practice/accent_order`,
-    (candidate) => !firstMainTestAccent || candidate.at(-1) !== firstMainTestAccent,
-  );
-  return L2_TO_L1_PRACTICE_STIMULI.map((item, index) => {
-    const accent = practiceAccents[index];
-    const talkerId = PRACTICE_TEST_TALKERS[accent];
-    return {
-      segment,
-      practice: true,
-      excludeFromAnalysis: true,
-      itemId: item.id,
-      itemWord: item.word,
-      itemGloss: item.gloss,
-      listId: null,
-      listRank: null,
-      variability: null,
-      exposure: null,
-      cycle: null,
-      learningBlock: null,
-      miniblock: null,
-      testAccent: accent,
-      talkerId,
-      audioKey: audioKey(assetVersion, "practice", accent, talkerId, item.word),
-      imageKey: null,
-      expectsRecording: true,
-      timing: {
-        preAudioRecordingMs: 150,
-        responseWindowAfterAudioMs: TEST_RESPONSE_WINDOW_MS,
-        interTrialMs: INTER_TRIAL_MS,
-      },
-      timepoint,
-    };
-  });
+  return L2_TO_L1_PRACTICE_STIMULI.map((item) => ({
+    segment,
+    practice: true,
+    excludeFromAnalysis: true,
+    itemId: item.id,
+    itemWord: item.word,
+    itemGloss: item.gloss,
+    listId: null,
+    listRank: null,
+    variability: null,
+    exposure: null,
+    cycle: null,
+    learningBlock: null,
+    miniblock: null,
+    testAccent: "english",
+    talkerId: PRACTICE_TALKER,
+    audioKey: audioKey(assetVersion, "practice", "english", PRACTICE_TALKER, item.word),
+    imageKey: null,
+    expectsRecording: false,
+    timing: {
+      preAudioRecordingMs: 150,
+      responseWindowAfterAudioMs: TEST_RESPONSE_WINDOW_MS,
+      interTrialMs: INTER_TRIAL_MS,
+    },
+    timepoint,
+  }));
 }
 
 async function finalizeVisitTrials(participantUuid, visitType, assignmentVersion, rawTrials, assetVersion) {
@@ -518,7 +570,7 @@ export async function buildParticipantDesign({
   );
   const rootSeedHex = bytesToHex(rootSeedBytes);
   const itemAssignments = await createItemAssignments(counterbalance, assetVersion);
-  const learningPractice = buildLearningPracticeTrials(assetVersion, counterbalance.trainingAccent);
+  const learningPractice = buildLearningPracticeTrials(assetVersion);
   const learningTrials = await buildLearningTrials(itemAssignments, counterbalance, rootSeedHex, assetVersion);
 
   const pictureNamingPre = await buildPictureNamingOrder(itemAssignments, rootSeedHex, "pre");
@@ -550,20 +602,38 @@ export async function buildParticipantDesign({
   ensureDifferentOrder(pictureNamingPre, pictureNamingDelayed, "Pre and delayed Picture Naming");
   ensureDifferentOrder(pictureNamingImmediate, pictureNamingDelayed, "Picture Naming");
 
-  const l2Immediate = await buildL2Order(itemAssignments, rootSeedHex, "immediate");
-  let l2Delayed = await buildL2Order(itemAssignments, rootSeedHex, "delayed");
-  if (itemSequence(l2Immediate) === itemSequence(l2Delayed)) {
-    l2Delayed = await buildL2Order(itemAssignments, rootSeedHex, "delayed", 1);
+  const l2Immediate = await addL2Controls(
+    await buildL2Order(itemAssignments, rootSeedHex, "immediate"),
+    rootSeedHex,
+    "immediate",
+    assetVersion,
+  );
+  let l2DelayedAlternate = 0;
+  let l2Delayed = await addL2Controls(
+    await buildL2Order(itemAssignments, rootSeedHex, "delayed"),
+    rootSeedHex,
+    "delayed",
+    assetVersion,
+  );
+  while (itemSequence(l2Immediate) === itemSequence(l2Delayed)) {
+    l2DelayedAlternate += 1;
+    l2Delayed = await addL2Controls(
+      await buildL2Order(itemAssignments, rootSeedHex, "delayed", l2DelayedAlternate),
+      rootSeedHex,
+      "delayed",
+      assetVersion,
+      l2DelayedAlternate,
+    );
   }
   ensureDifferentOrder(l2Immediate, l2Delayed, "L2-to-L1");
 
-  const [pictureNamingPracticePre, pictureNamingPracticeImmediate, l2PracticeImmediate, pictureNamingPracticeDelayed, l2PracticeDelayed] = await Promise.all([
-    practiceTrials("picture_naming", "pre", assetVersion, rootSeedHex),
-    practiceTrials("picture_naming", "immediate", assetVersion, rootSeedHex),
-    practiceTrials("l2_to_l1", "immediate", assetVersion, rootSeedHex, l2Immediate[0].testAccent),
-    practiceTrials("picture_naming", "delayed", assetVersion, rootSeedHex),
-    practiceTrials("l2_to_l1", "delayed", assetVersion, rootSeedHex, l2Delayed[0].testAccent),
-  ]);
+  const [pictureNamingPracticePre, pictureNamingPracticeImmediate, l2PracticeImmediate, pictureNamingPracticeDelayed, l2PracticeDelayed] = [
+    practiceTrials("picture_naming", "pre", assetVersion),
+    practiceTrials("picture_naming", "immediate", assetVersion),
+    practiceTrials("l2_to_l1", "immediate", assetVersion),
+    practiceTrials("picture_naming", "delayed", assetVersion),
+    practiceTrials("l2_to_l1", "delayed", assetVersion),
+  ];
   const preRaw = [
     ...pictureNamingPracticePre,
     ...pictureNamingPre,

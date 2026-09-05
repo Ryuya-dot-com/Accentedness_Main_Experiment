@@ -19,10 +19,20 @@ const FIXTURES = Object.freeze([
     word: "water",
     hash: "536c8c11ad042f46c8a6a9ce0ce3eac0f6a0c0e2e51f052824f5f17315d15422",
   }),
+  // Retained so an already-created v9 placeholder manifest can resume.
   Object.freeze({
     word: "car",
     hash: "c5f171836beb4ed2b1d3d13d6b8e81e184903526c64e59e025a275c707704da5",
   }),
+  // New v10 filenames intentionally serve the generic "book" placeholder;
+  // final Bella control/practice bytes must never be published from public/.
+  Object.freeze({ word: "house", hash: "57d9978e795cf0d7ba2f45fc86a9f4881c97b4a2112a2331674c001be251062c" }),
+  Object.freeze({ word: "strawberry", hash: "57d9978e795cf0d7ba2f45fc86a9f4881c97b4a2112a2331674c001be251062c" }),
+  Object.freeze({ word: "grape", hash: "57d9978e795cf0d7ba2f45fc86a9f4881c97b4a2112a2331674c001be251062c" }),
+  Object.freeze({ word: "pineapple", hash: "57d9978e795cf0d7ba2f45fc86a9f4881c97b4a2112a2331674c001be251062c" }),
+  Object.freeze({ word: "peach", hash: "57d9978e795cf0d7ba2f45fc86a9f4881c97b4a2112a2331674c001be251062c" }),
+  Object.freeze({ word: "kiwi", hash: "57d9978e795cf0d7ba2f45fc86a9f4881c97b4a2112a2331674c001be251062c" }),
+  Object.freeze({ word: "cherry", hash: "57d9978e795cf0d7ba2f45fc86a9f4881c97b4a2112a2331674c001be251062c" }),
   // Retained so an already-created v4 manifest can resume without changing
   // the audio it originally referenced.
   Object.freeze({

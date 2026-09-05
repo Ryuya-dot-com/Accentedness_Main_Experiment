@@ -41,6 +41,10 @@ function publicRecordingFields(recording) {
   };
 }
 
+export function recordingBlobForPersistence(trial, recording) {
+  return trial?.expects_recording === true ? (recording?.blob ?? null) : null;
+}
+
 export function isNonRetryableLocalRecordingError(error) {
   const code = String(error?.code ?? "");
   const knownCode = new Set([
@@ -144,6 +148,7 @@ export class ExperimentRunner {
   }
 
   startMonitoring() {
+    if (this.state.visit.status === "completed") return;
     this.running = true;
     document.addEventListener("visibilitychange", this.onVisibility);
     window.addEventListener("beforeunload", this.onBeforeUnload);
@@ -472,11 +477,11 @@ export class ExperimentRunner {
     }
   }
 
-  async prepareParticipantCopyWithRetry(fileHandle = null) {
+  async prepareParticipantCopyWithRetry() {
     while (true) {
       try {
         this.ui.setSaveState("saving");
-        const archive = await this.api.fetchParticipantCopy(fileHandle);
+        const archive = await this.api.fetchParticipantCopy();
         this.ui.setSaveState("saved");
         return archive;
       } catch (error) {
@@ -489,7 +494,6 @@ export class ExperimentRunner {
           expired.status = 401;
           throw expired;
         }
-        if (error?.code === "participant_copy_file_write_failed") throw error;
         if (["session_superseded", "visit_closed"].includes(error.code)) throw error;
         const retryableStatus = [408, 425, 429].includes(Number(error.status))
           || Number(error.status) >= 500;
@@ -518,7 +522,9 @@ export class ExperimentRunner {
 
   requireVisibleBeforeOnset() {
     if (document.visibilityState !== "visible") {
-      throw new Error("刺激提示前に画面が非表示になりました。画面を戻して担当者に知らせてください。");
+      const error = new Error("試行中に画面が非表示になりました。");
+      error.code = "trial_visibility_interrupted";
+      throw error;
     }
   }
 
@@ -536,7 +542,9 @@ export class ExperimentRunner {
 
   stopIfVisibilityInterrupted(interrupted) {
     if (interrupted) {
-      throw new Error("絵や音声が出ている間に画面が非表示になりました。この回は記録済みです。続行せず担当者に知らせてください。");
+      const error = new Error("試行中に画面が非表示になりました。");
+      error.code = "trial_visibility_interrupted";
+      throw error;
     }
   }
 
@@ -799,7 +807,12 @@ export class ExperimentRunner {
       ...publicRecordingFields(recording),
     };
     this.activeTrial = null;
-    await this.persistTrial(trial, authorization, payload, recording.blob);
+    await this.persistTrial(
+      trial,
+      authorization,
+      payload,
+      recordingBlobForPersistence(trial, recording),
+    );
     this.trialInFlight = false;
     this.stopIfVisibilityInterrupted(payload.visibility_interrupted);
     return recording;
@@ -823,7 +836,6 @@ export class ExperimentRunner {
     await this.markTrialStimulusShown(trial.trial_id);
     await delayUntilPerformance(targetOnsetPerfMs - protocol.preAudioRecordingMs);
     const captureStart = await this.audio.startCapture();
-    this.ui.setRecording(true);
     const playback = this.audio.playCue(loaded.cueBuffer, protocol.preAudioRecordingMs / 1000);
     const clockAnchor = this.audio.clockSnapshot();
     const scheduledAudioOnsetPerfMs = clockAnchor.performance_time_ms
@@ -888,7 +900,12 @@ export class ExperimentRunner {
       ...publicRecordingFields(recording),
     };
     this.activeTrial = null;
-    await this.persistTrial(trial, authorization, payload, recording.blob);
+    await this.persistTrial(
+      trial,
+      authorization,
+      payload,
+      recordingBlobForPersistence(trial, recording),
+    );
     this.trialInFlight = false;
     this.stopIfVisibilityInterrupted(payload.visibility_interrupted);
     return recording;

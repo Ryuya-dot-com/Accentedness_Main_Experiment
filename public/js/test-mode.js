@@ -1,5 +1,5 @@
 import { ApiClientError } from "./api.js";
-import { ExperimentRunner, ParticipantExitRequested } from "./runner.js";
+import { ExperimentRunner } from "./runner.js";
 
 const TEST_BOOTSTRAP_PATH = "/api/test/bootstrap";
 const HEALTH_PATH = "/api/health";
@@ -51,12 +51,12 @@ export async function researcherTestModeAvailable(options = {}) {
   return health?.environment === "development";
 }
 
-function literalTestId(input = "test") {
+function literalTestId(input = "999") {
   const text = String(input ?? "").trim();
-  if (text !== "test") {
+  if (text !== "999") {
     throw new ResearcherTestModeError(
       "invalid_test_id",
-      "Researcher test mode requires the exact participant ID 'test'",
+      "Researcher test mode requires the exact participant ID '999'",
     );
   }
   return text;
@@ -82,7 +82,7 @@ function validateBootstrapState(state, expectedVisitType, expectedSegment) {
   const valid = state
     && typeof state === "object"
     && state.test_mode === true
-    && state.participant?.id === "test"
+    && state.participant?.id === "999"
     && state.visit?.visit_type === expectedVisitType
     && state.test_run?.visit_type === expectedVisitType
     && state.test_run?.segment === expectedSegment
@@ -108,7 +108,7 @@ function forbiddenPersistence(operation) {
   );
 }
 
-function staticStimulusEndpoint(endpoint, origin) {
+function testStimulusEndpoint(endpoint, origin) {
   const value = String(endpoint ?? "").trim();
   if (!value) {
     throw new ResearcherTestModeError(
@@ -116,10 +116,6 @@ function staticStimulusEndpoint(endpoint, origin) {
       "Researcher test stimulus URL is missing",
     );
   }
-
-  // The test manifest intentionally uses an inline SVG placeholder. It is
-  // decoded locally below and never passed to fetch().
-  if (/^data:image\/svg\+xml(?:;charset=utf-8)?,/iu.test(value)) return value;
 
   let parsed;
   try {
@@ -130,11 +126,15 @@ function staticStimulusEndpoint(endpoint, origin) {
       "Researcher test stimulus URL is invalid",
     );
   }
+  const queryKeys = [...parsed.searchParams.keys()];
   if (!["http:", "https:"].includes(parsed.protocol)
-      || !/^\/placeholder-audio\/[A-Za-z0-9_-]+\.wav$/u.test(parsed.pathname)) {
+      || !/^\/api\/test\/stimuli\/(?:audio|image)$/u.test(parsed.pathname)
+      || queryKeys.length !== 1
+      || queryKeys[0] !== "key"
+      || !parsed.searchParams.get("key")) {
     throw new ResearcherTestModeError(
       "invalid_test_stimulus_url",
-      "Researcher test stimuli must be static assets",
+      "Researcher test stimuli must use the protected test endpoint",
     );
   }
   if (origin && parsed.origin !== origin) {
@@ -146,21 +146,6 @@ function staticStimulusEndpoint(endpoint, origin) {
   return value;
 }
 
-function inlineSvgBlob(endpoint) {
-  const match = /^data:image\/svg\+xml(?:;charset=utf-8)?,(.*)$/isu.exec(endpoint);
-  if (!match) return null;
-  try {
-    return new Blob([decodeURIComponent(match[1])], {
-      type: "image/svg+xml;charset=utf-8",
-    });
-  } catch {
-    throw new ResearcherTestModeError(
-      "invalid_test_stimulus_url",
-      "Researcher test placeholder image cannot be decoded",
-    );
-  }
-}
-
 export class ResearcherTestApi {
   constructor(expectedVisitType, expectedSegment, options = {}) {
     validateScope(expectedVisitType, expectedSegment);
@@ -169,13 +154,16 @@ export class ResearcherTestApi {
     this.isTestMode = true;
     this.fetchImpl = fetchImplementation(options);
     this.origin = options.origin ?? globalThis.location?.origin ?? null;
+    this.adminToken = String(options.adminToken ?? "");
+    if (!this.adminToken) {
+      throw new ResearcherTestModeError(
+        "researcher_token_required",
+        "Researcher test mode requires the admin token",
+      );
+    }
     this.testId = null;
     this.currentState = null;
     this.bootstrapPromise = null;
-  }
-
-  hasInvitationToken() {
-    return false;
   }
 
   hasStoredSession() {
@@ -207,7 +195,10 @@ export class ResearcherTestApi {
     this.bootstrapPromise = (async () => {
       const response = await this.fetchImpl(TEST_BOOTSTRAP_PATH, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          Authorization: `Bearer ${this.adminToken}`,
+          "Content-Type": "application/json",
+        },
         body: JSON.stringify({
           participant_id: testId,
           expected_visit_type: this.expectedVisitType,
@@ -251,10 +242,12 @@ export class ResearcherTestApi {
         "Researcher test mode has not been started",
       );
     }
-    const staticEndpoint = staticStimulusEndpoint(endpoint, this.origin);
-    const inlineImage = inlineSvgBlob(staticEndpoint);
-    if (inlineImage) return inlineImage;
-    const response = await this.fetchImpl(staticEndpoint, { method: "GET" });
+    const protectedEndpoint = testStimulusEndpoint(endpoint, this.origin);
+    const response = await this.fetchImpl(protectedEndpoint, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${this.adminToken}` },
+      cache: "no-store",
+    });
     if (!response.ok) throw await apiError(response);
     return response.blob();
   }
@@ -267,7 +260,9 @@ export class ResearcherTestApi {
     return Promise.resolve({ ok: true, test_mode: true });
   }
 
-  clearSession() {}
+  clearSession() {
+    this.adminToken = "";
+  }
 
   startTrial() {
     return forbiddenPersistence("Trial authorization");
@@ -409,35 +404,10 @@ export class ResearcherTestRunner extends ExperimentRunner {
     return forbiddenPersistence("Participant-copy generation");
   }
 
-  async handleParticipantExit(preselectedMode = null) {
-    if (!this.participantExitRequested || this.trialInFlight) return false;
-
-    let shouldExit = true;
-    if (!preselectedMode && typeof this.ui.chooseResearcherTestExit === "function") {
-      const decision = await this.ui.chooseResearcherTestExit();
-      shouldExit = decision === true
-        || decision === "exit"
-        || decision === "terminate";
-    }
-    if (!shouldExit) {
-      this.participantExitRequested = false;
-      this.ui.clearInterruptionPending?.();
-      this.resetInterTrialClock();
-      return false;
-    }
-
-    this.interruptionFlowActive = true;
-    this.stopMonitoring();
-    this.ui.setInterruptionControlEnabled?.(false);
-    if (typeof this.ui.researcherTestInterrupted === "function") {
-      this.ui.researcherTestInterrupted(
-        "動作確認を終了しました。この画面で行った回答と録音は保存・送信していません。このページは閉じて構いません。",
-      );
-    } else {
-      this.ui.completed?.(
-        "研究者用テストを終了しました。この画面で行った回答と録音は保存・送信していません。",
-      );
-    }
-    throw new ParticipantExitRequested("terminate");
+  async handleParticipantExit() {
+    // ID 999 has no on-page interruption/exit control. Closing the tab is the
+    // only early-stop action, and its in-memory trials are discarded by design.
+    this.participantExitRequested = false;
+    return false;
   }
 }

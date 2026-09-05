@@ -4,58 +4,128 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="robots" content="noindex,nofollow" />
-    <title>実験リンク管理</title>
+    <title>実験管理</title>
+    <link rel="stylesheet" href="/admin/admin.css" />
   </head>
   <body>
-    <main>
-      <h1>実験リンク管理</h1>
-      <p>研究担当者専用です。参加者IDは募集順に割り当て、条件を選ぶ目的で欠番を作らないでください。</p>
-
-      <section>
-        <h2>認証</h2>
-        <p><label>ADMIN_TOKEN <input id="admin-token" type="password" required autocomplete="off" /></label></p>
-      </section>
-
-      <section>
-        <h2>参加者</h2>
-        <p>管理者が登録するのは参加者IDだけです。氏名は参加者がPreリンクで入力内容を確認した後に実験データベースへ保存され、以後のリンクでは保存済み氏名を参加者自身が確認します。管理画面には氏名を表示しません。この表示確認は本人認証ではありません。</p>
-        <form id="participant-form">
-          <p><label>参加者ID <input id="participant-id" inputmode="numeric" pattern="[1-9][0-9]*" required /></label></p>
-          <button type="submit">登録／参照</button>
-        </form>
-        <div id="participant-actions" hidden>
-          <p id="participant-state"></p>
-          <button type="button" data-visit="pre">Preリンクを発行</button>
-          <button type="button" data-visit="immediate">Main Experimentリンクを発行</button>
-          <button type="button" data-visit="delayed">Delayedリンクを発行</button>
-          <button id="download-results" type="button">収集済み結果ZIPを保存</button>
+    <header class="admin-header">
+      <div class="admin-header__inner">
+        <div>
+          <p class="admin-kicker">研究担当者用</p>
+          <h1>実験管理</h1>
         </div>
+        <p id="environment-banner" class="environment-banner is-blocked" role="status">
+          環境未確認・参加者への案内は禁止
+        </p>
+      </div>
+    </header>
+
+    <main class="admin-shell">
+      <section class="panel connection-panel" aria-labelledby="connection-heading">
+        <div>
+          <h2 id="connection-heading">サーバーへ接続</h2>
+          <p class="supporting-text">管理トークンはこのページを開いている間だけ保持します。</p>
+        </div>
+        <form id="connection-form" class="connection-form">
+          <label for="admin-token">管理トークン</label>
+          <input id="admin-token" type="password" required autocomplete="off" spellcheck="false" />
+          <button id="connect-button" type="submit">接続</button>
+          <button id="disconnect-button" class="secondary-button" type="button" hidden>接続解除</button>
+        </form>
+        <p id="connection-status" class="operation-status" role="status" aria-live="polite"></p>
       </section>
 
-      <section>
-        <h2>発行結果</h2>
-        <p>表示されたURLを該当参加者だけに手動配布してください。参加者IDは第二認証要素ではないため、リンク自体を秘匿してください。リンクに経過時間による自動失効はありません。誤配布・漏えいが疑われる場合は、氏名を見られていないと推定せず再発行してください。再発行すると以前のリンクと実行中sessionは無効になります。</p>
-        <textarea id="invitation-url" rows="4" cols="100" readonly aria-label="発行した招待URL"></textarea>
-      </section>
+      <div id="admin-workspace" hidden>
+        <section id="qa-panel" class="panel warning-panel" aria-labelledby="qa-heading" hidden>
+          <h2 id="qa-heading">ID 999による開発用動作確認</h2>
+          <p>各ページを個別に開き、参加者IDに「999」、続けてこの管理画面と同じ管理トークンを入力してください。実際の画像・音声を使う動作確認専用で、回答・録音の保存、再開、5日後の受付は検証しません。</p>
+          <div class="qa-links" aria-label="6つの動作確認ページ">
+            <a href="/pre-picture-naming/" target="_blank" rel="noopener">事前 Picture Naming</a>
+            <a href="/main-experiment/" target="_blank" rel="noopener">単語学習</a>
+            <a href="/immediate-picture-naming/" target="_blank" rel="noopener">直後 Picture Naming</a>
+            <a href="/immediate-l2-to-l1/" target="_blank" rel="noopener">直後 L2-to-L1</a>
+            <a href="/delayed-picture-naming/" target="_blank" rel="noopener">後日 Picture Naming</a>
+            <a href="/delayed-l2-to-l1/" target="_blank" rel="noopener">後日 L2-to-L1</a>
+          </div>
+        </section>
 
-      <section>
-        <h2>遅延テスト対象</h2>
-        <p>直後L2-to-L1の最終回答から5日以上が経過し、Immediateの全データ保存が確定した参加者を表示します。上限期限は設けません。</p>
-        <button id="load-due" type="button">受付可能な参加者を取得</button>
-        <table border="1" cellpadding="6">
-          <thead><tr><th>参加者ID</th><th>目標時刻</th><th>状態</th><th>操作</th></tr></thead>
-          <tbody id="due-visits"></tbody>
-        </table>
-      </section>
+        <section id="pre-invitation-panel" class="panel" aria-labelledby="pre-invitation-heading">
+          <div class="section-heading-row">
+            <div>
+              <h2 id="pre-invitation-heading">新しい参加者へ事前課題を案内</h2>
+              <p class="supporting-text">発番台帳で未使用IDを確認してから、IDと共通URLをまとめてコピーします。ここでは参加者を作成しません。</p>
+            </div>
+          </div>
+          <form id="pre-invitation-form" class="inline-form">
+            <label for="pre-participant-id">参加者ID</label>
+            <input
+              id="pre-participant-id"
+              inputmode="numeric"
+              pattern="[1-9][0-9]*"
+              autocomplete="off"
+              required
+            />
+            <button id="copy-pre-invitation" type="submit" disabled>事前課題の案内をコピー</button>
+          </form>
+          <p class="visible-url"><span>共通URL</span> <code id="pre-url-preview"></code></p>
+          <p id="pre-invitation-status" class="operation-status" role="status" aria-live="polite"></p>
+        </section>
 
-      <section>
-        <h2>全体状態</h2>
-        <button id="load-summary" type="button">状態を取得</button>
-        <pre id="summary"></pre>
-      </section>
+        <section class="panel participant-panel" aria-labelledby="participants-heading">
+          <div class="section-heading-row">
+            <div>
+              <h2 id="participants-heading">開始済み参加者</h2>
+              <p class="supporting-text">事前課題を開始した参加者が表示されます。案内済みで未開始のIDは発番台帳で管理してください。</p>
+            </div>
+            <button id="refresh-button" class="secondary-button" type="button">手動更新</button>
+          </div>
 
-      <p id="status" role="status"></p>
+          <div id="overview-counts" class="overview-counts" aria-label="参加者状態の集計"></div>
+
+          <div class="list-tools">
+            <div class="filter-buttons" role="group" aria-label="一覧を絞り込む">
+              <button class="filter-button is-selected" type="button" data-filter="all" aria-pressed="true">全員 <span data-filter-count="all">0</span></button>
+              <button class="filter-button" type="button" data-filter="attention" aria-pressed="false">対応必要 <span data-filter-count="attention">0</span></button>
+              <button class="filter-button" type="button" data-filter="delayed" aria-pressed="false">後日の課題を案内 <span data-filter-count="delayed">0</span></button>
+              <button class="filter-button" type="button" data-filter="complete" aria-pressed="false">完了・終了 <span data-filter-count="complete">0</span></button>
+            </div>
+            <form id="participant-search-form" class="search-form" role="search">
+              <label for="participant-search">参加者ID</label>
+              <input id="participant-search" inputmode="numeric" pattern="[1-9][0-9]*" autocomplete="off" />
+              <button class="secondary-button" type="submit">ID検索</button>
+              <button id="clear-search" class="text-button" type="button" hidden>検索解除</button>
+            </form>
+          </div>
+
+          <div class="table-scroll" tabindex="0" aria-label="参加者一覧">
+            <table class="participant-table">
+              <thead>
+                <tr>
+                  <th scope="col">参加者ID</th>
+                  <th scope="col">事前課題</th>
+                  <th scope="col">本実験・直後課題</th>
+                  <th scope="col">後日の課題</th>
+                  <th scope="col">保存状態</th>
+                  <th scope="col">次の対応</th>
+                  <th scope="col">詳細</th>
+                </tr>
+              </thead>
+              <tbody id="participant-rows"></tbody>
+            </table>
+          </div>
+          <p id="participant-list-status" class="operation-status" role="status" aria-live="polite"></p>
+        </section>
+
+        <section class="panel diagnostics-panel">
+          <details id="diagnostics-details">
+            <summary>研究点検用の全体集計</summary>
+            <p class="supporting-text">日常の参加者案内には使わない集計です。個別参加者の割付は表示しません。</p>
+            <div id="diagnostics-content"></div>
+          </details>
+        </section>
+      </div>
     </main>
+
     <script type="module" src="/js/admin-operations.js"></script>
   </body>
 </html>

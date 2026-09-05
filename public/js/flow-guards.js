@@ -1,9 +1,6 @@
 import {
   ApiClientError,
   isCorrectableParticipantAccessError,
-  isCorrectableParticipantNameError,
-  ParticipantNameValidationError,
-  validateParticipantNameForRegistration,
 } from "./api.js";
 import {
   ResearcherTestApi,
@@ -17,87 +14,31 @@ function normalizedPath(path) {
 export async function bootstrapWithParticipantAccess(
   api,
   ui,
-  { initialParticipantId = null } = {},
+  { initialParticipantId = null, commonEntry = false } = {},
 ) {
-  if (!api.hasInvitationToken()) {
+  if (!commonEntry) {
     const state = await api.bootstrap();
     ui.showParticipationSetup();
     return state;
   }
   let retryMessage = "";
   let pendingParticipantId = initialParticipantId;
-  participantAccessLoop:
   while (true) {
     const participantId = pendingParticipantId
       ?? await ui.requestParticipantId(retryMessage);
     pendingParticipantId = null;
-    let preview;
+    const decision = await ui.confirmParticipantId(participantId);
+    if (decision !== "confirm") continue;
     try {
-      preview = await api.previewParticipantName(participantId);
-    } catch (error) {
-      if (!isCorrectableParticipantAccessError(error)) throw error;
-      retryMessage = "参加者IDを確認できませんでした。入力内容を確認して、もう一度お試しください。";
-      continue;
-    }
-
-    if (preview.name_action === "register") {
-      let draftName = "";
-      let nameInputMessage = "";
-      while (true) {
-        const enteredName = await ui.requestParticipantName(draftName, nameInputMessage);
-        let participantName;
-        try {
-          participantName = validateParticipantNameForRegistration(enteredName);
-        } catch (error) {
-          if (!(error instanceof ParticipantNameValidationError)) throw error;
-          draftName = String(enteredName ?? "");
-          nameInputMessage = error.message;
-          continue;
-        }
-        const decision = await ui.confirmParticipantName(participantName, { allowEdit: true });
-        if (decision !== "confirm") {
-          draftName = participantName;
-          nameInputMessage = "";
-          continue;
-        }
-        try {
-          const state = await api.bootstrap({
-            participant_id: participantId,
-            name_action: "register",
-            participant_name_confirmed: true,
-            participant_name: participantName,
-          });
-          ui.showParticipationSetup();
-          return state;
-        } catch (error) {
-          if (isCorrectableParticipantNameError(error)) {
-            draftName = participantName;
-            nameInputMessage = "氏名を登録できませんでした。表示内容を修正して、もう一度確認してください。";
-            continue;
-          }
-          if (!isCorrectableParticipantAccessError(error)) throw error;
-          retryMessage = "参加者情報を確定できませんでした。参加者IDを確認して、もう一度お試しください。";
-          continue participantAccessLoop;
-        }
-      }
-    }
-
-    const decision = await ui.confirmParticipantName(preview.participant_name);
-    if (decision !== "confirm") {
-      retryMessage = "表示された氏名がご自身のものではありません。参加者IDを確認してください。正しいIDでも氏名が違う場合は、このまま進まず担当者へ連絡してください。";
-      continue;
-    }
-    try {
-      const state = await api.bootstrap({
+      const state = await api[commonEntry ? "bootstrapCommon" : "bootstrap"]({
         participant_id: participantId,
-        name_action: "confirm",
-        participant_name_confirmed: true,
+        participant_id_confirmed: true,
       });
       ui.showParticipationSetup();
       return state;
     } catch (error) {
       if (!isCorrectableParticipantAccessError(error)) throw error;
-      retryMessage = "参加者情報を確定できませんでした。参加者IDを確認して、もう一度お試しください。";
+      retryMessage = "参加者IDを確認できませんでした。入力内容を確認して、もう一度お試しください。";
     }
   }
 }
@@ -105,9 +46,14 @@ export async function bootstrapWithParticipantAccess(
 export async function bootstrapTaskAccess(
   realApi,
   ui,
-  { expectedVisitType, expectedSegment },
+  {
+    expectedVisitType,
+    expectedSegment,
+    beforePersistentParticipantAccess = null,
+  },
 ) {
   if (realApi.hasStoredSession()) {
+    await beforePersistentParticipantAccess?.();
     try {
       return {
         api: realApi,
@@ -115,42 +61,49 @@ export async function bootstrapTaskAccess(
         testMode: false,
       };
     } catch (error) {
-      if (!(error instanceof ApiClientError) || error.code !== "invalid_session") throw error;
+      if (!(error instanceof ApiClientError)
+          || !new Set(["invalid_session", "session_expired", "session_superseded"]).has(error.code)) {
+        throw error;
+      }
       realApi.clearSession();
     }
   }
 
-  const hasInvitationToken = realApi.hasInvitationToken();
-  const researcherTest = !hasInvitationToken
-    && await researcherTestModeAvailable();
-  if (!hasInvitationToken && !researcherTest) {
-    throw new ApiClientError(
-      401,
-      "invitation_required",
-      "担当者から送られた招待リンクを開いてください。",
-    );
-  }
-  const participantId = await ui.requestParticipantId("", { researcherTest });
+  const participantId = await ui.requestParticipantId("");
 
-  if (participantId === "test" && researcherTest) {
-    const testApi = new ResearcherTestApi(expectedVisitType, expectedSegment);
+  if (participantId === "999") {
+    const researcherTest = await researcherTestModeAvailable();
+    if (!researcherTest) {
+      throw new ApiClientError(
+        400,
+        "reserved_test_participant_id",
+        "参加者IDを確認できません。",
+      );
+    }
     ui.activateResearcherTestMode(null, expectedVisitType);
-    const state = await testApi.bootstrap("test");
-    ui.showParticipationSetup();
-    return { api: testApi, state, testMode: true };
+    let tokenMessage = "";
+    while (true) {
+      const adminToken = await ui.requestResearcherToken(tokenMessage);
+      const testApi = new ResearcherTestApi(expectedVisitType, expectedSegment, { adminToken });
+      try {
+        const state = await testApi.bootstrap("999");
+        ui.showParticipationSetup();
+        return { api: testApi, state, testMode: true };
+      } catch (error) {
+        testApi.clearSession();
+        if (!(error instanceof ApiClientError) || error.code !== "admin_forbidden") throw error;
+        tokenMessage = "管理トークンを確認できませんでした。入力内容を確認して、もう一度お試しください。";
+      }
+    }
   }
 
-  if (!hasInvitationToken) {
-    throw new ApiClientError(
-      401,
-      "invitation_required",
-      "数値の参加者IDで実施する場合は、担当者から送られた招待リンクを開いてください。",
-    );
-  }
+  await beforePersistentParticipantAccess?.();
+
   return {
     api: realApi,
     state: await bootstrapWithParticipantAccess(realApi, ui, {
       initialParticipantId: participantId,
+      commonEntry: true,
     }),
     testMode: false,
   };

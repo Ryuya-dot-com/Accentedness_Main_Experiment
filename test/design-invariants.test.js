@@ -5,7 +5,7 @@ import { buildParticipantDesign } from "../src/lib/manifest.js";
 const DESIGN_INPUT = Object.freeze({
   participantId: 1,
   participantUuid: "00000000-0000-4000-8000-000000000001",
-  assignmentVersion: "main-v5-english-learning-practice-placeholder",
+  assignmentVersion: "main-v10-english-practice-placeholder",
   seedAlgorithmVersion: "hmac-sha256+xoshiro128ss-v1",
   assetVersion: "placeholder-v2",
   randomizationSecret: "focused-design-invariant-test-secret",
@@ -16,7 +16,9 @@ async function validDesign() {
 }
 
 function mainTrials(design, visitType, segment) {
-  return design[visitType].trials.filter((trial) => trial.segment === segment && !trial.practice);
+  return design[visitType].trials.filter(
+    (trial) => trial.segment === segment && !trial.practice && !trial.excludeFromAnalysis,
+  );
 }
 
 function directSamePosition(first, second) {
@@ -44,6 +46,25 @@ describe("participant design invariant checker", () => {
     design.pre.expectedRecordingCount -= 1;
     expect(() => assertParticipantDesignInvariants(design))
       .toThrow("pre declared recording count");
+  });
+
+  it("rejects recording retention for a spoken practice trial", async () => {
+    const design = await validDesign();
+    const practice = design.pre.trials.find(
+      (trial) => trial.segment === "picture_naming" && trial.practice,
+    );
+    practice.expectsRecording = true;
+    mainTrials(design, "pre", "picture_naming")[0].expectsRecording = false;
+    expect(() => assertParticipantDesignInvariants(design))
+      .toThrow("spoken practice recording exclusion");
+  });
+
+  it("rejects a missing recording requirement for a spoken main trial", async () => {
+    const design = await validDesign();
+    mainTrials(design, "immediate", "picture_naming")[0].expectsRecording = false;
+    mainTrials(design, "immediate", "learning")[0].expectsRecording = true;
+    expect(() => assertParticipantDesignInvariants(design))
+      .toThrow("spoken main recording requirement");
   });
 
   it.each([
@@ -132,13 +153,30 @@ describe("participant design invariant checker", () => {
       .toThrow("L2-to-L1 variability mapping");
   });
 
-  it("rejects a learning cycle without exactly two High trials per talker", async () => {
+  it("rejects a learning condition whose item order changes between exposures", async () => {
     const design = await validDesign();
-    const high = mainTrials(design, "immediate", "learning")
-      .filter((trial) => trial.cycle === 1 && trial.variability === "high");
-    const replacement = high.find((trial) => trial.talkerId !== high[0].talkerId);
-    high[0].talkerId = replacement.talkerId;
+    const block = mainTrials(design, "immediate", "learning")
+      .filter((trial) => trial.exposure === 2 && trial.variability === "high");
+    [block[0].itemId, block[1].itemId] = [block[1].itemId, block[0].itemId];
     expect(() => assertParticipantDesignInvariants(design))
-      .toThrow("learning cycle 1 High frequency");
+      .toThrow("learning high exposure 2 fixed item order");
+  });
+
+  it("rejects a 24-item learning cycle whose counterbalanced condition blocks are broken", async () => {
+    const design = await validDesign();
+    const cycle = mainTrials(design, "immediate", "learning").slice(0, 24);
+    [cycle[0].variability, cycle[12].variability] = [cycle[12].variability, cycle[0].variability];
+    expect(() => assertParticipantDesignInvariants(design))
+      .toThrow("learning cycle 1 counterbalanced condition order");
+  });
+
+  it("rejects a High item that does not use all six talkers without replacement", async () => {
+    const design = await validDesign();
+    const highItemTrials = mainTrials(design, "immediate", "learning")
+      .filter((trial) => trial.variability === "high")
+      .filter((trial, _, trials) => trial.itemId === trials[0].itemId);
+    highItemTrials[1].talkerId = highItemTrials[0].talkerId;
+    expect(() => assertParticipantDesignInvariants(design))
+      .toThrow(`learning High talker permutation for item ${highItemTrials[0].itemId}`);
   });
 });

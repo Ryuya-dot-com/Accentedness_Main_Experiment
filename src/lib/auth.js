@@ -34,7 +34,7 @@ export async function requireSession(
     throw new ApiError(409, "session_superseded", "This session is no longer the active visit session");
   }
   if (Number(session.expires_at_ms) <= nowMs) {
-    throw new ApiError(401, "session_expired", "The session expired; reopen the invitation link to resume");
+    throw new ApiError(401, "session_expired", "The session expired; reopen the same task page to resume");
   }
   if (!completedRetry && !closedRetry
       && ["completed", "withdrawn"].includes(session.visit_status)) {

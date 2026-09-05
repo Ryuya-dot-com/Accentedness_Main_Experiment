@@ -6,18 +6,25 @@ import {
   summarizeRuns,
 } from "../src/lib/manifest.js";
 import { maxRun } from "../src/lib/randomization.js";
+import {
+  L2_TO_L1_CONTROL_STIMULI,
+  MAIN_STIMULI,
+  PRACTICE_TALKER,
+  TEST_TALKERS,
+  TRAINING_TALKERS,
+} from "../src/lib/stimuli.js";
 
 const DESIGN_INPUT = Object.freeze({
-  assignmentVersion: "main-v5-english-learning-practice-placeholder",
+  assignmentVersion: "main-v10-english-practice-placeholder",
   seedAlgorithmVersion: "hmac-sha256+xoshiro128ss-v1",
   assetVersion: "placeholder-v2",
   randomizationSecret: "test-randomization-secret-that-is-independent",
 });
 
 const EXPECTED_TEST_TALKERS = Object.freeze({
-  english: "e_test_f1",
-  chinese: "c_test_f1",
-  japanese: "j_test_f1",
+  english: "E6_Audio",
+  chinese: "C11_Natural",
+  japanese: "J5_Natural",
 });
 
 function counts(values) {
@@ -28,7 +35,9 @@ function counts(values) {
 }
 
 function mainTrials(design, visitType, segment) {
-  return design[visitType].trials.filter((trial) => trial.segment === segment && !trial.practice);
+  return design[visitType].trials.filter(
+    (trial) => trial.segment === segment && !trial.practice && !trial.excludeFromAnalysis,
+  );
 }
 
 function uuidForId(id) {
@@ -61,6 +70,26 @@ describe("participant ID contract", () => {
 });
 
 describe("participant-level manifest invariants", () => {
+  it("uses the frozen production word lists", () => {
+    expect(MAIN_STIMULI.filter((item) => item.list === 1).map((item) => item.word)).toEqual([
+      "tweezers", "scapula", "cocoon", "lotus", "xylophone", "porcupine",
+      "carousel", "spatula", "syringe", "catapult", "wardrobe", "abacus",
+    ]);
+    expect(MAIN_STIMULI.filter((item) => item.list === 2).map((item) => item.word)).toEqual([
+      "razor", "podium", "protractor", "acorn", "scalpel", "casket",
+      "detergent", "nostril", "binoculars", "raccoon", "parakeet", "toupee",
+    ]);
+    expect(TRAINING_TALKERS).toEqual({
+      english: ["E1_Audio", "E4_Audio", "E7_Audio", "E12_Audio", "E13_Audio", "E14_Audio"],
+      chinese: ["C2_Natural", "C5_Natural", "C7_Natural", "C15_Natural", "C16_Natural", "C18_Natural"],
+      japanese: ["J6_Natural", "J8_Natural", "J4_Natural", "J12_Natural", "J10_Natural", "J15_Natural"],
+    });
+    expect(TEST_TALKERS).toEqual(EXPECTED_TEST_TALKERS);
+    expect(L2_TO_L1_CONTROL_STIMULI.map((item) => item.word)).toEqual([
+      "strawberry", "grape", "pineapple", "peach", "kiwi", "cherry",
+    ]);
+  });
+
   it("keeps every participant-facing timing contract unchanged", async () => {
     const design = await designFor(2);
     const allTrials = [
@@ -108,9 +137,12 @@ describe("participant-level manifest invariants", () => {
       new Set([901, 902, 903, 904, 905, 906, 907]),
     );
     expect(new Set(practice.map((trial) => trial.itemWord))).toEqual(
-      new Set(["dog", "chair", "book", "water", "car", "apple", "orange"]),
+      new Set(["dog", "chair", "book", "water", "house", "apple", "orange"]),
     );
     expect(practice.every((trial) => trial.excludeFromAnalysis)).toBe(true);
+    expect(practice.every((trial) => trial.expectsRecording === false)).toBe(true);
+    expect(main.filter((trial) => ["picture_naming", "l2_to_l1"].includes(trial.segment))
+      .every((trial) => trial.expectsRecording === true)).toBe(true);
     expect(practice.every((trial) => !mainIds.has(trial.itemId))).toBe(true);
     expect(practice.every((trial) => !mainWords.has(trial.itemWord))).toBe(true);
     expect(practice.filter((trial) => trial.imageKey)
@@ -131,13 +163,12 @@ describe("participant-level manifest invariants", () => {
           [906, "apple", "🍎"],
           [907, "orange", "🍊"],
         ]);
-        const practiceAccent = design.assignment.trainingAccent;
-        const practiceTalker = `${practiceAccent[0]}_practice_f1`;
         expect(learning.every((trial) => (
           trial.imageKey === null
           && trial.expectsRecording === false
-          && trial.talkerId === practiceTalker
-          && trial.audioKey === `stimuli/${trial.assetVersion}/learning-practice/${practiceAccent}/${practiceTalker}/${trial.itemWord}.wav`
+          && trial.testAccent === "english"
+          && trial.talkerId === PRACTICE_TALKER
+          && trial.audioKey === `stimuli/${trial.assetVersion}/learning-practice/english/${PRACTICE_TALKER}/${trial.itemWord}.wav`
         ))).toBe(true);
       } else {
         expect(learning).toHaveLength(0);
@@ -152,6 +183,7 @@ describe("participant-level manifest invariants", () => {
       ]);
       expect(picture.every((trial) => (
         trial.audioKey === null
+        && trial.expectsRecording === false
         && trial.imageKey === `stimuli/${trial.assetVersion}/images/${trial.itemWord}.webp`
       ))).toBe(true);
 
@@ -165,11 +197,14 @@ describe("participant-level manifest invariants", () => {
       expect(l2.map((trial) => [trial.itemId, trial.itemWord])).toEqual([
         [903, "book"],
         [904, "water"],
-        [905, "car"],
+        [905, "house"],
       ]);
       expect(l2.every((trial) => (
         trial.imageKey === null
-        && trial.audioKey === `stimuli/${trial.assetVersion}/practice/${trial.testAccent}/${trial.talkerId}/${trial.itemWord}.wav`
+        && trial.expectsRecording === false
+          && trial.testAccent === "english"
+          && trial.talkerId === PRACTICE_TALKER
+          && trial.audioKey === `stimuli/${trial.assetVersion}/practice/english/${PRACTICE_TALKER}/${trial.itemWord}.wav`
       ))).toBe(true);
     }
   });
@@ -189,30 +224,28 @@ describe("participant-level manifest invariants", () => {
           expect(new Set(exposures.map((trial) => trial.talkerId)).size).toBe(6);
         }
       }
+      const conditionOrder = design.assignment.orderCell === 0 ? ["no", "high"] : ["high", "no"];
       for (let cycle = 1; cycle <= 6; cycle += 1) {
-        const cycleTrials = learning.filter((trial) => trial.cycle === cycle);
-        expect(cycleTrials).toHaveLength(24);
+        const cycleTrials = learning.slice((cycle - 1) * 24, cycle * 24);
+        expect(cycleTrials.every((trial) => trial.cycle === cycle)).toBe(true);
         expect(new Set(cycleTrials.map((trial) => trial.itemId)).size).toBe(24);
-        const highTalkerCounts = counts(
-          cycleTrials.filter((trial) => trial.variability === "high").map((trial) => trial.talkerId),
-        );
-        expect(Object.keys(highTalkerCounts)).toHaveLength(6);
-        expect(Object.values(highTalkerCounts)).toEqual(Array(6).fill(2));
+        expect(cycleTrials.slice(0, 12).every((trial) => trial.variability === conditionOrder[0])).toBe(true);
+        expect(cycleTrials.slice(12).every((trial) => trial.variability === conditionOrder[1])).toBe(true);
       }
-      expect(maxRun(learning.map((trial) => trial.variability))).toBe(24);
-      for (let index = 1; index < learning.length; index += 1) {
-        if (learning[index - 1].variability === "high" && learning[index].variability === "high") {
-          expect(learning[index - 1].talkerId).not.toBe(learning[index].talkerId);
+      expect(maxRun(learning.map((trial) => trial.variability))).toBe(12);
+      for (const variability of ["no", "high"]) {
+        const conditionTrials = learning.filter((trial) => trial.variability === variability);
+        const referenceOrder = conditionTrials
+          .filter((trial) => trial.exposure === 1)
+          .map((trial) => trial.itemId);
+        expect(referenceOrder).toHaveLength(12);
+        for (let exposure = 1; exposure <= 6; exposure += 1) {
+          const block = conditionTrials.filter((trial) => trial.exposure === exposure);
+          expect(block.map((trial) => trial.itemId)).toEqual(referenceOrder);
+          expect(block.map((trial) => trial.protocol.blockIndex)).toEqual(
+            Array.from({ length: 12 }, (_, index) => index + 1),
+          );
         }
-      }
-      const highByRank = new Map();
-      learning.filter((trial) => trial.variability === "high").forEach((trial) => {
-        const sequence = highByRank.get(trial.listRank) ?? [];
-        sequence.push(trial.talkerId);
-        highByRank.set(trial.listRank, sequence);
-      });
-      for (let rank = 0; rank < 6; rank += 1) {
-        expect(highByRank.get(rank)).not.toEqual(highByRank.get(rank + 6));
       }
 
       const prePn = mainTrials(design, "pre", "picture_naming");
@@ -233,6 +266,10 @@ describe("participant-level manifest invariants", () => {
           .toEqual({ no_first: 6, high_first: 6 });
 
         const l2 = mainTrials(design, visitType, "l2_to_l1");
+        const controls = design[visitType].trials.filter(
+          (trial) => trial.segment === "l2_to_l1" && !trial.practice && trial.excludeFromAnalysis,
+        );
+        const fullL2 = design[visitType].trials.filter((trial) => trial.segment === "l2_to_l1");
         expect(l2).toHaveLength(24);
         expect(new Set(l2.map((trial) => trial.itemId)).size).toBe(24);
         expect(counts(l2.map((trial) => trial.testAccent))).toEqual({ english: 8, chinese: 8, japanese: 8 });
@@ -251,6 +288,17 @@ describe("participant-level manifest invariants", () => {
         }
         expect(summarizeRuns(l2).variability).toBeLessThanOrEqual(2);
         expect(summarizeRuns(l2).testAccent).toBeLessThanOrEqual(2);
+        expect(controls.map((trial) => trial.itemId).sort((a, b) => a - b))
+          .toEqual(L2_TO_L1_CONTROL_STIMULI.map((item) => item.id));
+        expect(controls.every((trial) => (
+          trial.practice === false
+          && trial.excludeFromAnalysis === true
+          && trial.expectsRecording === true
+          && trial.variability === null
+          && trial.testAccent === "english"
+          && trial.talkerId === PRACTICE_TALKER
+          && trial.protocol.controlType === "untrained_easy"
+        ))).toBe(true);
         for (let miniblock = 1; miniblock <= 4; miniblock += 1) {
           const block = l2.filter((trial) => trial.miniblock === miniblock);
           expect(block).toHaveLength(6);
@@ -261,12 +309,13 @@ describe("participant-level manifest invariants", () => {
           (trial) => trial.segment === "l2_to_l1" && trial.practice,
         );
         expect(l2Practice).toHaveLength(3);
-        expect(counts(l2Practice.map((trial) => trial.testAccent)))
-          .toEqual({ english: 1, chinese: 1, japanese: 1 });
+        expect(counts(l2Practice.map((trial) => trial.testAccent))).toEqual({ english: 3 });
         expect(l2Practice.every(
-          (trial) => trial.talkerId === EXPECTED_TEST_TALKERS[trial.testAccent],
+          (trial) => trial.talkerId === PRACTICE_TALKER,
         )).toBe(true);
-        expect(maxRun([...l2Practice, ...l2].map((trial) => trial.testAccent))).toBeLessThanOrEqual(2);
+        expect(fullL2).toHaveLength(33);
+        expect(maxRun(fullL2.filter((trial) => !trial.practice).map((trial) => trial.testAccent)))
+          .toBeLessThanOrEqual(2);
       }
 
       const immediatePn = mainTrials(design, "immediate", "picture_naming");
@@ -286,12 +335,34 @@ describe("participant-level manifest invariants", () => {
       ]]));
       expect(mapping(immediateL2)).toEqual(mapping(delayedL2));
       expect(design.pre.expectedTrialCount).toBe(26);
-      expect(design.pre.expectedRecordingCount).toBe(26);
-      expect(design.immediate.expectedTrialCount).toBe(199);
-      expect(design.immediate.expectedRecordingCount).toBe(53);
-      expect(design.delayed.expectedTrialCount).toBe(53);
-      expect(design.delayed.expectedRecordingCount).toBe(53);
+      expect(design.pre.expectedRecordingCount).toBe(24);
+      expect(design.immediate.expectedTrialCount).toBe(205);
+      expect(design.immediate.expectedRecordingCount).toBe(54);
+      expect(design.delayed.expectedTrialCount).toBe(59);
+      expect(design.delayed.expectedRecordingCount).toBe(54);
     }
+  });
+
+  it("fixes learning word order within participants and randomizes it between participants", async () => {
+    const first = await designFor(1);
+    const second = await designFor(73);
+    for (const design of [first, second]) {
+      for (const variability of ["no", "high"]) {
+        const blocks = Array.from({ length: 6 }, (_, index) => mainTrials(
+          design,
+          "immediate",
+          "learning",
+        ).filter((trial) => trial.variability === variability && trial.exposure === index + 1)
+          .map((trial) => trial.itemId));
+        expect(blocks.slice(1).every((block) => block.join() === blocks[0].join())).toBe(true);
+      }
+    }
+    const learningOrder = (design, variability) => mainTrials(design, "immediate", "learning")
+      .filter((trial) => trial.variability === variability && trial.exposure === 1)
+      .map((trial) => trial.itemId);
+    expect(["no", "high"].some(
+      (variability) => learningOrder(first, variability).join() !== learningOrder(second, variability).join(),
+    )).toBe(true);
   });
 
   it("includes the seed algorithm version in the root seed context", async () => {

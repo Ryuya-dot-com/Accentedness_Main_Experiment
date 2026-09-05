@@ -17,7 +17,7 @@ function testState(visitType, segment) {
       visit_type: visitType,
       status: "active",
     },
-    participant: { id: "test" },
+    participant: { id: "999" },
     manifest: [{
       trial_id: "20000000-0000-4000-8000-000000000001",
       ordinal: 1,
@@ -31,16 +31,18 @@ function testState(visitType, segment) {
   };
 }
 
-function jsonResponse(value) {
+function jsonResponse(value, status = 200) {
   return new Response(JSON.stringify(value), {
-    status: 200,
+    status,
     headers: { "Content-Type": "application/json" },
   });
 }
 
-function accessUi(participantId = "test") {
+function accessUi(participantId = "999") {
   return {
     requestParticipantId: vi.fn().mockResolvedValue(participantId),
+    confirmParticipantId: vi.fn().mockResolvedValue("confirm"),
+    requestResearcherToken: vi.fn().mockResolvedValue("test-admin-token-that-is-long-and-private"),
     activateResearcherTestMode: vi.fn(),
     showParticipationSetup: vi.fn(),
   };
@@ -56,29 +58,31 @@ describe("literal test ID task access", () => {
     try {
       const realApi = {
         hasStoredSession: vi.fn().mockReturnValue(false),
-        hasInvitationToken: vi.fn().mockReturnValue(false),
         bootstrap: vi.fn(),
-        previewParticipantName: vi.fn(),
+        bootstrapCommon: vi.fn(),
         clearSession: vi.fn(),
       };
       const ui = accessUi();
+      const beforePersistentParticipantAccess = vi.fn();
 
       const access = await bootstrapTaskAccess(realApi, ui, {
         expectedVisitType: "immediate",
         expectedSegment: "learning",
+        beforePersistentParticipantAccess,
       });
 
       expect(access.testMode).toBe(true);
       expect(access.api.isTestMode).toBe(true);
       expect(access.state).toEqual(state);
       expect(realApi.bootstrap).not.toHaveBeenCalled();
-      expect(realApi.previewParticipantName).not.toHaveBeenCalled();
       expect(realApi.clearSession).not.toHaveBeenCalled();
       expect(ui.activateResearcherTestMode).toHaveBeenCalledWith(null, "immediate");
+      expect(ui.requestResearcherToken).toHaveBeenCalledTimes(1);
       expect(ui.showParticipationSetup).toHaveBeenCalledTimes(1);
       expect(fetchMock).toHaveBeenCalledTimes(2);
       expect(fetchMock.mock.calls[0][0]).toBe("/api/health");
       expect(fetchMock.mock.calls[1][0]).toBe("/api/test/bootstrap");
+      expect(beforePersistentParticipantAccess).not.toHaveBeenCalled();
       expect(ui.activateResearcherTestMode.mock.invocationCallOrder[0])
         .toBeLessThan(fetchMock.mock.invocationCallOrder[1]);
     } finally {
@@ -94,9 +98,8 @@ describe("literal test ID task access", () => {
     try {
       const realApi = {
         hasStoredSession: vi.fn().mockReturnValue(false),
-        hasInvitationToken: vi.fn().mockReturnValue(false),
         bootstrap: vi.fn(),
-        previewParticipantName: vi.fn(),
+        bootstrapCommon: vi.fn(),
         clearSession: vi.fn(),
       };
       const ui = accessUi();
@@ -107,6 +110,7 @@ describe("literal test ID task access", () => {
       })).rejects.toThrow("network unavailable");
 
       expect(ui.activateResearcherTestMode).toHaveBeenCalledWith(null, "delayed");
+      expect(ui.requestResearcherToken).toHaveBeenCalledTimes(1);
       expect(ui.activateResearcherTestMode.mock.invocationCallOrder[0])
         .toBeLessThan(fetchMock.mock.invocationCallOrder[1]);
       expect(ui.showParticipationSetup).not.toHaveBeenCalled();
@@ -115,26 +119,42 @@ describe("literal test ID task access", () => {
     }
   });
 
-  it("does not enter researcher test mode from a participant invitation URL", async () => {
-    const realApi = {
-      hasStoredSession: vi.fn().mockReturnValue(false),
-      hasInvitationToken: vi.fn().mockReturnValue(true),
-      bootstrap: vi.fn(),
-      previewParticipantName: vi.fn().mockRejectedValue(
-        new ApiClientError(400, "invalid_participant_id", "positive integer required"),
-      ),
-      clearSession: vi.fn(),
-    };
-    const ui = accessUi();
+  it("re-prompts only the researcher token after an authorization failure", async () => {
+    const state = testState("pre", "picture_naming");
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ environment: "development" }))
+      .mockResolvedValueOnce(jsonResponse({
+        error: { code: "admin_forbidden", message: "Admin authorization failed" },
+      }, 403))
+      .mockResolvedValueOnce(jsonResponse(state));
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const realApi = {
+        hasStoredSession: vi.fn().mockReturnValue(false),
+      };
+      const ui = accessUi();
+      ui.requestResearcherToken
+        .mockResolvedValueOnce("wrong-token")
+        .mockResolvedValueOnce("test-admin-token-that-is-long-and-private");
 
-    await expect(bootstrapTaskAccess(realApi, ui, {
-      expectedVisitType: "pre",
-      expectedSegment: "picture_naming",
-    })).rejects.toMatchObject({ code: "invalid_participant_id" });
+      const access = await bootstrapTaskAccess(realApi, ui, {
+        expectedVisitType: "pre",
+        expectedSegment: "picture_naming",
+      });
 
-    expect(realApi.previewParticipantName).toHaveBeenCalledWith("test");
-    expect(realApi.bootstrap).not.toHaveBeenCalled();
-    expect(ui.activateResearcherTestMode).not.toHaveBeenCalled();
+      expect(access).toMatchObject({ testMode: true, state });
+      expect(ui.requestParticipantId).toHaveBeenCalledTimes(1);
+      expect(ui.requestResearcherToken).toHaveBeenNthCalledWith(1, "");
+      expect(ui.requestResearcherToken.mock.calls[1][0]).toContain("確認できませんでした");
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+      expect(fetchMock.mock.calls[1][1].headers.Authorization).toBe("Bearer wrong-token");
+      expect(fetchMock.mock.calls[2][1].headers.Authorization)
+        .toBe("Bearer test-admin-token-that-is-long-and-private");
+      expect(fetchMock.mock.calls.slice(1).map((call) => call[1].body).join(""))
+        .not.toContain("admin-token");
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("clears only an invalid stale real session before showing the same ID field", async () => {
@@ -146,11 +166,10 @@ describe("literal test ID task access", () => {
     try {
       const realApi = {
         hasStoredSession: vi.fn().mockReturnValue(true),
-        hasInvitationToken: vi.fn().mockReturnValue(false),
         bootstrap: vi.fn().mockRejectedValue(
           new ApiClientError(401, "invalid_session", "stale session"),
         ),
-        previewParticipantName: vi.fn(),
+        bootstrapCommon: vi.fn(),
         clearSession: vi.fn(),
       };
       const ui = accessUi();
@@ -164,34 +183,43 @@ describe("literal test ID task access", () => {
       expect(realApi.bootstrap).toHaveBeenCalledTimes(1);
       expect(realApi.clearSession).toHaveBeenCalledTimes(1);
       expect(ui.requestParticipantId).toHaveBeenCalledTimes(1);
+      expect(ui.requestResearcherToken).toHaveBeenCalledTimes(1);
       expect(fetchMock).toHaveBeenCalledTimes(2);
     } finally {
       vi.unstubAllGlobals();
     }
   });
 
-  it("does not treat a numeric ID on a plain URL as test mode", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(
-      jsonResponse({ environment: "development" }),
-    );
+  it("uses the ID-only common participant entry for a numeric ID", async () => {
+    const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
+    const state = {
+      visit: { visit_type: "immediate" },
+      participant: { id: 17 },
+      manifest: [],
+      accepted: [],
+      participation_control: { trial_start_allowed: true, interruption: null },
+    };
     const realApi = {
       hasStoredSession: vi.fn().mockReturnValue(false),
-      hasInvitationToken: vi.fn().mockReturnValue(false),
       bootstrap: vi.fn(),
-      previewParticipantName: vi.fn(),
+      bootstrapCommon: vi.fn().mockResolvedValue(state),
       clearSession: vi.fn(),
     };
     const ui = accessUi("17");
 
     try {
-      await expect(bootstrapTaskAccess(realApi, ui, {
+      const access = await bootstrapTaskAccess(realApi, ui, {
         expectedVisitType: "immediate",
         expectedSegment: "learning",
-      })).rejects.toMatchObject({ code: "invitation_required" });
+      });
+      expect(access).toMatchObject({ state, testMode: false });
       expect(realApi.bootstrap).not.toHaveBeenCalled();
-      expect(realApi.previewParticipantName).not.toHaveBeenCalled();
-      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(realApi.bootstrapCommon).toHaveBeenCalledWith({
+        participant_id: "17",
+        participant_id_confirmed: true,
+      });
+      expect(fetchMock).not.toHaveBeenCalled();
     } finally {
       vi.unstubAllGlobals();
     }
@@ -205,9 +233,8 @@ describe("literal test ID task access", () => {
     try {
       const realApi = {
         hasStoredSession: vi.fn().mockReturnValue(false),
-        hasInvitationToken: vi.fn().mockReturnValue(false),
         bootstrap: vi.fn(),
-        previewParticipantName: vi.fn(),
+        bootstrapCommon: vi.fn(),
         clearSession: vi.fn(),
       };
       const ui = accessUi();
@@ -215,10 +242,11 @@ describe("literal test ID task access", () => {
       await expect(bootstrapTaskAccess(realApi, ui, {
         expectedVisitType: "pre",
         expectedSegment: "picture_naming",
-      })).rejects.toMatchObject({ code: "invitation_required" });
+      })).rejects.toMatchObject({ code: "reserved_test_participant_id" });
 
-      expect(ui.requestParticipantId).not.toHaveBeenCalled();
+      expect(ui.requestParticipantId).toHaveBeenCalledTimes(1);
       expect(ui.activateResearcherTestMode).not.toHaveBeenCalled();
+      expect(ui.requestResearcherToken).not.toHaveBeenCalled();
       expect(fetchMock).toHaveBeenCalledTimes(1);
     } finally {
       vi.unstubAllGlobals();
@@ -238,7 +266,7 @@ describe("literal test ID task access", () => {
     for (const source of [learning, segment]) {
       expect(source).toContain("bootstrapTaskAccess");
       expect(source).toContain("ResearcherTestRunner");
-      expect(source).toMatch(/if \(testMode\)/u);
+      expect(source).toMatch(/if \((?:testMode|api\.isTestMode)\)/u);
       expect(source).not.toContain("researcherTestModeAvailable");
     }
     expect(segment).toContain("api.isTestMode");

@@ -1,29 +1,30 @@
 import {
   adminSummary,
-  createInvitation,
-  createParticipant,
+  getParticipantStatus,
+  listParticipants,
   listDueDelayed,
-  revokeInvitation,
 } from "./routes-admin.js";
 import {
   completeVisit,
   finalizeParticipationInterruption,
   heartbeat,
-  previewParticipantName,
-  redeemInvitation,
   requestParticipationInterruption,
   saveEvents,
   saveTrialResponse,
   serveStimulus,
   sessionState,
   startTrial,
+  startCommonParticipantVisit,
   uploadRecording,
 } from "./routes-participant.js";
 import {
   downloadAdminParticipantCopy,
   downloadParticipantCopy,
 } from "./routes-participant-copy.js";
-import { bootstrapTestMode } from "./routes-test-mode.js";
+import {
+  bootstrapTestMode,
+  serveTestModeStimulus,
+} from "./routes-test-mode.js";
 import { ApiError, errorResponse, jsonResponse } from "./lib/http.js";
 import { collectionConfiguration } from "./lib/config.js";
 
@@ -61,6 +62,7 @@ async function routeApi(request, env) {
       asset_version: env.ASSET_VERSION,
       environment: collection.environment,
       collection_ready: collection.collectionReady,
+      development_participants_allowed: collection.developmentParticipantsAllowed,
       placeholder_assets: collection.placeholder,
       test_token_policy: collection.testTokenPolicy,
       test_token_policy_ready: collection.tokenPolicyReady,
@@ -71,25 +73,25 @@ async function routeApi(request, env) {
     });
   }
   if (path === "/api/test/bootstrap") {
-    return bootstrapTestMode(request, {
-      enabled: String(env.ENVIRONMENT ?? "").toLowerCase() === "development",
-      assignmentVersion: env.ASSIGNMENT_VERSION,
-      seedAlgorithmVersion: env.SEED_ALGORITHM_VERSION,
-    });
+    return bootstrapTestMode(request, env);
   }
-  if (path === "/api/admin/participants") return createParticipant(request, env);
+  let match = /^\/api\/test\/stimuli\/(audio|image)$/u.exec(path);
+  if (match) return serveTestModeStimulus(request, env, match[1]);
+  if (path === "/api/admin/participants") {
+    if (request.method === "GET") return listParticipants(request, env);
+  }
   if (path === "/api/admin/delayed/due") return listDueDelayed(request, env);
   if (path === "/api/admin/summary") return adminSummary(request, env);
 
-  let match = /^\/api\/admin\/participants\/([^/]+)\/results\.zip$/u.exec(path);
+  match = /^\/api\/admin\/participants\/([^/]+)\/results\.zip$/u.exec(path);
   if (match) return downloadAdminParticipantCopy(request, env, match[1]);
 
-  match = /^\/api\/admin\/visits\/([^/]+)\/invitations$/u.exec(path);
-  if (match) return createInvitation(request, env, match[1]);
-  match = /^\/api\/admin\/invitations\/([^/]+)\/revoke$/u.exec(path);
-  if (match) return revokeInvitation(request, env, match[1]);
-  if (path === "/api/invitations/name-preview") return previewParticipantName(request, env);
-  if (path === "/api/invitations/redeem") return redeemInvitation(request, env);
+  match = /^\/api\/admin\/participants\/([^/]+)$/u.exec(path);
+  if (match) return getParticipantStatus(request, env, match[1]);
+
+  if (path === "/api/participant-access/start") {
+    return startCommonParticipantVisit(request, env);
+  }
   if (path === "/api/session") return sessionState(request, env);
   if (path === "/api/session/heartbeat") return heartbeat(request, env);
   if (path === "/api/events") return saveEvents(request, env);
