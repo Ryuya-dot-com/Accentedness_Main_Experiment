@@ -21,7 +21,7 @@
       <tr><td>Main data collection</td><td><strong>NO-GO</strong></td><td>hard gateが1件でも未完了なら、平均点にかかわらず開始しない</td></tr>
     </tbody>
   </table>
-  <p>本番24語・Picture Naming練習2語のopaque画像（原則400×400、<code>nostril</code>のみ400×399）、学習・テスト話者roster、American EnglishのBellaによる統制6語・練習5語を含む計515 WAVを揃えた<code>main-assets-v2</code> stagingは確定済みである。テスト72・統制6・L2練習3の音響offsetは、hash・形式を検証する<code>waveform_endpoint_v1</code>で81件すべて自動承認済みである。Bella音声11語はPI聴取承認済み。主24画像の命名確認と学習音声明瞭度は、結果ファイルがないPI判断による免除として記録し、練習2画像はPI承認済みとする。絶対latency方針は、コード完成とは別の本収集gateとして残る。</p>
+  <p>本番24語・Picture Naming練習2語のopaque画像（原則400×400、<code>nostril</code>のみ400×399）、学習・テスト話者roster、American EnglishのBellaによる統制6語・練習5語を含む計515 WAVを揃えた<code>main-assets-v2</code> stagingは確定済みである。テスト72・統制6・L2練習3の音響offsetは、hash・形式を検証する<code>waveform_endpoint_v1</code>で81件すべて自動承認済みである。Bella音声11語はPI聴取承認済み。主24画像の命名確認と学習音声明瞭度は、結果ファイルがないPI判断による免除として記録し、練習2画像はPI承認済みとする。RTは機器遅延未補正のbrowser基準の近似値とする方針をPI／ユーザーが了承した。これは外部校正や本収集GOの証拠ではない。</p>
   <ul>
     <li><label><input type="checkbox" checked> 本質性レビューgate: この変更の最終差分を独立agentがKEEP / SIMPLIFY / REMOVEで再点検し、未解決のBLOCKがない</label></li>
   </ul>
@@ -47,7 +47,7 @@
       <tr><td>3つの全員共通visit入口、6 canonical page、全visitのID入力・同一ID確認（氏名は収集しない）</td><td>実装・自動test対象</td><td><input type="checkbox"></td><td>現行共通URLでの実ブラウザpilotは未完了</td></tr>
       <tr><td>各課題の練習、本番、Space限定、scrollなし。練習注視点は＋だけ、本番注視点は＋とbarだけ。刺激・回答中は不要HUDを隠し、録音課題では録音表示と10秒だけを示す</td><td>実装・自動test対象</td><td><input type="checkbox" checked></td><td>ID 999の6ページを実Chrome・実マイクで完遂したとのPI／ユーザー報告を受領。実刺激の認証配信はlive APIでも確認済み</td></tr>
       <tr><td>Pre → Learning → Immediate 2課題 → 5日以上後のDelayed 2課題</td><td>実装・自動test済み</td><td><input type="checkbox"></td><td>全導線E2Eは未完了</td></tr>
-      <tr><td>本番trial別WAV、練習WAV非保存、無言・前置きなしの指示、Picture Naming画像onset／L2音声offsetからのlatency基準</td><td>実装・自動test済み</td><td><input type="checkbox"></td><td>ID 999で実マイク動作は確認済み。音響offsetは81件自動承認済みだが、語頭・絶対latency方針は未確定</td></tr>
+      <tr><td>本番trial別WAV、練習WAV非保存、無言・前置きなしの指示、Picture Naming画像onset／L2音声offsetからのlatency基準</td><td>実装・自動test済み</td><td><input type="checkbox"></td><td>ID 999で実マイク動作は確認済み。音響offsetは81件自動承認済み、RTは機器遅延未補正のbrowser基準近似値として確定。発話onset採点・QCは別工程</td></tr>
       <tr><td>途中離脱、一時中断、同じ共通入口からの再開、永久終了を完了と区別する</td><td>実装・fault test済み</td><td><input type="checkbox"></td><td>参加者が分岐を理解できるか未確認</td></tr>
       <tr><td>保存中・保存済み・未確定を区別し、内部用語を参加者へ見せない</td><td>一部不足。受付前の日時・再確認案内は配備・Chrome確認済み</td><td><input type="checkbox"></td><td>「Pre」「正整数」などの内部的・難解な文言は未解決。受付前は赤い警告ではなく日本時間の案内とし、本当の障害・保存不確実性とは分離した</td></tr>
       <tr><td>各visit完了後にID・visit・日本時間日付入りの累積ZIPを参加者端末へ自動配布する</td><td>PI承認・全261 tests通過、3時点のlocal Chrome取得・展開照合済み、development配備済み</td><td><input type="checkbox"></td><td>自己録音の復習リスクを許容。未実施visit・刺激・条件は非公開。合成ID 901のZIP-only確認と配備後smoke確認を区別し、実環境での参加者完了時ZIP取得は未確認</td></tr>
@@ -67,17 +67,17 @@
   </table>
 
   <h2>4. 測定妥当性gate</h2>
-  <p>発話はAudioWorkletのsample frameでtrial別に録音し、欠落frameを検出する実装になっている。2026-09-05の既存永続保存pilot監査では、成功受理した発話85件のframe metadataが整合し、本番78件はD1録音metadataとも一致した。ただし欠落時はclient/serverが受理前に拒否するため、実施全体の無欠損率ではない。計測中にはheartbeat、onset event、次刺激fetch/decode、前trial WAV uploadが重なり得る。通信traceがないため、Learning 1件の85.8 ms遅延の原因と通信の影響は未確定。追加traceは遅延再発・録音frame異常などの具体的な問題に対する任意診断とし、必須gateにしない。外部機材による絶対RT校正の証拠ではなく、RT方針と実施者導線の確認が残るためG3は未完了とする。</p>
+  <p>発話はAudioWorkletのsample frameでtrial別に録音し、欠落frameを検出する実装になっている。2026-09-05の既存永続保存pilot監査では、成功受理した発話85件のframe metadataが整合し、本番78件はD1録音metadataとも一致した。ただし欠落時はclient/serverが受理前に拒否するため、実施全体の無欠損率ではない。計測中にはheartbeat、onset event、次刺激fetch/decode、前trial WAV uploadが重なり得る。通信traceがないため、Learning 1件の85.8 ms遅延の原因と通信の影響は未確定。追加traceは遅延再発・録音frame異常などの具体的な問題に対する任意診断とし、必須gateにしない。2026-09-05にPI／ユーザーがRTを機器遅延未補正のbrowser基準近似値として扱う方針を了承した。L2音響語末への補正は維持するが、校正済み絶対RTや機器間の精密比較は主張しない。発話onset採点・QCは別工程であり、実施者導線の確認も残るためG3は未完了とする。</p>
 
   <h2>5. 収集開始までのgate</h2>
   <ol>
     <li><label><input type="checkbox" checked> G0 ID 999 researcher QA: 6つのcanonical pageを実Chrome・実マイクで個別に確認し、起動ごとのfresh randomとD1/R2不変を照合する</label></li>
     <li><label><input type="checkbox" checked> G1 Persistent storage / recovery proof: 永続保存pilotのPreをdevelopmentの実刺激・実Chrome・実マイクで完遂し、同一manifestで中断・再開、26回答、24 WAV、研究者ZIPをlive確認した</label></li>
     <li><label><input type="checkbox"> G2 Delayed / participant-copy proof: 明示承認済み。永続保存pilotのImmediate完了・研究者ZIP・受付前のDelayed拒否を確認。非公開運用メモの受付日時以降のDelayed・参加者端末ZIPは未完了。ZIP配備のbuild変更を記録し、同一manifestで検証する。同一build全visit E2Eとはせず、ID 999でも代替しない</label></li>
-    <li><label><input type="checkbox"> G3 Measurement-safe / operator-minimum: G0–G2で観測した失敗だけを修正し、RTの解釈方針と、実施者が次の行動を判断できる最小導線を確認する。通信traceは具体的な問題に対する任意診断とする</label></li>
+    <li><label><input type="checkbox"> G3 Measurement-safe / operator-minimum: G0–G2で観測した失敗だけを修正し、RTの解釈方針は確定済み。実施者が次の行動を判断できる最小導線を確認する。通信traceは具体的な問題に対する任意診断とする</label></li>
     <li><label><input type="checkbox"> G4 Main-data-ready: 確定済み24語・指定話者roster・統制6語を含む全刺激と音響offsetをQAし、productionへ固定してsoft launchを通す</label></li>
   </ol>
-  <p><strong>次に行うこと:</strong> 検証済み変更のcommit・pushとCI、developmentの通常ID受付停止、公開文書のactive pilot情報除外、local watcherの最新checkpoint取得への修正は完了した。本番の非公開STIMULIへの541件配置・全件byte照合も完了したが、Workerはplaceholder、鍵は未登録のままで収集は有効化していない。次は本番設定・独立した鍵の準備とRT方針の確認を、収集有効化と分けて進める。永続保存pilotのPre・Immediateは旧buildの実測として保持し、非公開運用メモの受付日時以降、新build・同一manifestのDelayedから継続する。ローカル合成データをG2 live完了の証拠へ流用しない。Pre・Immediateの再実施、remote時刻の手動書換え・データ削除・割付再生成はしない。新しいdashboard、Queue、cronは追加しない。</p>
+  <p><strong>次に行うこと:</strong> 検証済み変更のcommit・pushとCI、developmentの通常ID受付停止、公開文書のactive pilot情報除外、local watcherの最新checkpoint取得への修正は完了した。本番の非公開STIMULIへの541件配置・全件byte照合も完了したが、Workerはplaceholder、鍵は未登録のままで収集は有効化していない。RT方針は確定した。次は本番鍵のGit・Dropbox外の保管先と引き渡し・復旧方法を決め、既存の設定・鍵登録手順を収集有効化と分けて進める。鍵生成・登録、未配備の候補version作成も今回は行わない。永続保存pilotのPre・Immediateは旧buildの実測として保持し、非公開運用メモの受付日時以降、新build・同一manifestのDelayedから継続する。ローカル合成データをG2 live完了の証拠へ流用しない。Pre・Immediateの再実施、remote時刻の手動書換え・データ削除・割付再生成はしない。新しいdashboard、Queue、cronは追加しない。</p>
 
   <h2>6. KEEP / SIMPLIFY / REMOVE</h2>
   <h3>KEEP</h3>

@@ -152,7 +152,9 @@ ORDER BY v.visit_type, tm.ordinal;
 
 既存eventはLearning onset 146、Picture Naming onset 53、L2 schedule 33、lateness 34、visibility change 5件でした。event件数はcanonical回答数とは同一ではありません。各通信のbrowser内開始・終了時刻とResource Timing／main-thread traceは保存されていないため、85.8 msの原因や、どの通信がどれだけ重なったかは遡及判定できません。sample整合性から、通信の無影響や絶対RT校正を結論しません。AudioWorkletとcontrol threadの分離は[Web Audio仕様](https://www.w3.org/TR/webaudio-1.0/)に基づきますが、実ヘッドホン出力・マイク入力・pixel onsetの外部校正を代替しません。[performance.timeOrigin](https://developer.mozilla.org/en-US/docs/Web/API/Performance/timeOrigin)もclient/serverの時計同期を保証しません。
 
-独立レビューでは既存のsession安全策、曝露event、先読み、応答先行保存とWAV送信を維持する方針をPASSとしました。原因未確定のまま新scheduler・Queue・telemetryを追加せず、heartbeatだけの抑制や毎trialの全WAV送信待ちも行いません。追加のPerformance/Network traceは収集開始の必須条件にせず、提示遅延の再発や録音frame異常など、具体的な問題を切り分ける必要が生じた場合だけ実施する任意診断とします。その場合は隔離localの通常participant経路で合成刺激・合成音声を使い、通信・保存処理を省略するID `999`で代替しません。traceを省略することは通信の無影響を意味しません。実参加者の再実施やremote 永続保存pilotの変更は不要です。G3のRT方針・実施者導線確認、G2 liveは未完了であり、本収集NO-GOを維持します。
+独立レビューでは既存のsession安全策、曝露event、先読み、応答先行保存とWAV送信を維持する方針をPASSとしました。原因未確定のまま新scheduler・Queue・telemetryを追加せず、heartbeatだけの抑制や毎trialの全WAV送信待ちも行いません。追加のPerformance/Network traceは収集開始の必須条件にせず、提示遅延の再発や録音frame異常など、具体的な問題を切り分ける必要が生じた場合だけ実施する任意診断とします。その場合は隔離localの通常participant経路で合成刺激・合成音声を使い、通信・保存処理を省略するID `999`で代替しません。traceを省略することは通信の無影響を意味しません。実参加者の再実施やremote 永続保存pilotの変更は不要です。この監査時点ではG3のRT方針・実施者導線確認、G2 liveは未完了でした。
+
+同日、その後のPI／ユーザーの了承により、RTは機器遅延未補正のbrowser/software基準の近似値として扱う方針に固定しました。Picture Namingは画像onset、L2はQA済み音響語末を基準とし、L2のbuffer末尾との差の補正は維持します。校正済み絶対RTや機器間の精密比較を主張せず、既存raw WAV・timing metadataを保持します。発話onsetのオフライン採点・QCと実施者導線の確認は別工程であり、G2–G4および本収集NO-GOは維持します。
 
 ## 3. productionの初回セットアップ
 
@@ -172,7 +174,9 @@ npx wrangler d1 migrations apply DB --remote --env production
 npx wrangler deploy --env production --strict --no-x-provision
 ```
 
-`secret put`は各回とも即時deployを伴います。2つは互いに異なる長い乱数値を使い、`RANDOMIZATION_SECRET`は同じassignment version中変更しません。新規Workerへはrepository外の`--secrets-file`で2 secretを最初のversionに同梱しても構いません。
+鍵の生成前に、PIが管理するGit・Dropbox外の保管先と引き渡し・復旧方法を確定します。必要なのは`ADMIN_TOKEN`と`RANDOMIZATION_SECRET`の2つだけで、各24文字以上の独立した乱数値とし、開発用の鍵を流用しません。`RANDOMIZATION_SECRET`は同じassignment version中変更しません。値をchat・ログ・command引数へ出さず、登録後も正本の保管を続けます。`secret put`は各回とも即時deployを伴い、`versions secret put`は未deployでもremote versionを作成します。鍵登録を単なるローカル準備とは扱いません（[Cloudflare公式手順](https://developers.cloudflare.com/workers/configuration/secrets/)）。初回の対応Worker配備へ2 secretを同梱する場合は、保管済み正本からGit・Dropbox外の権限0600一時fileを作り、既存の`--secrets-file`方式を使います。
+
+2026-09-05のRT方針確定後のread-only確認では、productionのsecret登録は0件、稼働versionは`c64b0ef5-aada-4e47-96e8-eb513fa69912`のままでした。両環境healthはHTTP 200、productionは`collection_ready=false`、developmentは`development_participants_allowed=false`です。本番鍵の保管先は未決定のため、今回の鍵生成・登録、Worker／候補versionのupload・deploy、設定・D1/R2の変更は行っていません。
 
 `0005_remove_recording_exports.sql` が削除するのは、旧Queue方式で作った派生ZIPの状態表だけです。canonical応答・録音metadata・監査logは削除しません。旧版を一度でも配置した環境では、bindingを設定から消しても既存のQueue、DLQ、旧`EXPORTS` bucketは自動削除されません。未作成ならこの確認はN/Aです。存在する場合は、正本DB・`RECORDINGS`・`STIMULI`と取り違えていないこと、必要な派生ZIPがないことを二名で確認してから、Cloudflare側で旧資源だけを廃止します。旧5分cronは設定省略では残るため、`wrangler.jsonc` のroot・production双方で`"triggers": { "crons": [] }`を明示し、次回deploy後にDashboardで消滅を確認します。確認までは空配列を削除しません。
 
