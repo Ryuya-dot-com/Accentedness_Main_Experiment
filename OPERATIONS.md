@@ -2,6 +2,8 @@
 
 本書のgateは本番環境でデータを回収できるかを判定するものであり、リポジトリのコード完成判定ではありません。研究ガバナンス上の判断は本書のscope外です。
 
+2026-09-05、PI／ユーザーが現在の未確認事項を残したまま本番開始を明示承認しました（第3.2節）。以前のNO-GO・受付停止維持は当時の作業記録であり、今回の開始承認と実測完了を混同しません。
+
 ## 1. 構成
 
 - Worker: API、認証、manifest配信、現在試行と条件付き1試行先だけの刺激配信
@@ -81,7 +83,7 @@ npx wrangler secret list --env=""
 
 初回deployへsecretを同梱する場合は、Git・Dropbox外の権限`0600`一時fileを`--secrets-file`へ渡し、成功直後にそのfileを削除します。`ADMIN_TOKEN`と`RANDOMIZATION_SECRET`を同梱し、secret値をcommand引数、標準出力、shell historyへ出しません。2026-08-26の旧非本番bootstrapも`--secrets-file`方式でした。
 
-2026-08-26以降、非本番`ADMIN_TOKEN`の暫定正本はrepository外の親directoryにある`.env`です。file modeは`0600`とし、この単一keyだけを標準入力経由でWranglerへ渡します。`.env`全体またはtoken値を表示・記録しません。rotation後に新tokenでHTTP 200、旧tokenでHTTP 403を確認し、bootstrap用の一時handoff directoryは削除済みです。この`.env`はDropbox同期対象なので、現時点の非本番運用にだけ用い、production secretの恒久正本とはみなしません。`RANDOMIZATION_SECRET`、production resource、production secretはこのrotationで変更していません。
+2026-08-26以降、非本番`ADMIN_TOKEN`の暫定正本はrepository外の親directoryにある`.env`です。file modeは`0600`とし、この単一keyだけを標準入力経由でWranglerへ渡します。`.env`全体またはtoken値を表示・記録しません。rotation後に新tokenでHTTP 200、旧tokenでHTTP 403を確認し、bootstrap用の一時handoff directoryは削除済みです。このrotation時点ではDropbox同期対象の`.env`を非本番用とし、production secretの恒久正本とはみなしませんでした。その後のユーザー指定による本番鍵の保管方針は第3節を参照してください。`RANDOMIZATION_SECRET`、production resource、production secretはこのrotationで変更していません。
 
 `0006`適用後の非本番`GET /api/health`の期待値は、`environment=development`、`development_participants_allowed=false`、`placeholder_assets=true`、`test_token_policy=undecided`、`test_token_policy_ready=false`、`admin_authentication_ready=true`、`randomization_ready=true`、`secrets_independent=true`、`collection_ready=false`です。これは通常参加者向けの収集をサーバー側で止めた正常なplaceholder状態です。研究者用ID `999`だけは、`RESEARCHER_TEST_ASSET_VERSION=main-assets-v2`のprivate R2刺激を既存`ADMIN_TOKEN`で認証して読みます。配備後QAは6つのcanonical pageを`999`で個別に確認し、実施前後でD1 application tableと`RECORDINGS` R2が増えていないことを確認します。ID `999`では通常参加者のID確認、永続manifest、D1/R2保存、再開、5日gate、結果ZIPを検証できません。通常IDによる永続保存pilotは別途明示承認され、対象の非本番環境で`ALLOW_DEVELOPMENT_PARTICIPANTS=true`を明示した場合だけ実施します。過去の技術検証結果は現行共通入口の証拠に流用しません。現在の非本番URLは`https://accentedness-main-experiment.komuro-4121.workers.dev`です。
 
@@ -164,23 +166,62 @@ production用Worker、D1、2つのR2 bucketは2026-08-30に作成済みです。
 
 `r2.dev`公開は無効、custom domainは未接続です。配置後の`wrangler r2 bucket info`はまだ0 object / 0 Bを表示しましたが、Wrangler 4.125.0のこの表示はanalytics由来（未集計時は0）であり、object一覧ではありません。容量にはmetadataも含まれるためpayload合計とは別指標です。配置の受入証拠には全541 keyの再取得・byte一致を用います。作業前後でproduction D1の13 application tableは全0行（確認SQLの`rows_written=0`）、`RECORDINGS`の容量表示も0のままです。Worker・設定・secret・migration・参加者録音は変更していません。両環境healthはHTTP 200、productionは`placeholder-v2`／`collection_ready=false`、developmentは`development_participants_allowed=false`を維持しています。刺激配置完了は本収集GOを意味しません。
 
-既存production D1の`database_id`は`776dd207-5132-4021-a24d-a22793d1e840`で、`wrangler.jsonc`の`env.production`にある`DB` bindingへ明記済みです。環境別のD1、R2、vars、secretは継承されないため、default非本番と取り違えないことを別担当者が確認します。productionへ進む承認後、`ADMIN_TOKEN`と`RANDOMIZATION_SECRET`を別値で設定し、migration、最後に対応Workerをdeployします。
+既存production D1の`database_id`は`776dd207-5132-4021-a24d-a22793d1e840`で、`wrangler.jsonc`の`env.production`にある`DB` bindingへ明記済みです。環境別のD1、R2、vars、secretは継承されないため、default非本番と取り違えないことを別担当者が確認します。productionの2鍵は下記のとおり登録済みです。確認のために再登録・再生成しません。migration・対応Worker・刺激設定の切替・収集有効化は、鍵登録への承認に含めず別工程とします。
 
 ```bash
-npx wrangler secret put ADMIN_TOKEN --env production
-npx wrangler secret put RANDOMIZATION_SECRET --env production
-npx wrangler secret list --env production
-npx wrangler d1 migrations apply DB --remote --env production
-npx wrangler deploy --env production --strict --no-x-provision
+npx wrangler secret list --env production --env-file /dev/null
 ```
 
-鍵の生成前に、PIが管理するGit・Dropbox外の保管先と引き渡し・復旧方法を確定します。必要なのは`ADMIN_TOKEN`と`RANDOMIZATION_SECRET`の2つだけで、各24文字以上の独立した乱数値とし、開発用の鍵を流用しません。`RANDOMIZATION_SECRET`は同じassignment version中変更しません。値をchat・ログ・command引数へ出さず、登録後も正本の保管を続けます。`secret put`は各回とも即時deployを伴い、`versions secret put`は未deployでもremote versionを作成します。鍵登録を単なるローカル準備とは扱いません（[Cloudflare公式手順](https://developers.cloudflare.com/workers/configuration/secrets/)）。初回の対応Worker配備へ2 secretを同梱する場合は、保管済み正本からGit・Dropbox外の権限0600一時fileを作り、既存の`--secrets-file`方式を使います。
+2026-09-05、ユーザーの明示指定に従い、本番鍵の正本は既存の親directoryの`.env`に保管します。必要なのは`ADMIN_TOKEN`と`RANDOMIZATION_SECRET`の2つだけで、各24文字以上の独立した乱数値とし、開発用の鍵を流用しません。`RANDOMIZATION_SECRET`は同じassignment version中変更しません。値をchat・ログ・command引数へ出さず、登録後も正本の保管を続けます。`secret put`は各回とも即時deployを伴い、`versions secret put`は未deployでもremote versionを作成します。鍵登録を単なるローカル準備とは扱いません（[Cloudflare公式手順](https://developers.cloudflare.com/workers/configuration/secrets/)）。
 
-2026-09-05のRT方針確定後のread-only確認では、productionのsecret登録は0件、稼働versionは`c64b0ef5-aada-4e47-96e8-eb513fa69912`のままでした。両環境healthはHTTP 200、productionは`collection_ready=false`、developmentは`development_participants_allowed=false`です。本番鍵の保管先は未決定のため、今回の鍵生成・登録、Worker／候補versionのupload・deploy、設定・D1/R2の変更は行っていません。
+2026-09-05のRT方針確定後のread-only確認では、productionのsecret登録は0件、稼働versionは`c64b0ef5-aada-4e47-96e8-eb513fa69912`のままでした。両環境healthはHTTP 200、productionは`collection_ready=false`、developmentは`development_participants_allowed=false`です。この確認時点では本番鍵の保管先が未決定だったため、鍵生成・登録、Worker／候補versionのupload・deploy、設定・D1/R2の変更は行いませんでした。
+
+同日、指定の`.env`へ`ACCENTEDNESS_PRODUCTION_ADMIN_TOKEN`と`ACCENTEDNESS_PRODUCTION_RANDOMIZATION_SECRET`を各32 random bytes由来の64桁hexとして追記しました。既存bytesと全既存値の保持、2鍵の形式・相互および既存値との非同一、読戻し一致、regular file・所有者限定`0600`、公開Git外を確認しました。ファイルはDropbox内にあり、平文同期・履歴保持のリスクは残ります。`0600`はDropbox同期を防ぐものではありません。既存`.dev.vars`もこの親`.env`へのsymlinkなので、ローカル起動時の読込み対象にもなり得ます。runtimeが読む開発用`ADMIN_TOKEN`は上書きせず、本番鍵には専用名を使います。Cloudflareへはこの2値だけを選択し、それぞれ`ADMIN_TOKEN`／`RANDOMIZATION_SECRET`へ対応付け、他サービスの鍵を含む`.env`全体をbulk送信しません。最初の承認審査では鍵送信・再配備の明示承認待ちとして実行前に停止し、その後ユーザーから明示承認を得ました。
+
+承認後の初回実行では、主担当の`--name`と`--env production`の併用ミスにより、Wrangler 4.125.0が名前末尾へ環境名を重ね、`accentedness-main-experiment-production-production`を誤作成して2鍵を登録しました。正式productionのsecret一覧が0件のままだったため検証を停止し、blind retryはしませんでした。read-only調査で誤Workerの作成時刻が当該実行の`2026-09-05T08:57:13.618368Z`、codeが`export default { fetch() {} }`のみ、bindingsが2 secretのみ、routes・custom domains・cron・依存参照なし、workers.dev・preview無効であることを確認しました。ユーザーへ説明して続行了承を受け、この誤Workerだけを公式APIの単一`DELETE`（`force=false`）で削除し、HTTP 404で不存在を確認しました。削除は取消不可ですが参加者データは含まず、2鍵の原本は`.env`に保持しています。正式productionは旧version・secret 0件・13表0行のままで、R2操作はありませんでした。
+
+その後、installed CLIの対象名解決を合成assertで検証し、`--name`を完全に省略した`secret bulk --env production --env-file /dev/null`へ2鍵だけをstdinで渡しました。ログfile出力・metricsは無効、sanitizeは有効にし、stdout/stderrに秘密値が含まれないことも確認しました。正式productionの新稼働versionは`72f18283-5ece-417f-90c2-8d0f109e2573`（100%）、secret名は`ADMIN_TOKEN`と`RANDOMIZATION_SECRET`の2件です。旧版とのscript etag・runtime・全non-secret bindings一致、healthの3鍵状態flagがtrue、認証ありadmin GETは200・認証なしは401を確認しました。`placeholder-v2`／`TEST_TOKEN_POLICY=undecided`／`collection_ready=false`は維持しています。development healthは不変で通常ID受付停止、production D1の13 application tableは全0行（SELECTの`rows_written=0`／`changed_db=false`）です。登録中の`.env` bytesは不変で、完了後は登録状態のコメントだけを更新し、全値と0600権限の不変を再確認しました。実験コード・刺激設定・migration・D1/R2データは変更しておらず、本収集GOではありません。今後のsecret操作でも`--name`と`--env`を併用せず、configの`env.production.name`を使います。
 
 `0005_remove_recording_exports.sql` が削除するのは、旧Queue方式で作った派生ZIPの状態表だけです。canonical応答・録音metadata・監査logは削除しません。旧版を一度でも配置した環境では、bindingを設定から消しても既存のQueue、DLQ、旧`EXPORTS` bucketは自動削除されません。未作成ならこの確認はN/Aです。存在する場合は、正本DB・`RECORDINGS`・`STIMULI`と取り違えていないこと、必要な派生ZIPがないことを二名で確認してから、Cloudflare側で旧資源だけを廃止します。旧5分cronは設定省略では残るため、`wrangler.jsonc` のroot・production双方で`"triggers": { "crons": [] }`を明示し、次回deploy後にDashboardで消滅を確認します。確認までは空配列を削除しません。
 
 `0006_identity_and_participation_interruptions.sql`は、現在未使用のlegacy `participant_names` table、一時中断・参加終了の`participation_interruptions`、withdraw/abandon列、race防止index・triggerを追加済みです。適用済みmigrationは変更・削除せず、`participant_names`をruntimeから読み書きしないことで0行を維持します。既存のcanonical responseやR2 objectは削除しません。
+
+### 3.1 受付停止を維持したコード更新（2026-09-05配備完了）
+
+2026-09-05、検証済みcommit `66420d3093f030c5d61a858c0eef938c3ae452e6`とruntime・public・config・testの一致を確認しました。未commit差分は本書とROADMAPだけで、未追跡fileはありません。`npm run verify`は生成型の整合、22 files／264 tests、4,320 design監査、backup self-check、両環境dry-runがPASSしました。本番用の`--env-file /dev/null --strict --no-x-provision --dry-run`もPASSし、public 99 files、Worker bundle 228.71 KiB（gzip 48.23 KiB）を確認しました。依存更新や新規runtime実装は行っていません。
+
+配備先は既存`accentedness-main-experiment-production`だけです。read-only preflightでは稼働version `72f18283-5ece-417f-90c2-8d0f109e2573`、secret名2件、本番D1/R2 bindings一致、pending migration 0件、D1 13表全0行（SELECTの`rows_written=0`／`changed_db=false`）でした。`RECORDINGS`はanalytics表示で0 object／0 Bでしたが、厳密なobject一覧の証拠ではありません。両環境healthは200、本番`collection_ready=false`、developmentの通常ID受付停止を維持しています。
+
+コード・参加者／研究者画面の更新に伴うplain-text varsの差分は次の3点だけです。その他のvars、D1/R2接続先、compatibility date／flag、静的routing・headersは同じです。cronはremoteもlocalも空、logs／tracesのsamplingはremoteと同じ0.1／0.01です。workers.devとpreviewは既存で有効、custom routes／domainsはありません。非version設定も配備前後で一致を確認しました。
+
+| 設定 | 更新前の本番 | 適用後 |
+| --- | --- | --- |
+| `ASSIGNMENT_VERSION` | `main-v7-barcroft-learning-order-no-practice-speech-wav-placeholder` | `main-v10-english-practice-placeholder` |
+| `RESEARCHER_TEST_ASSET_VERSION` | 未指定 | `disabled` |
+| `ALLOW_DEVELOPMENT_PARTICIPANTS` | 未指定 | `false` |
+
+`ASSET_VERSION=placeholder-v2`、`ALLOW_PLACEHOLDER_ASSETS=true`、`TEST_TOKEN_POLICY=undecided`を維持します。実際のlocal production varsと合成の独立2鍵で`collectionConfiguration()`が`collectionReady=false`／`blocked=true`になるassertもPASSしました。`ALLOW_DEVELOPMENT_PARTICIPANTS=false`は本番の受付停止手段ではありません。実刺激設定まで同時に切り替えると受付が開くため、今回の更新に含めません。
+
+以下は**実deployの明示承認後に実行済み**のコマンドです。既存secretは通常deployで保持されるため再送せず、`--name`、`--keep-vars`、`--secrets-file`も加えていません（[Wrangler公式手順](https://developers.cloudflare.com/workers/wrangler/commands/workers/)）。今後の配備でも直前にversion・source・設定を再確認し、不一致や`--strict`の拒否があれば止めます。
+
+```bash
+WRANGLER_WRITE_LOGS=false WRANGLER_LOG_SANITIZE=true WRANGLER_SEND_METRICS=false \
+  ./node_modules/.bin/wrangler deploy --env production --env-file /dev/null --strict --no-x-provision
+```
+
+承認後、最初の実行はローカルの設定比較でJSON再整形による書式差を誤検出し、remote操作前に停止しました。比較対象を元の文字列へ直し、設定fileを変更せず全preflightを通過した後、上記native deployを1回実行しました。新稼働versionは`616e22c6-c44f-4ee8-995c-56cd25740e85`（100%）、script etagは`f8c886842e94644e094ee2ba12137b4195ec8233abf911380e061c5b0e62e788`です。Workerと変更された静的asset 12 filesを配備し、bundleは228.71 KiB（gzip 48.23 KiB）、startupは10 msでした。
+
+配備後は上記3 vars差分だけで、D1/R2 bindings・runtime／headers・非version設定の前後一致、secret名2件、管理認証200／未認証401、`collection_ready=false`を確認しました。本番D1は13表全0行（SELECTの`rows_written=0`／`changed_db=false`）、developmentは稼働version `3cadb848-a171-49ce-a282-9c7a9329f85f`とhealthが不変で通常ID受付停止です。配信された代表HTML／JS 8 filesはlocalとbyte一致し、`.env`も全bytes不変でした。参加者の作成・試行開始、ID 999の本番使用、secret再送、migration、実験用STIMULI／RECORDINGSへの書込みは行っていません。既存の静的Assets配備と実験刺激R2へのuploadを区別します。実課題・実マイクの再試行や新たなcommit／pushは行わず、G2–G4と本収集NO-GOを維持します。
+
+### 3.2 本番開始の明示承認（2026-09-05）
+
+PI／ユーザーから「この状態でGOでOKです。コミット・プッシュして実施可能な状態にしてください」と明示承認を受領しました。Delayed・参加者端末ZIP・一連の運用rehearsalと少人数本番確認の未完了を残した開始判断です。G2–G4を実測済みに変更せず、5日gate・同一manifest・録音保存・ZIP完全性・認証の実装上の保護は維持します。Pre・Immediateを再実施せず、検証用参加者の作成・既存データ削除も行いません。
+
+変更は`env.production.vars`の`ASSIGNMENT_VERSION=main-v10-english-practice-real-assets`、`ASSET_VERSION=main-assets-v2`、`ALLOW_PLACEHOLDER_ASSETS=false`、`TEST_TOKEN_POLICY=same_token`だけです。生成型を更新し、既存verifyと独立レビューを通過したcommitをpushしてCI確認後、既存native deploy手順（第3.1節）で本番を切り替えます。配置済み541刺激のbyte照合証拠を再利用し、D1/R2接続先・2鍵・seed algorithm・development設定は変更しません。secret再送・migration・刺激再uploadは不要です。
+
+配備後は本番healthの`collection_ready=true`・`placeholder_assets=false`・`test_token_policy=same_token`、管理認証、3つの共通入口の配信、D1の状態、development不変を読み取り確認します。この確認は実参加者の全visit完遂やChromeでの新たな実画面確認の代わりにはなりません。
+
+配備前検証は生成型、22 files／264 tests、4,320 design監査、backup self-check、両環境dry-runがPASSしました。実configの変更が本番4 varsだけであること、本番が独立2鍵で受付可能になりdevelopmentは受付停止のままであることをassertしました。remote preflightでは旧本番version `616e22c6-c44f-4ee8-995c-56cd25740e85`、13表全0行、pending migration 0件、2 secret名・既存資源接続先・非version設定が一致しました。この時点ではまだ`collection_ready=false`で、鍵の値と親`.env`は不変です。
 
 ## 4. ローカル開発
 
@@ -226,11 +267,13 @@ participant-facing UIを変更した後の開発QAは、正確なID `999`で6つ
 
 ## 6. 全員共通URLの配布
 
-通常運用では `https://EXPERIMENT.example/admin/` を開き、ADMIN_TOKENで接続します。上部表示が「本番環境・参加者への案内が可能」であることを確認してから案内します。環境未確認、development、または`collection_ready=false`では案内コピーが無効になります。参加者を管理画面で先に作成したり、参加者別URLを発行したりしません。ページと管理APIはCloudflare Accessで研究チームだけに制限してください。
+通常運用では[本番の実験管理](https://accentedness-main-experiment-production.komuro-4121.workers.dev/admin/)を開き、本番用ADMIN_TOKENで接続します。上部表示が「本番環境・参加者への案内が可能」であることを確認してから案内します。環境未確認、development、または`collection_ready=false`では案内コピーが無効になります。受付停止中も、認証済み管理画面で既存参加者の状態確認と研究者用ZIP回収は可能ですが、参加者への新しい課題の案内は行いません。参加者を管理画面で先に作成したり、参加者別URLを発行したりしません。ページと管理APIはCloudflare Accessで研究チームだけに制限してください。
 
 新しい参加者には、発番台帳で未使用IDを確認し、「新しい参加者へ事前課題を案内」へIDを入力します。管理画面はID、Pre共通URL、短い開始・再開手順を1つの文面としてコピーしますが、この操作ではD1を変更しません。すでに開始済みのIDなら新規案内を作らず、該当する参加者行へ移動します。案内済みでもPreをまだ開始していないIDはserverに存在しないため、重複発番の防止には発番台帳を使います。
 
 Pre開始後は「開始済み参加者」の1行に3 visitの状態、現在のsegment、回答・本番WAVの保存数、次にしてよい操作が表示されます。Pre完了後のimmediate案内と、受付可能になったdelayed案内は、該当行のボタンからID入り文面をコピーします。中断処理中、録音保存待ち、finalization待ち、5日未満、参加終了では案内ボタンを表示しません。常時監視は行わないため、案内直前に「手動更新」を押します。
+
+2026-09-05の担当者導線点検では、型定義の整合と既存6 test files／89 testsがPASSしました。本番の参加者一覧・全体集計GETは認証あり200／なし401で参加者0名、管理HTML・CSS・JSの3 filesはlocalとbyte一致、healthは受付停止を維持しました。案内可否・コピー直前の再確認・保存待ち／中断／5日gate・部分／全時点ZIPの区別は既存実装と合成testで確認し、機能追加は不要と判断しました。Chrome操作接続が利用できなかったため、この点検を新たな画面実測・実参加者rehearsalとは扱いません。配備・鍵変更・参加者操作・実験R2へのアクセスは行わず、G2–G4の未完了状態は変えません。
 
 | visit | 通常配布する入口 | 自動遷移する後続page |
 |---|---|---|

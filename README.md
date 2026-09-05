@@ -4,6 +4,14 @@ Barcroft and Sommers (2005) の Experiment 2 を基礎に、学習時アクセ�
 
 ## 現在の状態
 
+2026-09-05、PI／ユーザーがDelayedと参加者端末ZIPのlive確認未完了を認識したうえで、この状態でのGO、commit・push、本番の実施可能化を明示承認しました。本番設定は`main-v10-english-practice-real-assets`／`main-assets-v2`／`same_token`へ切り替えます。実際の受付開始は[本番health](https://accentedness-main-experiment-production.komuro-4121.workers.dev/api/health)の`collection_ready=true`で確認します。開始承認はG2–G4の実測完了を意味せず、未確認項目は[ROADMAP.html](./ROADMAP.html)に残します。
+
+通常参加者への入口は[事前課題](https://accentedness-main-experiment-production.komuro-4121.workers.dev/pre-picture-naming/)です。担当者は[本番管理画面](https://accentedness-main-experiment-production.komuro-4121.workers.dev/admin/)からIDと共通URLを案内します。氏名や事前の参加者作成は不要です。ID `999`は本番では使いません。
+
+### 開始承認前の検証履歴
+
+以下のNO-GO・production未変更は各作業時点の記録です。現在の開始判断は上記承認に従います。
+
 developmentの通常ID受付は既定で停止し、公開push前に停止設定を配備して確認します。継続中pilotの実ID・受付日時はGit対象外の運用メモへ分離し、監督下の実施時だけ一時開放します。管理token付きのID `999`による非保存確認は継続できます。
 
 Learning練習・Space限定UX・latency metadata・研究者用設計log・非保存の研究者testモードを含む実装は非本番へ配備済みです。全員共通URLから始める永続保存pilotのPre・Immediateは、実Chrome・実microphone・D1・R2を通して永続保存・再開・研究者ZIPを技術確認済みです。Delayedのlive pilotは未完了で、本収集はNO-GOです。操作補助を伴う技術pilotのため、独立参加者のユーザビリティや絶対RT妥当性の証拠には流用しません。本番24語とPicture Naming練習2語のopaque画像、学習・テスト・統制・静的TTS練習の計515 WAVを揃えた`main-assets-v2` stagingは完成しました（44.1 kHz / PCM16 / mono、画像は原則400×400、`nostril`のみ400×399）。テスト72・統制6・L2練習3の音響的語末offsetは、hashとWAV形式を検証した`waveform_endpoint_v1`で81件すべて自動承認済みです。PIはElevenLabs BellaによるAmerican English練習・統制11語を聴取して承認済みです。主刺激の画像命名確認と学習音声明瞭度確認は実施済みとして使用承認されていますが、結果ファイルは本リポジトリにないため、証拠付きvalidation完了ではなく`waived_by_pi_without_repository_result`として記録します。2026-09-05のPI／ユーザー了承により、RTは機器遅延未補正のbrowser基準の近似値として扱い、L2音響語末への補正は維持します。校正済み絶対RTや機器間の精密比較は主張しません。RT方針の決定だけで本収集GOとはせず、Delayed・実施者導線・本番配備の確認を継続します。production環境では、プレースホルダーが残る、直後・遅延の音声token方針が未確定、または`ADMIN_TOKEN`と`RANDOMIZATION_SECRET`のいずれかが未設定・短すぎる・相互流用されている場合、新規参加者の作成と新規trial開始をサーバーが拒否します。
