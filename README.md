@@ -4,7 +4,7 @@ Barcroft and Sommers (2005) の Experiment 2 を基礎に、学習時アクセ�
 
 ## 現在の状態
 
-2026-09-05、PI／ユーザーがDelayedと参加者端末ZIPのlive確認未完了を認識したうえで、この状態でのGO、commit・push、本番の実施可能化を明示承認しました。本番設定は`main-v10-english-practice-real-assets`／`main-assets-v2`／`same_token`へ切り替えます。実際の受付開始は[本番health](https://accentedness-main-experiment-production.komuro-4121.workers.dev/api/health)の`collection_ready=true`で確認します。開始承認はG2–G4の実測完了を意味せず、未確認項目は[ROADMAP.html](./ROADMAP.html)に残します。
+2026-09-05、PI／ユーザーがDelayedと参加者端末ZIPのlive確認未完了を認識したうえで、この状態でのGO、commit・push、本番の実施可能化を明示承認しました。本番は`main-v10-english-practice-real-assets`／`main-assets-v2`／`same_token`で受付を有効化済みです。配備後の[本番health](https://accentedness-main-experiment-production.komuro-4121.workers.dev/api/health)で`collection_ready=true`を確認しました。開始承認はG2–G4の実測完了を意味せず、未確認項目は[ROADMAP.html](./ROADMAP.html)に残します。
 
 通常参加者への入口は[事前課題](https://accentedness-main-experiment-production.komuro-4121.workers.dev/pre-picture-naming/)です。担当者は[本番管理画面](https://accentedness-main-experiment-production.komuro-4121.workers.dev/admin/)からIDと共通URLを案内します。氏名や事前の参加者作成は不要です。ID `999`は本番では使いません。
 

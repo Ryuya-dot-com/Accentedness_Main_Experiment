@@ -223,6 +223,10 @@ PI／ユーザーから「この状態でGOでOKです。コミット・プッ�
 
 配備前検証は生成型、22 files／264 tests、4,320 design監査、backup self-check、両環境dry-runがPASSしました。実configの変更が本番4 varsだけであること、本番が独立2鍵で受付可能になりdevelopmentは受付停止のままであることをassertしました。remote preflightでは旧本番version `616e22c6-c44f-4ee8-995c-56cd25740e85`、13表全0行、pending migration 0件、2 secret名・既存資源接続先・非version設定が一致しました。この時点ではまだ`collection_ready=false`で、鍵の値と親`.env`は不変です。
 
+開始設定をcommit `250a03e1869710ffff7642336c13b0a43862249b`としてmainへpushし、[GitHub CI](https://github.com/Ryuya-dot-com/Accentedness_Main_Experiment/actions/runs/33960700642)の成功後に配備しました。最初の実行は配備前SELECTのCLIエラーで停止し、読み取り診断で旧version・13表0行・受付停止を確認してから直前検査をやり直しました。原因は特定していません。native deployは実際には1回だけ実行し、新稼働versionは`78ce8fc2-ea94-488d-9d14-47b5f767b4f2`（100%）、静的assetの追加uploadは0件、startupは7 msでした。配備直後のhealth期待値チェックは一致しませんでしたが、再配備せず読み取り再確認で以下を検証しました。
+
+最終postflightはPASSです。本番は`collection_ready=true`／`placeholder_assets=false`／`main-assets-v2`／`same_token`となり、管理画面の案内可能判定もtrueです。変化は上記4 varsだけで、script etag・runtime／headers・資源接続先・非version設定・2 secret名は不変、保管済み本番鍵による管理GETは200／未認証401でした。3つの共通入口を含むHTML／JS 10 filesはlocalとbyte一致、本番D1の13表は全0行（SELECTのみ・`rows_written=0`）、developmentの稼働version・healthは不変です。親`.env`も全bytes不変で、参加者の作成・削除・試行、migration、実験R2の読み書きは行っていません。本番受付の有効化は完了しましたが、G2–G4の未確認実測を完了扱いにはしません。
+
 ## 4. ローカル開発
 
 ```bash

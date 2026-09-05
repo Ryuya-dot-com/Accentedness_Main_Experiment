@@ -18,7 +18,7 @@
       <tr><td>参加者側の運用ready度</td><td><strong>2 / 3 visitの技術pilotをlive確認</strong></td><td>永続保存pilotのPre・Immediateは実Chrome・実マイク・永続保存・再開を確認。操作補助付きであり独立参加者のユーザビリティ・絶対RTの証拠ではない。Delayedは未完了</td></tr>
       <tr><td>実施者側の運用ready度</td><td><strong>0 / 1 現行運用rehearsal</strong></td><td>新管理画面の認証・空状態・開発時配布禁止と、永続保存pilotのPre・Immediate研究者ZIP回収はlive確認済み。進捗表示からDelayed案内までの一連の運用rehearsalは未完了</td></tr>
       <tr><td>総合進捗</td><td><strong>G0・G1完了</strong></td><td>ID 999の非保存QAと、永続保存pilot Preの永続保存・再開・研究者ZIP回収をlive確認済み</td></tr>
-      <tr><td>Main data collection</td><td><strong>GO承認済み（本番切替対象）</strong></td><td>2026-09-05、PI／ユーザーが現状での開始とcommit・push・実施可能化を明示承認。G2–G4の未確認事項を受容した例外的な開始判断であり、実測完了ではない</td></tr>
+      <tr><td>Main data collection</td><td><strong>GO承認済み・本番受付有効</strong></td><td>2026-09-05、PI／ユーザーが現状での開始とcommit・push・実施可能化を明示承認。配備後のcollection_ready=trueを確認済み。G2–G4の未確認事項を受容した例外的な開始判断であり、実測完了ではない</td></tr>
     </tbody>
   </table>
   <p>本番24語・Picture Naming練習2語のopaque画像（原則400×400、<code>nostril</code>のみ400×399）、学習・テスト話者roster、American EnglishのBellaによる統制6語・練習5語を含む計515 WAVを揃えた<code>main-assets-v2</code> stagingは確定済みである。テスト72・統制6・L2練習3の音響offsetは、hash・形式を検証する<code>waveform_endpoint_v1</code>で81件すべて自動承認済みである。Bella音声11語はPI聴取承認済み。主24画像の命名確認と学習音声明瞭度は、結果ファイルがないPI判断による免除として記録し、練習2画像はPI承認済みとする。RTは機器遅延未補正のbrowser基準の近似値とする方針をPI／ユーザーが了承した。これは外部校正や本収集GOの証拠ではない。</p>
@@ -77,7 +77,7 @@
     <li><label><input type="checkbox"> G3 Measurement-safe / operator-minimum: G0–G2で観測した失敗だけを修正し、RTの解釈方針は確定済み。実施者が次の行動を判断できる最小導線を確認する。通信traceは具体的な問題に対する任意診断とする</label></li>
     <li><label><input type="checkbox"> G4 Main-data-ready: 確定済み24語・指定話者roster・統制6語を含む全刺激と音響offsetをQAし、productionへ固定してsoft launchを通す</label></li>
   </ol>
-  <p><strong>次に行うこと:</strong> PI／ユーザーのGO承認に基づき、本番を検証済み実刺激設定へ切り替える。配置済み541刺激・本番2鍵・現行コード・担当者導線の検証を再利用し、設定4値と生成型・文書だけを変更する。verify・独立レビュー・commit・push・CI後に本番へ配備し、受付可能healthと管理認証・共通入口・development不変を確認する（OPERATIONS.md第3.2節）。G2–G4の未確認事項は実測済みにしない。既存pilotは同一manifestを保持し、Pre・Immediateの再実施、remote時刻の書換え、データ削除、割付再生成は行わない。新しいdashboard・Queue・cron・secret操作も追加しない。</p>
+  <p><strong>次に行うこと:</strong> 本番受付は有効化済み。開始設定commit <code>250a03e</code>のpush・CI成功後、version <code>78ce8fc2-ea94-488d-9d14-47b5f767b4f2</code>を配備し、受付可能health・管理認証・共通入口・13表0行・development不変を確認した（OPERATIONS.md第3.2節）。担当者は本番管理画面から未使用IDとPre共通URLを案内できる。G2–G4の未確認事項は記録に残し、既存pilotは同一manifestでDelayedから継続する。Pre・Immediateの再実施、remote時刻の書換え、データ削除、割付再生成は行わない。</p>
 
   <h2>6. KEEP / SIMPLIFY / REMOVE</h2>
   <h3>KEEP</h3>
